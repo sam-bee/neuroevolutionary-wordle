@@ -19,7 +19,7 @@ That 64-dimensional vector is then scored against every word in the action-space
 
 High-level shape:
 
-```text
+```
 up to 5 previous turns
 -> shared per-turn input encoder
 -> concatenate 5 encoded turn vectors
@@ -59,7 +59,7 @@ Each of the 5 letter positions is represented by a 26-way one-hot vector.
 
 So:
 
-```text
+```math
 5 * 26 = 130
 ```
 
@@ -73,13 +73,13 @@ Each of the 5 tile positions is represented by a 3-way one-hot vector:
 
 So:
 
-```text
+```math
 5 * 3 = 15
 ```
 
 ### 4.3 Total per turn
 
-```text
+```math
 130 + 15 = 145
 ```
 
@@ -91,7 +91,7 @@ This is a **shared encoder**, not five separately trained encoders.
 
 Shape of the encoder:
 
-```text
+```math
 145 -> 128 -> 64
 ```
 
@@ -113,13 +113,13 @@ For the first encoder layer, each of the 128 neurons receives all 145 input valu
 
 A neuron in that layer computes something of the form:
 
-```text
+```math
 h_j = f(sum_i(w_ji * x_i) + b_j)
 ```
 
 Vector form:
 
-```text
+```math
 h = f(Wx + b)
 ```
 
@@ -133,7 +133,7 @@ However, **empty turn slots do not run through the shared encoder**.
 
 Instead, an empty slot contributes a hard-coded **64-dimensional zero vector**:
 
-```text
+```math
 (0, 0, ..., 0)
 ```
 
@@ -152,7 +152,7 @@ Each slot output has length 64.
 
 These are concatenated in chronological slot order:
 
-```text
+```math
 [h1 | h2 | h3 | h4 | h5]
 ```
 
@@ -160,7 +160,7 @@ where each `h_k` is a 64-dimensional vector.
 
 Total size after concatenation:
 
-```text
+```math
 5 * 64 = 320
 ```
 
@@ -175,7 +175,7 @@ Slot order is preserved by concatenation order.
 
 After concatenation, the main network trunk is:
 
-```text
+```math
 320 -> 256 -> 128 -> 64
 ```
 
@@ -197,13 +197,13 @@ Let `x` be the concatenated 320-dimensional vector.
 
 A neuron in the 256-neuron layer computes:
 
-```text
+```math
 y_j = f(sum_i(w_ji * x_i) + b_j)
 ```
 
 LaTeX form:
 
-```text
+```math
 y_j = f\left(\sum_{i=1}^{320} w_{ji} x_i + b_j\right)
 ```
 
@@ -247,7 +247,7 @@ The remaining **38 dimensions** are:
 
 So each word embedding is:
 
-```text
+```math
 [26 fixed values | 38 trainable values]
 ```
 
@@ -260,7 +260,7 @@ Given:
 
 the action score is:
 
-```text
+```math
 score(w) = dot(p, e_w)
 ```
 
@@ -273,7 +273,7 @@ Then:
 
 This means the immediate inference path is:
 
-```text
+```math
 game state
 -> 64D policy output
 -> 4,739 dot products
@@ -321,7 +321,7 @@ That is enough to validate the architecture and test inference.
 
 Current agreed model:
 
-```text
+```
 per occupied turn:
 145 -> 128 -> 64
 
