@@ -10,6 +10,8 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CUDA_STANDARD 17)
 set(CMAKE_CUDA_STANDARD_REQUIRED ON)
 
+enable_testing()
+
 add_library(input_encoder STATIC
     src/model/input_encoder/shared_encoder.cu
     src/model/input_encoder/turn_features.cpp
@@ -23,3 +25,18 @@ target_compile_options(input_encoder PRIVATE
     $<$<COMPILE_LANGUAGE:CXX>:-Wall -Wextra -Wpedantic>
     $<$<COMPILE_LANGUAGE:CUDA>:-Xcompiler=-Wall,-Wextra>
 )
+
+add_executable(turn_features_test
+    tests/model/input_encoder/turn_features_test.cpp
+    src/model/input_encoder/turn_features.cpp
+)
+
+target_include_directories(turn_features_test PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
+)
+
+target_compile_options(turn_features_test PRIVATE
+    -Wall -Wextra -Wpedantic
+)
+
+add_test(NAME turn_features_test COMMAND turn_features_test)

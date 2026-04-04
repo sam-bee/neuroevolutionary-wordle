@@ -81,7 +81,16 @@ stopping short of the genetic algorithm, reinforcement learning, and training-lo
 
 ## Build setup
 
-To configure the project with CMake and Ninja, run:
+The repository includes a `Makefile` with the basic project commands:
+
+```bash
+make configure
+make build
+make test
+make clean
+```
+
+The configure step runs the underlying CMake command:
 
 ```bash
 cmake -S . -B build -G Ninja
