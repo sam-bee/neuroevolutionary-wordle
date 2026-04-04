@@ -1,18 +1,36 @@
 # Neuroevolutionary Wordle
 
-A CUDA/C++ experiment in building a Wordle-playing policy model and then training it with a genetic algorithm.
+A CUDA/C++ experiment in building a Wordle-playing policy model and then training it. Genetic algorithms and
+reinforcement learning will be used.
 
 This project combines three main ideas:
 
-1. a **neural network** that maps the current Wordle game state to a compact policy vector
-2. an **output embedding** that scores candidate guesses by dot product rather than emitting one logit per action
-3. a **genetic algorithm** that will eventually mutate model parameters and the trainable portion of the output embedding
+1. A **neural network** that maps the current state of an in-progress Wordle game to a 5-letter word representing the
+   next guess
+2. A **genetic** algorithm which determines model weights
+3. **Reinforcement learning**, to fine-tune the model
 
-The current action space is **4,739 valid 5-letter guesses**. It is smaller than the full New York Times guess list, but still includes all allowed solutions while biasing the action space toward common words derived from subtitle-frequency data.
+## High-Level Structure of the Model
+
+The structure of the model is as follows:
+
+1. Input encoding - turns a previous turn in a Wordle game into a 64-dimensional vector
+2. Encoded input concatenation creates 320 values to pass to the main neural net
+3. Main neural net - contains hidden layers of 256, 128 neurons, and a policy output head with 64 neurons
+4. Output embedding - contains 64-dimensional vectors for each of 4,739 5-letter words
+5. Model output selection - uses dot product method to choose a word from the action space
+
+The current action space is **4,739 valid 5-letter guesses**. It is smaller than the full guess list, but still includes
+all allowed solutions while biasing the action space toward common words derived from subtitle-frequency data.
+
+More information on data is available at [`docs/data-docs.md`](docs/data-docs.md).
 
 ## Why this exists
 
-I already have an older Go Wordle solver that uses shortlist reduction logic. This project is different: the aim here is to build a model that can *learn* a Wordle policy, while also serving as an excuse to write CUDA.
+The author has already written an older Go Wordle solver that uses shortlist reduction logic. This project is different:
+the aim here is to build a model that can _learn_ a Wordle policy, while also providing opportunities to build a
+non-trivial project in CUDA, to gain familiarity with neural net architecture, and to practice writing genetic
+algorithms.
 
 At a high level, the intended training story is:
 
@@ -20,7 +38,8 @@ At a high level, the intended training story is:
 - evolve parameters with a genetic algorithm
 - later add reinforcement-learning ideas if they prove useful
 
-Development is starting with the **model structure only**. Training, fitness evaluation, and the genetic algorithm machinery will come afterwards.
+Development is starting with the **model structure only**. Training, fitness evaluation, and the genetic algorithm
+machinery will come afterwards.
 
 ## Current model idea
 
@@ -31,11 +50,14 @@ Each turn consists of:
 - a 5-letter guess
 - 5 pieces of coloured tile feedback
 
-Each occupied turn is passed through a **shared input encoder**. Empty turn slots do not run through the encoder; they contribute a hard-coded 64-dimensional zero vector instead.
+Each occupied turn is passed through a **shared input encoder**. Empty turn slots do not run through the encoder; they
+contribute a hard-coded 64-dimensional zero vector instead.
 
-The five 64-dimensional per-turn outputs are concatenated into a 320-dimensional vector, which is then processed by a small dense trunk to produce a final 64-dimensional policy vector.
+The five 64-dimensional per-turn outputs are concatenated into a 320-dimensional vector, which is then processed by a
+small dense trunk to produce a final 64-dimensional policy vector.
 
-That policy vector is scored against every word in the output embedding by dot product. Repeated guesses are masked out because they are illegal in Wordle.
+That policy vector is scored against every word in the output embedding by dot product. Repeated guesses are masked out
+because they are illegal in Wordle.
 
 ## Output embedding
 
@@ -44,16 +66,18 @@ Each action word has a 64-dimensional embedding vector.
 - **26 dimensions are fixed** and indicate whether each letter `A-Z` appears in the word
 - **38 dimensions are trainable** and are initialised randomly
 
-The network therefore does **not** emit one output per word. Instead, it emits a 64-dimensional vector in the same space as the output embedding.
+The network therefore does **not** emit one output per word. Instead, it emits a 64-dimensional vector in the same space
+as the output embedding.
 
 ## Scope of the detailed design
 
 For implementation detail on the neural network itself, see:
 
-- [`docs/neural-net-design.md`](docs/neural-net-design.md)
-- [accompanying design diagram](docs/neural-net-design-diagram.png)
+- [`docs/neural-net-design.md`](docs/neural-net-design/neural-net-design.md)
+- [accompanying design diagram](docs/neural-net-design/neural-net-design-diagram.png)
 
-That document is intended to be concrete enough for CUDA implementation of the model structure, while deliberately stopping short of the genetic algorithm, reinforcement learning, and training-loop design.
+That document is intended to be concrete enough for CUDA implementation of the model structure, while deliberately
+stopping short of the genetic algorithm, reinforcement learning, and training-loop design.
 
 ## Status
 
