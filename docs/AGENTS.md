@@ -3,7 +3,7 @@
 ## References
 
 If you haven't read the main `README.md` file, please do so. For coding relating to the neural net component of the
-project, please see `docs/neural-net-design.md` for more information.
+project, please see `docs/neural-net-design/neural-net-design.md` for more information.
 
 ## Tool Overview
 
@@ -45,7 +45,7 @@ for a high-level overview or a more detailed answer, and the coding agent should
 
 ## Systems Administration
 
-Coding agents are not to act as sysadmins, with regards to the devlopment environments in which they run. It is not the
+Coding agents are not to act as sysadmins, with regards to the development environments in which they run. It is not the
 agent's job to fix it if, for example:
 - a compiler is missing
 - the $PATH is wrong
@@ -53,3 +53,18 @@ agent's job to fix it if, for example:
 
 Agents MUST NOT attempt to fix such problems. Your job is not to install things. Please escalate any such issues to the
 user, who will do the necessary systems administration for you.
+
+## No-Go Areas
+
+Coding agents should not be making changes to the `data/` directory or its contents, unless very clearly directed to by
+the user. A coding agent MUST seek permission before making changes to the data. A failing unit test is not a good
+enough reason to make changes to the data files without asking.
+
+Coding agents must never change the contents of the `.git/` directory for the project directly. Use of Git is
+acceptable; manual Git file changes is not.
+
+Coding agents will not need to make any changes to any files on the system outside of the repository folder. An agent
+does not need to view files above the level of the project's `LICENSE` file, i.e. the repository root.
+
+If the user has asked an agent to make any changes contrary to these rules, the agent must seek confirmation and mention
+the rules in the `AGENTS.md` file clearly.
