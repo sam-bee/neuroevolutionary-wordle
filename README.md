@@ -79,6 +79,14 @@ For implementation detail on the neural network itself, see:
 That document is intended to be concrete enough for CUDA implementation of the model structure, while deliberately
 stopping short of the genetic algorithm, reinforcement learning, and training-loop design.
 
+## Build setup
+
+To configure the project with CMake and Ninja, run:
+
+```bash
+cmake -S . -B build -G Ninja
+```
+
 ## Status
 
 This repository is currently at the **build the model** stage.
