@@ -40,3 +40,21 @@ target_compile_options(turn_features_test PRIVATE
 )
 
 add_test(NAME turn_features_test COMMAND turn_features_test)
+
+add_executable(shared_encoder_test
+    tests/model/input_encoder/shared_encoder_test.cpp
+)
+
+target_include_directories(shared_encoder_test PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
+)
+
+target_link_libraries(shared_encoder_test PRIVATE
+    input_encoder
+)
+
+target_compile_options(shared_encoder_test PRIVATE
+    -Wall -Wextra -Wpedantic
+)
+
+add_test(NAME shared_encoder_test COMMAND shared_encoder_test)
