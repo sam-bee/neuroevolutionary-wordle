@@ -42,3 +42,14 @@ to change.
 Conversationally, the user does not like receiving very long messages unless you are told otherwise. The user prefers to
 take things step-by-step, with opportunities to ask questions as we go. The user will often be clear if they are asking
 for a high-level overview or a more detailed answer, and the coding agent should respect their wishes.
+
+## Systems Administration
+
+Coding agents are not to act as sysadmins, with regards to the devlopment environments in which they run. It is not the
+agent's job to fix it if, for example:
+- a compiler is missing
+- the $PATH is wrong
+- a dependency management tool which is needed cannot be found.
+
+Agents MUST NOT attempt to fix such problems. Your job is not to install things. Please escalate any such issues to the
+user, who will do the necessary systems administration for you.
