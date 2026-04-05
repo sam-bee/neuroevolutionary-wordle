@@ -4,6 +4,8 @@ set(CMAKE_CUDA_ARCHITECTURES 120)
 
 project(neuroevolution_wordle LANGUAGES CXX CUDA)
 
+find_package(CUDAToolkit REQUIRED)
+
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
@@ -28,6 +30,7 @@ add_library(input_encoder STATIC
 
 target_include_directories(input_encoder PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/src
+    ${CUDAToolkit_INCLUDE_DIRS}
 )
 
 enable_project_warnings(input_encoder)

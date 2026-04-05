@@ -4,19 +4,23 @@
 
 #include "common/cuda_compat.hpp"
 #include "common/fixed_buffer.hpp"
+#include "common/float16.hpp"
 #include "model/input_encoder/encoder_spec.hpp"
 #include "model/input_encoder/turn_features.hpp"
 
 namespace neuroevolution::model::input_encoder {
 
+using ParameterScalar = common::Float16;
+static_assert(sizeof(ParameterScalar) == 2, "Encoder parameters must be stored in fp16.");
+
 template <std::size_t InputSize, std::size_t OutputSize> struct DenseLayerParameters {
-    // Weights are stored row-major by output neuron, then input index.
-    common::FixedBuffer<float, InputSize * OutputSize> weights{};
-    common::FixedBuffer<float, OutputSize> biases{};
+    // Trainable parameters are stored in fp16 row-major order by output neuron, then input index.
+    common::FixedBuffer<ParameterScalar, InputSize * OutputSize> weights{};
+    common::FixedBuffer<ParameterScalar, OutputSize> biases{};
 
     constexpr NEUROEVOLUTION_HOST_DEVICE float WeightAt(const std::size_t output_index,
                                                         const std::size_t input_index) const noexcept {
-        return weights[(output_index * InputSize) + input_index];
+        return common::ToFloat(weights[(output_index * InputSize) + input_index]);
     }
 };
 
@@ -35,7 +39,7 @@ inline NEUROEVOLUTION_HOST_DEVICE void ApplyDenseLayer(const DenseLayerParameter
                                                        const common::FixedBuffer<float, InputSize> &input,
                                                        common::FixedBuffer<float, OutputSize> &output) noexcept {
     for (std::size_t output_index = 0; output_index < OutputSize; ++output_index) {
-        float sum = layer.biases[output_index];
+        float sum = common::ToFloat(layer.biases[output_index]);
 
         for (std::size_t input_index = 0; input_index < InputSize; ++input_index) {
             sum += layer.WeightAt(output_index, input_index) * input[input_index];
