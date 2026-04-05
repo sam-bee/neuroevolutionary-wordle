@@ -5,22 +5,17 @@
 #include <iostream>
 #include <string_view>
 
-#include "model/input_encoder/encoder_spec.hpp"
 #include "model/input_encoder/shared_encoder.hpp"
-#include "wordle/turn.hpp"
+#include "shared_encoder_fixture.hpp"
 
 namespace {
 
 using neuroevolution::model::input_encoder::EncodedTurnVector;
-using neuroevolution::model::input_encoder::FeedbackFeatureOffset;
-using neuroevolution::model::input_encoder::GuessLetterFeatureOffset;
 using neuroevolution::model::input_encoder::SharedEncoderParameters;
 using neuroevolution::model::input_encoder::TryForwardOccupiedTurn;
 using neuroevolution::model::input_encoder::kEncoderOutputSize;
-using neuroevolution::model::input_encoder::kEncoderHiddenSize;
-using neuroevolution::model::input_encoder::kTurnFeatureCount;
-using neuroevolution::wordle::TileFeedback;
 using neuroevolution::wordle::Turn;
+using neuroevolution::tests::input_encoder::SharedEncoderGoldenFixture;
 
 constexpr float kTolerance = 1.0e-6f;
 constexpr int kSelectedVisibleDeviceIndex = 0;
@@ -119,69 +114,6 @@ bool ExpectVectorNear(const EncodedTurnVector &actual,
   return ok;
 }
 
-void PopulateSmokeTestParameters(SharedEncoderParameters &parameters) {
-  constexpr std::size_t kGuessA0 = GuessLetterFeatureOffset(0, 0);
-  constexpr std::size_t kGuessB1 = GuessLetterFeatureOffset(1, 1);
-  constexpr std::size_t kGuessC2 = GuessLetterFeatureOffset(2, 2);
-  constexpr std::size_t kGuessD3 = GuessLetterFeatureOffset(3, 3);
-  constexpr std::size_t kGuessE4 = GuessLetterFeatureOffset(4, 4);
-  constexpr std::size_t kGreen0 = FeedbackFeatureOffset(0, 0);
-  constexpr std::size_t kYellow1 = FeedbackFeatureOffset(1, 1);
-  constexpr std::size_t kGrey2 = FeedbackFeatureOffset(2, 2);
-  constexpr std::size_t kGreen3 = FeedbackFeatureOffset(3, 0);
-  constexpr std::size_t kYellow4 = FeedbackFeatureOffset(4, 1);
-
-  parameters.input_to_hidden.biases[0] = -2.0f;
-  parameters.input_to_hidden.biases[1] = 1.0f;
-  parameters.input_to_hidden.biases[2] = -1.0f;
-
-  parameters.input_to_hidden.weights[(0 * kTurnFeatureCount) + kGuessA0] =
-      1.5f;
-  parameters.input_to_hidden.weights[(0 * kTurnFeatureCount) + kGuessB1] =
-      0.5f;
-  parameters.input_to_hidden.weights[(0 * kTurnFeatureCount) + kGreen0] = 4.0f;
-
-  parameters.input_to_hidden.weights[(1 * kTurnFeatureCount) + kGuessC2] =
-      2.0f;
-  parameters.input_to_hidden.weights[(1 * kTurnFeatureCount) + kGrey2] = -5.0f;
-  parameters.input_to_hidden.weights[(1 * kTurnFeatureCount) + kYellow4] =
-      0.5f;
-
-  parameters.input_to_hidden.weights[(2 * kTurnFeatureCount) + kGuessD3] =
-      1.0f;
-  parameters.input_to_hidden.weights[(2 * kTurnFeatureCount) + kGuessE4] =
-      2.0f;
-  parameters.input_to_hidden.weights[(2 * kTurnFeatureCount) + kYellow1] =
-      0.25f;
-  parameters.input_to_hidden.weights[(2 * kTurnFeatureCount) + kGreen3] =
-      0.75f;
-
-  parameters.hidden_to_output.biases[0] = 0.5f;
-  parameters.hidden_to_output.biases[1] = -2.0f;
-  parameters.hidden_to_output.biases[2] = 1.25f;
-
-  parameters.hidden_to_output.weights[(0 * kEncoderHiddenSize) + 0] = 2.0f;
-  parameters.hidden_to_output.weights[(0 * kEncoderHiddenSize) + 2] = -1.0f;
-
-  parameters.hidden_to_output.weights[(1 * kEncoderHiddenSize) + 0] = -0.5f;
-  parameters.hidden_to_output.weights[(1 * kEncoderHiddenSize) + 2] = 4.0f;
-
-  parameters.hidden_to_output.weights[(2 * kEncoderHiddenSize) + 1] = 7.0f;
-}
-
-Turn MakeSmokeTestTurn() {
-  return Turn{
-      .letter_indices = {{0, 1, 2, 3, 4}},
-      .feedback = {{
-          TileFeedback::green,
-          TileFeedback::yellow,
-          TileFeedback::grey,
-          TileFeedback::green,
-          TileFeedback::yellow,
-      }},
-  };
-}
-
 } // namespace
 
 int main() {
@@ -189,15 +121,7 @@ int main() {
     return 1;
   }
 
-  SharedEncoderParameters host_parameters{};
-  PopulateSmokeTestParameters(host_parameters);
-
-  const Turn host_turn = MakeSmokeTestTurn();
-
-  EncodedTurnVector expected{};
-  expected[0] = 5.5f;
-  expected[1] = 8.0f;
-  expected[2] = 1.25f;
+  const SharedEncoderGoldenFixture fixture{};
 
   SharedEncoderParameters *device_parameters = nullptr;
   Turn *device_turn = nullptr;
@@ -206,9 +130,9 @@ int main() {
 
   bool ok = true;
 
-  ok &= CheckCuda(cudaMalloc(&device_parameters, sizeof(SharedEncoderParameters)),
+  ok &= CheckCuda(cudaMalloc(&device_parameters, sizeof(fixture.parameters)),
                   "allocating encoder parameters");
-  ok &= CheckCuda(cudaMalloc(&device_turn, sizeof(Turn)),
+  ok &= CheckCuda(cudaMalloc(&device_turn, sizeof(fixture.turn)),
                   "allocating turn input");
   ok &= CheckCuda(cudaMalloc(&device_output, sizeof(EncodedTurnVector)),
                   "allocating output buffer");
@@ -216,11 +140,12 @@ int main() {
                   "allocating status buffer");
 
   if (ok) {
-    ok &= CheckCuda(cudaMemcpy(device_parameters, &host_parameters,
-                               sizeof(SharedEncoderParameters),
+    ok &= CheckCuda(cudaMemcpy(device_parameters, &fixture.parameters,
+                               sizeof(fixture.parameters),
                                cudaMemcpyHostToDevice),
                     "copying encoder parameters to device");
-    ok &= CheckCuda(cudaMemcpy(device_turn, &host_turn, sizeof(Turn),
+    ok &= CheckCuda(cudaMemcpy(device_turn, &fixture.turn,
+                               sizeof(fixture.turn),
                                cudaMemcpyHostToDevice),
                     "copying turn input to device");
   }
@@ -252,7 +177,7 @@ int main() {
   }
 
   if (ok) {
-    ok &= ExpectVectorNear(host_output, expected);
+    ok &= ExpectVectorNear(host_output, fixture.expected_output);
   }
 
   if (device_status != nullptr) {
