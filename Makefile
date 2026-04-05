@@ -1,19 +1,11 @@
 .PHONY: configure build test smoke clean build-and-test
 
-.env: .env.example
-	cp .env.example .env
-
 -include .env
-export CUDA_DEVICE_ORDER
-export CUDA_VISIBLE_DEVICES
-
-CUDA_DEVICE_ORDER ?= PCI_BUS_ID
-CUDA_VISIBLE_DEVICES ?= 0
 
 configure:
 	cmake -S . -B build -G Ninja
 
-build:
+build: --env
 	cmake --build build
 
 test:
@@ -26,4 +18,7 @@ smoke:
 clean:
 	rm -rf build
 
-build-and-test: clean configure build test smoke
+build-and-test: --env clean configure build test smoke
+
+--env:
+	@test -f .env || (echo ".env is missing. Please copy .env.example" >&2; exit 1)
