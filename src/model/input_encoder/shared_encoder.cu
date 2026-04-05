@@ -26,6 +26,4 @@ EncodedTurnVector ForwardOccupiedTurn(const SharedEncoderParameters &parameters,
   return encoded_turn;
 }
 
-EncodedTurnVector EmptyTurnEncoding() noexcept { return EncodedTurnVector{}; }
-
 } // namespace neuroevolution::model::input_encoder

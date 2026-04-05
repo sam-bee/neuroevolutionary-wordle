@@ -82,6 +82,4 @@ TryForwardOccupiedTurn(const SharedEncoderParameters &parameters,
 EncodedTurnVector ForwardOccupiedTurn(const SharedEncoderParameters &parameters,
                                       const wordle::Turn &turn);
 
-EncodedTurnVector EmptyTurnEncoding() noexcept;
-
 } // namespace neuroevolution::model::input_encoder

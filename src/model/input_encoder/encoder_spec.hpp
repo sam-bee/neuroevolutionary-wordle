@@ -20,8 +20,6 @@ constexpr std::size_t kTurnFeatureCount =
 constexpr std::size_t kEncoderHiddenSize = 128;
 constexpr std::size_t kEncoderOutputSize = 64;
 
-constexpr std::size_t kTurnSlotCount = 5;
-
 constexpr NEUROEVOLUTION_HOST_DEVICE std::size_t
 GuessLetterFeatureOffset(const std::size_t position,
                          const std::size_t letter_index) noexcept {
