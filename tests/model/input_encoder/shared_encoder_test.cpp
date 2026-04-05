@@ -95,14 +95,14 @@ bool TestSharedEncoderForwardPassGoldenCase() {
   parameters.hidden_to_output.weights[(2 * neuroevolution::model::input_encoder::kEncoderHiddenSize) + 1] = 7.0f;
 
   const Turn turn{
-      .letter_indices = {0, 1, 2, 3, 4},
-      .feedback = {
+      .letter_indices = {{0, 1, 2, 3, 4}},
+      .feedback = {{
           TileFeedback::green,
           TileFeedback::yellow,
           TileFeedback::grey,
           TileFeedback::green,
           TileFeedback::yellow,
-      },
+      }},
   };
 
   const auto encoded_features = neuroevolution::model::input_encoder::EncodeTurnFeatures(turn);

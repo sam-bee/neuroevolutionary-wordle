@@ -28,7 +28,7 @@ bool ExpectTrue(const bool condition, const std::string_view message) {
   return true;
 }
 
-bool ExpectDiscreteFeaturesSet(const std::array<std::uint8_t, kTurnFeatureCount>& discrete,
+bool ExpectDiscreteFeaturesSet(const auto& discrete,
                                const std::initializer_list<std::size_t> expected_indices) {
   std::array<bool, kTurnFeatureCount> expected{};
 
@@ -77,14 +77,14 @@ bool ExpectMaterializedFeaturesSet(
 
 bool TestEncodeTurnFeaturesGoldenCase() {
   const Turn turn{
-      .letter_indices = {0, 1, 2, 3, 4},
-      .feedback = {
+      .letter_indices = {{0, 1, 2, 3, 4}},
+      .feedback = {{
           TileFeedback::green,
           TileFeedback::yellow,
           TileFeedback::grey,
           TileFeedback::green,
           TileFeedback::yellow,
-      },
+      }},
   };
 
   const auto features = EncodeTurnFeatures(turn);

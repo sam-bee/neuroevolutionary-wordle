@@ -1,8 +1,10 @@
 #pragma once
 
-#include <array>
 #include <cstddef>
 #include <cstdint>
+
+#include "common/cuda_compat.hpp"
+#include "common/fixed_buffer.hpp"
 
 namespace neuroevolution::wordle {
 
@@ -16,15 +18,17 @@ enum class TileFeedback : std::uint8_t {
 };
 
 struct Turn {
-  std::array<std::uint8_t, kWordLength> letter_indices{};
-  std::array<TileFeedback, kWordLength> feedback{};
+  common::FixedBuffer<std::uint8_t, kWordLength> letter_indices{};
+  common::FixedBuffer<TileFeedback, kWordLength> feedback{};
 };
 
-constexpr bool IsValidLetterIndex(const std::uint8_t letter_index) noexcept {
+constexpr NEUROEVOLUTION_HOST_DEVICE bool
+IsValidLetterIndex(const std::uint8_t letter_index) noexcept {
   return letter_index < kAlphabetSize;
 }
 
-constexpr bool IsValidFeedback(const TileFeedback value) noexcept {
+constexpr NEUROEVOLUTION_HOST_DEVICE bool
+IsValidFeedback(const TileFeedback value) noexcept {
   switch (value) {
   case TileFeedback::green:
   case TileFeedback::yellow:
@@ -35,7 +39,8 @@ constexpr bool IsValidFeedback(const TileFeedback value) noexcept {
   return false;
 }
 
-constexpr bool IsValidTurn(const Turn &turn) noexcept {
+constexpr NEUROEVOLUTION_HOST_DEVICE bool
+IsValidTurn(const Turn &turn) noexcept {
   for (std::size_t position = 0; position < kWordLength; ++position) {
     if (!IsValidLetterIndex(turn.letter_indices[position])) {
       return false;
