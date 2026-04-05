@@ -1,0 +1,24 @@
+services:
+  cuda-dev:
+    image: neuroevolution-wordle:cuda13.1
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+      args:
+        DOCKERCOMPOSE_UID: ${DOCKERCOMPOSE_UID}
+        DOCKERCOMPOSE_GID: ${DOCKERCOMPOSE_GID}
+    working_dir: /workspace
+    volumes:
+      - type: bind
+        source: .
+        target: /workspace
+        read_only: false
+    environment:
+      DOCKERCOMPOSE_UID: ${DOCKERCOMPOSE_UID}
+      DOCKERCOMPOSE_GID: ${DOCKERCOMPOSE_GID}
+      NVIDIA_VISIBLE_DEVICES: all
+      NVIDIA_DRIVER_CAPABILITIES: compute,utility
+    gpus: all
+    stdin_open: true
+    tty: true
+    command: ["sleep", "infinity"]

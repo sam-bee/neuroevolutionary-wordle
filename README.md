@@ -1,5 +1,8 @@
 # Neuroevolutionary Wordle
 
+Requires `cmake` 3.22+ and a CUDA 13.1-compatible toolkit/driver setup. A `docker compose` development container is
+included with the required dependencies if you want to work inside a container instead of on the host.
+
 A CUDA/C++ experiment in building a Wordle-playing policy model and then training it. Genetic algorithms and
 reinforcement learning will be used.
 
