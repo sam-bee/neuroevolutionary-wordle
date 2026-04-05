@@ -1,5 +1,15 @@
 .PHONY: configure build test smoke clean
 
+ifeq ($(wildcard .env),)
+ifneq ($(wildcard .env.example),)
+$(shell cp .env.example .env)
+endif
+endif
+
+-include .env
+export CUDA_DEVICE_ORDER
+export CUDA_VISIBLE_DEVICES
+
 CUDA_DEVICE_ORDER ?= PCI_BUS_ID
 CUDA_VISIBLE_DEVICES ?= 1
 CUDA_ENV := CUDA_DEVICE_ORDER=$(CUDA_DEVICE_ORDER) CUDA_VISIBLE_DEVICES=$(CUDA_VISIBLE_DEVICES)
