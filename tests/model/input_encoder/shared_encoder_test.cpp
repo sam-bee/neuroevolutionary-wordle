@@ -17,9 +17,12 @@ using neuroevolution::tests::input_encoder::SharedEncoderGoldenFixture;
 
 constexpr float kTolerance = 1.0e-6f;
 
-bool ExpectTrue(const bool condition, const std::string_view message) {
-  if (!condition) {
-    std::cerr << "FAIL: " << message << '\n';
+bool ExpectNeuronEquals(const float actual,
+                        const float expected,
+                        const std::size_t neuron_index) {
+  if (actual != expected) {
+    std::cerr << "FAIL: output neuron " << neuron_index << " expected "
+              << expected << ", got " << actual << '\n';
     return false;
   }
 
@@ -34,9 +37,9 @@ bool ExpectVectorNear(const EncodedTurnVector& actual,
   for (std::size_t index = 0; index < kEncoderOutputSize; ++index) {
     const float delta = std::fabs(actual[index] - expected[index]);
     if (delta > kTolerance) {
-      std::cerr << "FAIL: " << label << " mismatch at index " << index
-                << ", expected " << expected[index]
-                << ", got " << actual[index] << '\n';
+      std::cerr << "FAIL: " << label << " output neuron " << index
+                << " expected " << expected[index] << ", got "
+                << actual[index] << '\n';
       ok = false;
     }
   }
@@ -54,9 +57,9 @@ bool TestSharedEncoderForwardPassGoldenCase() {
       ForwardOccupiedTurn(fixture.parameters, fixture.turn);
 
   bool ok = true;
-  ok &= ExpectTrue(direct_output[0] == 5.5f, "Expected output neuron 0 to equal 5.5");
-  ok &= ExpectTrue(direct_output[1] == 8.0f, "Expected output neuron 1 to equal 8.0");
-  ok &= ExpectTrue(direct_output[2] == 1.25f, "Expected output neuron 2 to equal 1.25");
+  ok &= ExpectNeuronEquals(direct_output[0], fixture.expected_output[0], 0);
+  ok &= ExpectNeuronEquals(direct_output[1], fixture.expected_output[1], 1);
+  ok &= ExpectNeuronEquals(direct_output[2], fixture.expected_output[2], 2);
   ok &= ExpectVectorNear(direct_output, fixture.expected_output,
                          "ForwardSharedEncoder");
   ok &= ExpectVectorNear(occupied_turn_output, fixture.expected_output,
