@@ -19,16 +19,7 @@ using TurnInputVector = common::FixedBuffer<float, kTurnFeatureCount>;
 
 constexpr NEUROEVOLUTION_HOST_DEVICE std::size_t
 FeedbackIndex(const wordle::TileFeedback feedback) noexcept {
-  switch (feedback) {
-  case wordle::TileFeedback::green:
-    return 0;
-  case wordle::TileFeedback::yellow:
-    return 1;
-  case wordle::TileFeedback::grey:
-    return 2;
-  }
-
-  return 0;
+  return static_cast<std::size_t>(feedback);
 }
 
 inline NEUROEVOLUTION_HOST_DEVICE bool
