@@ -11,7 +11,7 @@ build:
 	cmake --build build
 
 test:
-	ctest --test-dir build --output-on-failure
+	cd build && ctest --output-on-failure
 
 smoke:
 	cmake --build build --target input_encoder_device_smoke_test
