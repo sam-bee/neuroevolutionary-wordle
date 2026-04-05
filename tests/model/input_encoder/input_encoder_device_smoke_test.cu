@@ -12,8 +12,8 @@ namespace {
 
 using neuroevolution::model::input_encoder::EncodedTurnVector;
 using neuroevolution::model::input_encoder::SharedEncoderParameters;
-using neuroevolution::model::input_encoder::TryForwardOccupiedTurn;
 using neuroevolution::model::input_encoder::kEncoderOutputSize;
+using neuroevolution::model::input_encoder::detail::TryForwardOccupiedTurn;
 using neuroevolution::wordle::Turn;
 using neuroevolution::tests::input_encoder::SharedEncoderGoldenFixture;
 

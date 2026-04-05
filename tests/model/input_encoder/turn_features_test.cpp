@@ -14,7 +14,8 @@ namespace {
 using neuroevolution::model::input_encoder::EncodeTurnFeatures;
 using neuroevolution::model::input_encoder::FeedbackFeatureOffset;
 using neuroevolution::model::input_encoder::GuessLetterFeatureOffset;
-using neuroevolution::model::input_encoder::MaterializeTurnInput;
+using neuroevolution::model::input_encoder::TurnInputVector;
+using neuroevolution::model::input_encoder::detail::MaterializeTurnInputInPlace;
 using neuroevolution::model::input_encoder::kTurnFeatureCount;
 using neuroevolution::wordle::TileFeedback;
 using neuroevolution::wordle::Turn;
@@ -88,7 +89,8 @@ bool TestEncodeTurnFeaturesGoldenCase() {
   };
 
   const auto features = EncodeTurnFeatures(turn);
-  const auto materialized = MaterializeTurnInput(features);
+  TurnInputVector materialized{};
+  MaterializeTurnInputInPlace(features, materialized);
 
   constexpr std::array<std::size_t, 10> kExpectedActiveIndices{
       GuessLetterFeatureOffset(0, 0),

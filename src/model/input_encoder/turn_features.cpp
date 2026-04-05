@@ -7,18 +7,12 @@ namespace neuroevolution::model::input_encoder {
 TurnInputFeatures EncodeTurnFeatures(const wordle::Turn &turn) {
   TurnInputFeatures features{};
 
-  if (!TryEncodeTurnFeatures(turn, features)) {
+  if (!detail::TryEncodeTurnFeatures(turn, features)) {
     throw std::invalid_argument(
         "Turn contains invalid letter indices or feedback values.");
   }
 
   return features;
-}
-
-TurnInputVector MaterializeTurnInput(const TurnInputFeatures &features) {
-  TurnInputVector materialized{};
-  MaterializeTurnInputInPlace(features, materialized);
-  return materialized;
 }
 
 } // namespace neuroevolution::model::input_encoder

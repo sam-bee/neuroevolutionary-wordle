@@ -11,8 +11,8 @@ namespace {
 
 using neuroevolution::model::input_encoder::EncodedTurnVector;
 using neuroevolution::model::input_encoder::ForwardOccupiedTurn;
-using neuroevolution::model::input_encoder::ForwardSharedEncoder;
 using neuroevolution::model::input_encoder::kEncoderOutputSize;
+using neuroevolution::model::input_encoder::detail::ForwardSharedEncoder;
 using neuroevolution::tests::input_encoder::SharedEncoderGoldenFixture;
 
 constexpr float kTolerance = 1.0e-6f;
@@ -48,8 +48,8 @@ bool TestSharedEncoderForwardPassGoldenCase() {
   const SharedEncoderGoldenFixture fixture{};
   const auto input_vector = fixture.MaterializedInput();
 
-  const EncodedTurnVector direct_output =
-      ForwardSharedEncoder(fixture.parameters, input_vector);
+  EncodedTurnVector direct_output{};
+  ForwardSharedEncoder(fixture.parameters, input_vector, direct_output);
   const EncodedTurnVector occupied_turn_output =
       ForwardOccupiedTurn(fixture.parameters, fixture.turn);
 

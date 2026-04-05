@@ -3,12 +3,13 @@
 #include <cstddef>
 
 #include "common/cuda_compat.hpp"
+#include "wordle/turn.hpp"
 
 namespace neuroevolution::model::input_encoder {
 
-constexpr std::size_t kGuessLetterCount = 5;
-constexpr std::size_t kFeedbackCount = 5;
-constexpr std::size_t kAlphabetSize = 26;
+constexpr std::size_t kGuessLetterCount = wordle::kWordLength;
+constexpr std::size_t kFeedbackCount = wordle::kWordLength;
+constexpr std::size_t kAlphabetSize = wordle::kAlphabetSize;
 constexpr std::size_t kTileStateCount = 3;
 
 constexpr std::size_t kGuessLetterFeatureCount =

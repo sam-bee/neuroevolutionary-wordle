@@ -17,6 +17,8 @@ struct TurnInputFeatures {
 
 using TurnInputVector = common::FixedBuffer<float, kTurnFeatureCount>;
 
+namespace detail {
+
 constexpr NEUROEVOLUTION_HOST_DEVICE std::size_t
 FeedbackIndex(const wordle::TileFeedback feedback) noexcept {
   return static_cast<std::size_t>(feedback);
@@ -41,7 +43,8 @@ TryEncodeTurnFeatures(const wordle::Turn &turn,
     features.discrete[letter_feature_index] = 1u;
 
     const std::size_t feedback_feature_index =
-        FeedbackFeatureOffset(position, FeedbackIndex(turn.feedback[position]));
+        FeedbackFeatureOffset(position, detail::FeedbackIndex(
+                                            turn.feedback[position]));
     features.discrete[feedback_feature_index] = 1u;
   }
 
@@ -58,8 +61,8 @@ MaterializeTurnInputInPlace(const TurnInputFeatures &features,
   }
 }
 
-TurnInputFeatures EncodeTurnFeatures(const wordle::Turn &turn);
+} // namespace detail
 
-TurnInputVector MaterializeTurnInput(const TurnInputFeatures &features);
+TurnInputFeatures EncodeTurnFeatures(const wordle::Turn &turn);
 
 } // namespace neuroevolution::model::input_encoder

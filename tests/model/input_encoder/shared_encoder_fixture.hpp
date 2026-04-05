@@ -19,7 +19,10 @@ public:
 
   model::input_encoder::TurnInputVector MaterializedInput() const {
     const auto features = model::input_encoder::EncodeTurnFeatures(turn);
-    return model::input_encoder::MaterializeTurnInput(features);
+    model::input_encoder::TurnInputVector materialized{};
+    model::input_encoder::detail::MaterializeTurnInputInPlace(features,
+                                                              materialized);
+    return materialized;
   }
 
   model::input_encoder::SharedEncoderParameters parameters{};
