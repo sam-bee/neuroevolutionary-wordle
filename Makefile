@@ -1,4 +1,4 @@
-.PHONY: configure build test smoke clean
+.PHONY: configure build test smoke clean build-and-test
 
 ifeq ($(wildcard .env),)
 ifneq ($(wildcard .env.example),)
@@ -29,3 +29,5 @@ smoke:
 
 clean:
 	rm -rf build
+
+build-and-test: clean configure build test smoke
