@@ -87,6 +87,7 @@ The repository includes a `Makefile` with the basic project commands:
 make configure
 make build
 make test
+make smoke
 make clean
 ```
 
@@ -95,6 +96,24 @@ The configure step runs the underlying CMake command:
 ```bash
 cmake -S . -B build -G Ninja
 ```
+
+## Local CUDA Device Selection
+
+The `Makefile` will create a local `.env` file from `.env.example` the first time you run it, if `.env` does not
+already exist.
+
+That `.env` file controls which CUDA device the `make smoke` command runs on:
+
+```dotenv
+CUDA_DEVICE_ORDER=PCI_BUS_ID
+CUDA_VISIBLE_DEVICES=0
+```
+
+The checked-in example assumes a **single-device machine**, where the only CUDA device is logical device `0`.
+
+If you want to choose a different GPU on a multi-device machine, change your local `.env` file and set
+`CUDA_VISIBLE_DEVICES` to the device you want. The `.env` file is machine-local and is ignored by git, so it is the
+right place for per-machine CUDA selection.
 
 ## Status
 
