@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstddef>
+#include <stdexcept>
 
 #include "model/input_encoder/encoder_spec.hpp"
 #include "model/input_encoder/shared_encoder.hpp"
@@ -29,6 +30,16 @@ class SharedEncoderGoldenFixture {
     model::input_encoder::EncodedTurnVector expected_output{};
 
   private:
+    static wordle::Word MakeWord(const char (&letters)[wordle::kWordLength + 1]) {
+        wordle::Word word{};
+
+        if (!wordle::TryMakeWordFromAscii(letters, word)) {
+            throw std::invalid_argument("Word fixture literal must contain exactly five uppercase ASCII letters.");
+        }
+
+        return word;
+    }
+
     static void PopulateParameters(model::input_encoder::SharedEncoderParameters &parameters) {
         using model::input_encoder::FeedbackFeatureOffset;
         using model::input_encoder::GuessLetterFeatureOffset;
@@ -78,7 +89,7 @@ class SharedEncoderGoldenFixture {
 
     static void PopulateTurn(wordle::Turn &turn) {
         turn = wordle::Turn{
-            .letter_indices = {{0, 1, 2, 3, 4}},
+            .guess = MakeWord("ABCDE"),
             .feedback = {{
                 wordle::TileFeedback::green,
                 wordle::TileFeedback::yellow,

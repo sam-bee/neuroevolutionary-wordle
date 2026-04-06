@@ -34,7 +34,7 @@ inline NEUROEVOLUTION_HOST_DEVICE bool TryEncodeTurnFeatures(const wordle::Turn 
     }
 
     for (std::size_t position = 0; position < wordle::kWordLength; ++position) {
-        const std::size_t letter_index = turn.letter_indices[position];
+        const std::size_t letter_index = turn.guess.letter_indices[position];
         const std::size_t letter_feature_index = GuessLetterFeatureOffset(position, letter_index);
         features.discrete[letter_feature_index] = 1u;
 

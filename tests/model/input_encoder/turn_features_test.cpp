@@ -3,6 +3,7 @@
 #include <cstdint>
 #include <initializer_list>
 #include <iostream>
+#include <stdexcept>
 #include <string_view>
 
 #include "model/input_encoder/encoder_spec.hpp"
@@ -19,6 +20,7 @@ using neuroevolution::model::input_encoder::TurnInputVector;
 using neuroevolution::model::input_encoder::detail::MaterializeTurnInputInPlace;
 using neuroevolution::wordle::TileFeedback;
 using neuroevolution::wordle::Turn;
+using neuroevolution::wordle::Word;
 
 bool ExpectTrue(const bool condition, const std::string_view message) {
     if (!condition) {
@@ -72,9 +74,19 @@ bool ExpectMaterializedFeaturesSet(const neuroevolution::model::input_encoder::T
     return ok;
 }
 
+Word MakeGoldenWord() {
+    Word word{};
+
+    if (!neuroevolution::wordle::TryMakeWordFromAscii("ABCDE", word)) {
+        throw std::invalid_argument("Golden turn literal must contain exactly five uppercase ASCII letters.");
+    }
+
+    return word;
+}
+
 bool TestEncodeTurnFeaturesGoldenCase() {
     const Turn turn{
-        .letter_indices = {{0, 1, 2, 3, 4}},
+        .guess = MakeGoldenWord(),
         .feedback = {{
             TileFeedback::green,
             TileFeedback::yellow,

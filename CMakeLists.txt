@@ -59,6 +59,18 @@ enable_project_warnings(shared_encoder_test)
 
 add_test(NAME shared_encoder_test COMMAND shared_encoder_test)
 
+add_executable(wordle_grid_test
+    tests/wordle/wordle_grid_test.cpp
+)
+
+target_include_directories(wordle_grid_test PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
+)
+
+enable_project_warnings(wordle_grid_test)
+
+add_test(NAME wordle_grid_test COMMAND wordle_grid_test)
+
 add_executable(input_encoder_device_smoke_test EXCLUDE_FROM_ALL
     tests/model/input_encoder/input_encoder_device_smoke_test.cu
 )

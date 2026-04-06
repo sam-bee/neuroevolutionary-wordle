@@ -5,11 +5,9 @@
 
 #include "common/cuda_compat.hpp"
 #include "common/fixed_buffer.hpp"
+#include "wordle/word.hpp"
 
 namespace neuroevolution::wordle {
-
-constexpr std::size_t kWordLength = 5;
-constexpr std::size_t kAlphabetSize = 26;
 
 enum class TileFeedback : std::uint8_t {
     green = 0,
@@ -18,13 +16,9 @@ enum class TileFeedback : std::uint8_t {
 };
 
 struct Turn {
-    common::FixedBuffer<std::uint8_t, kWordLength> letter_indices{};
+    Word guess{};
     common::FixedBuffer<TileFeedback, kWordLength> feedback{};
 };
-
-constexpr NEUROEVOLUTION_HOST_DEVICE bool IsValidLetterIndex(const std::uint8_t letter_index) noexcept {
-    return letter_index < kAlphabetSize;
-}
 
 constexpr NEUROEVOLUTION_HOST_DEVICE bool IsValidFeedback(const TileFeedback value) noexcept {
     switch (value) {
@@ -38,11 +32,11 @@ constexpr NEUROEVOLUTION_HOST_DEVICE bool IsValidFeedback(const TileFeedback val
 }
 
 constexpr NEUROEVOLUTION_HOST_DEVICE bool IsValidTurn(const Turn &turn) noexcept {
-    for (std::size_t position = 0; position < kWordLength; ++position) {
-        if (!IsValidLetterIndex(turn.letter_indices[position])) {
-            return false;
-        }
+    if (!IsValidWord(turn.guess)) {
+        return false;
+    }
 
+    for (std::size_t position = 0; position < kWordLength; ++position) {
         if (!IsValidFeedback(turn.feedback[position])) {
             return false;
         }
