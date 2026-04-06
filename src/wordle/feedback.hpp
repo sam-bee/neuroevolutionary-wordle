@@ -53,8 +53,8 @@ constexpr NEUROEVOLUTION_HOST_DEVICE TileFeedback FeedbackFromSymbol(const char 
 
 class Feedback;
 
-constexpr NEUROEVOLUTION_HOST_DEVICE bool TryMakeFeedbackFromSymbols(const common::FixedBuffer<char, kWordLength> &symbols,
-                                                                     Feedback &feedback) noexcept;
+constexpr NEUROEVOLUTION_HOST_DEVICE bool
+TryMakeFeedbackFromSymbols(const common::FixedBuffer<char, kWordLength> &symbols, Feedback &feedback) noexcept;
 
 class Feedback {
   public:
@@ -64,8 +64,7 @@ class Feedback {
 
     explicit Feedback(const common::FixedBuffer<char, kWordLength> &symbols) {
         if (!TryMakeFeedbackFromSymbols(symbols, *this)) {
-            throw std::invalid_argument(
-                "Feedback literal must contain exactly five symbols from {'G', 'Y', '-'}.");
+            throw std::invalid_argument("Feedback literal must contain exactly five symbols from {'G', 'Y', '-'}.");
         }
     }
 
@@ -88,8 +87,8 @@ class Feedback {
     }
 };
 
-constexpr NEUROEVOLUTION_HOST_DEVICE bool TryMakeFeedbackFromSymbols(const common::FixedBuffer<char, kWordLength> &symbols,
-                                                                     Feedback &feedback) noexcept {
+constexpr NEUROEVOLUTION_HOST_DEVICE bool
+TryMakeFeedbackFromSymbols(const common::FixedBuffer<char, kWordLength> &symbols, Feedback &feedback) noexcept {
     for (std::size_t position = 0; position < kWordLength; ++position) {
         if (!IsValidFeedbackSymbol(symbols[position])) {
             return false;

@@ -18,6 +18,8 @@ constexpr std::size_t kTurnFeatureCount = kGuessLetterFeatureCount + kFeedbackFe
 
 constexpr std::size_t kEncoderHiddenSize = 128;
 constexpr std::size_t kEncoderOutputSize = 64;
+constexpr std::size_t kModelInputTurnCount = 5;
+constexpr std::size_t kModelInputVectorSize = kModelInputTurnCount * kEncoderOutputSize;
 
 constexpr NEUROEVOLUTION_HOST_DEVICE std::size_t GuessLetterFeatureOffset(const std::size_t position,
                                                                           const std::size_t letter_index) noexcept {
@@ -27,6 +29,10 @@ constexpr NEUROEVOLUTION_HOST_DEVICE std::size_t GuessLetterFeatureOffset(const 
 constexpr NEUROEVOLUTION_HOST_DEVICE std::size_t FeedbackFeatureOffset(const std::size_t position,
                                                                        const std::size_t feedback_index) noexcept {
     return kGuessLetterFeatureCount + (position * kTileStateCount) + feedback_index;
+}
+
+constexpr NEUROEVOLUTION_HOST_DEVICE std::size_t ModelInputTurnOffset(const std::size_t turn_index) noexcept {
+    return turn_index * kEncoderOutputSize;
 }
 
 } // namespace neuroevolution::model::input_encoder

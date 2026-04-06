@@ -121,7 +121,7 @@ bool TestProvideFeedbackHandlesDuplicateLettersInSolution() {
 
 bool TestProvideFeedbackHandlesExcessDuplicateLettersInGuess() {
     const Feedback feedback = ProvideFeedback(MakeWord("LEVEL"), MakeWord("HELLO"));
-    return ExpectFeedbackEquals(feedback, Feedback{{'Y', 'G', '-', '-', '-'}}, "LEVEL vs HELLO");
+    return ExpectFeedbackEquals(feedback, Feedback{{'Y', 'G', '-', '-', 'Y'}}, "LEVEL vs HELLO");
 }
 
 bool TestWordleGridStartsEmptyAndStoresSolution() {

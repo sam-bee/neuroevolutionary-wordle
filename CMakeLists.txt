@@ -26,6 +26,7 @@ endfunction()
 add_library(input_encoder STATIC
     src/model/input_encoder/shared_encoder.cu
     src/model/input_encoder/turn_features.cpp
+    src/model/input_encoder/wordle_grid_state.cpp
 )
 
 target_include_directories(input_encoder PUBLIC
@@ -58,6 +59,18 @@ target_link_libraries(shared_encoder_test PRIVATE
 enable_project_warnings(shared_encoder_test)
 
 add_test(NAME shared_encoder_test COMMAND shared_encoder_test)
+
+add_executable(wordle_grid_state_test
+    tests/model/input_encoder/wordle_grid_state_test.cpp
+)
+
+target_link_libraries(wordle_grid_state_test PRIVATE
+    input_encoder
+)
+
+enable_project_warnings(wordle_grid_state_test)
+
+add_test(NAME wordle_grid_state_test COMMAND wordle_grid_state_test)
 
 add_executable(wordle_grid_test
     tests/wordle/wordle_grid_test.cpp
