@@ -10,6 +10,7 @@
 
 namespace {
 
+using neuroevolution::wordle::Feedback;
 using neuroevolution::wordle::IsValidWordleGrid;
 using neuroevolution::wordle::kMaxTurnCount;
 using neuroevolution::wordle::MakeWordleGrid;
@@ -72,6 +73,19 @@ bool ExpectAllGreyFeedback(const WordleGrid &grid, const std::size_t turn_index)
         }
     }
 
+    return ok;
+}
+
+bool TestFeedbackParsesReadableSymbols() {
+    const Feedback feedback{{'G', 'Y', '-', '-', 'G'}};
+
+    bool ok = true;
+    ok &= ExpectTrue(feedback.IsValid(), "Feedback literal should produce a valid feedback object");
+    ok &= ExpectTrue(feedback[0] == TileFeedback::green, "Expected 'G' to map to green");
+    ok &= ExpectTrue(feedback[1] == TileFeedback::yellow, "Expected 'Y' to map to yellow");
+    ok &= ExpectTrue(feedback[2] == TileFeedback::grey, "Expected '-' to map to grey");
+    ok &= ExpectTrue(feedback[3] == TileFeedback::grey, "Expected second '-' to map to grey");
+    ok &= ExpectTrue(feedback[4] == TileFeedback::green, "Expected trailing 'G' to map to green");
     return ok;
 }
 
@@ -152,6 +166,10 @@ bool TestWordleGridRejectsInvalidWords() {
 } // namespace
 
 int main() {
+    if (!TestFeedbackParsesReadableSymbols()) {
+        return 1;
+    }
+
     if (!TestWordleGridStartsEmptyAndStoresSolution()) {
         return 1;
     }

@@ -90,13 +90,7 @@ class SharedEncoderGoldenFixture {
     static void PopulateTurn(wordle::Turn &turn) {
         turn = wordle::Turn{
             .guess = MakeWord("ABCDE"),
-            .feedback = {{
-                wordle::TileFeedback::green,
-                wordle::TileFeedback::yellow,
-                wordle::TileFeedback::grey,
-                wordle::TileFeedback::green,
-                wordle::TileFeedback::yellow,
-            }},
+            .feedback = wordle::Feedback{{'G', 'Y', '-', 'G', 'Y'}},
         };
     }
 

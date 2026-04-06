@@ -87,13 +87,7 @@ Word MakeGoldenWord() {
 bool TestEncodeTurnFeaturesGoldenCase() {
     const Turn turn{
         .guess = MakeGoldenWord(),
-        .feedback = {{
-            TileFeedback::green,
-            TileFeedback::yellow,
-            TileFeedback::grey,
-            TileFeedback::green,
-            TileFeedback::yellow,
-        }},
+        .feedback = neuroevolution::wordle::Feedback{{'G', 'Y', '-', 'G', 'Y'}},
     };
 
     const auto features = EncodeTurnFeatures(turn);
