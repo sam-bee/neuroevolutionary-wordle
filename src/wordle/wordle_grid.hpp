@@ -30,9 +30,7 @@ struct WordleGrid {
     }
 };
 
-constexpr NEUROEVOLUTION_HOST_DEVICE Turn MakePendingTurn(const Word &guess, const Word &solution) noexcept {
-    (void)solution;
-
+constexpr NEUROEVOLUTION_HOST_DEVICE Turn MakePendingTurn(const Word &guess) noexcept {
     Turn turn{};
     turn.guess = guess;
 
@@ -73,7 +71,7 @@ inline NEUROEVOLUTION_HOST_DEVICE bool TryAppendGuess(WordleGrid &grid, const Wo
         return false;
     }
 
-    grid.turns[grid.turn_count] = MakePendingTurn(guess, grid.solution);
+    grid.turns[grid.turn_count] = MakePendingTurn(guess);
     ++grid.turn_count;
     return true;
 }
