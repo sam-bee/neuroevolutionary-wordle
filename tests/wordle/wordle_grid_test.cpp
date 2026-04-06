@@ -14,6 +14,7 @@ using neuroevolution::wordle::Feedback;
 using neuroevolution::wordle::IsValidWordleGrid;
 using neuroevolution::wordle::kMaxTurnCount;
 using neuroevolution::wordle::MakeWordleGrid;
+using neuroevolution::wordle::ProvideFeedback;
 using neuroevolution::wordle::TileFeedback;
 using neuroevolution::wordle::TryAppendGuess;
 using neuroevolution::wordle::Word;
@@ -63,12 +64,26 @@ bool ExpectWordEquals(const Word &actual, const Word &expected, const std::strin
     return ok;
 }
 
-bool ExpectAllGreyFeedback(const WordleGrid &grid, const std::size_t turn_index) {
+bool ExpectFeedbackEquals(const Feedback &actual, const Feedback &expected, const std::string_view label) {
     bool ok = true;
 
+    auto symbol_for = [](const TileFeedback value) -> char {
+        switch (value) {
+        case TileFeedback::green:
+            return 'G';
+        case TileFeedback::yellow:
+            return 'Y';
+        case TileFeedback::grey:
+            return '-';
+        }
+
+        return '?';
+    };
+
     for (std::size_t position = 0; position < neuroevolution::wordle::kWordLength; ++position) {
-        if (grid.turns[turn_index].feedback[position] != TileFeedback::grey) {
-            std::cerr << "FAIL: expected grey feedback at turn " << turn_index << ", position " << position << '\n';
+        if (actual[position] != expected[position]) {
+            std::cerr << "FAIL: " << label << " mismatch at position " << position << ", expected "
+                      << symbol_for(expected[position]) << ", got " << symbol_for(actual[position]) << '\n';
             ok = false;
         }
     }
@@ -89,6 +104,26 @@ bool TestFeedbackParsesReadableSymbols() {
     return ok;
 }
 
+bool TestProvideFeedbackMatchesWordleRules() {
+    const Feedback feedback = ProvideFeedback(MakeWord("CRANE"), MakeWord("SOLAR"));
+    return ExpectFeedbackEquals(feedback, Feedback{{'-', 'Y', 'Y', '-', '-'}}, "CRANE vs SOLAR");
+}
+
+bool TestProvideFeedbackHandlesDuplicateLettersInGuess() {
+    const Feedback feedback = ProvideFeedback(MakeWord("EERIE"), MakeWord("STEEL"));
+    return ExpectFeedbackEquals(feedback, Feedback{{'Y', 'Y', '-', '-', '-'}}, "EERIE vs STEEL");
+}
+
+bool TestProvideFeedbackHandlesDuplicateLettersInSolution() {
+    const Feedback feedback = ProvideFeedback(MakeWord("HELLO"), MakeWord("LEVEL"));
+    return ExpectFeedbackEquals(feedback, Feedback{{'-', 'G', 'Y', 'Y', '-'}}, "HELLO vs LEVEL");
+}
+
+bool TestProvideFeedbackHandlesExcessDuplicateLettersInGuess() {
+    const Feedback feedback = ProvideFeedback(MakeWord("LEVEL"), MakeWord("HELLO"));
+    return ExpectFeedbackEquals(feedback, Feedback{{'Y', 'G', '-', '-', '-'}}, "LEVEL vs HELLO");
+}
+
 bool TestWordleGridStartsEmptyAndStoresSolution() {
     const Word solution = MakeWord("SOLAR");
     const WordleGrid grid = MakeWordleGrid(solution);
@@ -102,7 +137,7 @@ bool TestWordleGridStartsEmptyAndStoresSolution() {
     return ok;
 }
 
-bool TestWordleGridAppendsTurnsWithTemporaryGreyFeedback() {
+bool TestWordleGridAppendsTurnsWithCorrectFeedback() {
     const Word solution = MakeWord("SOLAR");
     const Word guess = MakeWord("CRANE");
 
@@ -112,7 +147,8 @@ bool TestWordleGridAppendsTurnsWithTemporaryGreyFeedback() {
     ok &= ExpectTrue(TryAppendGuess(grid, guess), "Appending a valid guess should succeed");
     ok &= ExpectTrue(grid.turn_count == 1, "Grid should contain one turn after the first guess");
     ok &= ExpectWordEquals(grid.turns[0].guess, guess, "Stored guess");
-    ok &= ExpectAllGreyFeedback(grid, 0);
+    ok &= ExpectFeedbackEquals(grid.turns[0].feedback, Feedback{{'-', 'Y', 'Y', '-', '-'}},
+                               "Stored feedback for CRANE vs SOLAR");
     ok &= ExpectTrue(!grid.IsFinished(), "Grid should not be finished after one non-winning guess");
     ok &= ExpectTrue(!grid.IsWon(), "Grid should not be won after a non-matching guess");
     ok &= ExpectTrue(IsValidWordleGrid(grid), "Grid should remain valid after appending a guess");
@@ -170,11 +206,27 @@ int main() {
         return 1;
     }
 
+    if (!TestProvideFeedbackMatchesWordleRules()) {
+        return 1;
+    }
+
+    if (!TestProvideFeedbackHandlesExcessDuplicateLettersInGuess()) {
+        return 1;
+    }
+
+    if (!TestProvideFeedbackHandlesDuplicateLettersInSolution()) {
+        return 1;
+    }
+
+    if (!TestProvideFeedbackHandlesDuplicateLettersInGuess()) {
+        return 1;
+    }
+
     if (!TestWordleGridStartsEmptyAndStoresSolution()) {
         return 1;
     }
 
-    if (!TestWordleGridAppendsTurnsWithTemporaryGreyFeedback()) {
+    if (!TestWordleGridAppendsTurnsWithCorrectFeedback()) {
         return 1;
     }
 

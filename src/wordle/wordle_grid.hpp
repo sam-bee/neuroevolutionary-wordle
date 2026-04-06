@@ -30,14 +30,10 @@ struct WordleGrid {
     }
 };
 
-constexpr NEUROEVOLUTION_HOST_DEVICE Turn MakePendingTurn(const Word &guess) noexcept {
+inline NEUROEVOLUTION_HOST_DEVICE Turn MakeTurnWithFeedback(const Word &guess, const Word &solution) noexcept {
     Turn turn{};
     turn.guess = guess;
-
-    // Feedback scoring is not implemented yet, so every tile is grey for now.
-    for (std::size_t position = 0; position < kWordLength; ++position) {
-        turn.feedback[position] = TileFeedback::grey;
-    }
+    (void)TryProvideFeedback(guess, solution, turn.feedback);
 
     return turn;
 }
@@ -71,7 +67,7 @@ inline NEUROEVOLUTION_HOST_DEVICE bool TryAppendGuess(WordleGrid &grid, const Wo
         return false;
     }
 
-    grid.turns[grid.turn_count] = MakePendingTurn(guess);
+    grid.turns[grid.turn_count] = MakeTurnWithFeedback(guess, grid.solution);
     ++grid.turn_count;
     return true;
 }
