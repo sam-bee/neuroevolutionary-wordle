@@ -228,3 +228,20 @@ set_tests_properties(wordle_grid_device_e2e_test PROPERTIES
     LABELS "gpu;integration"
     RESOURCE_LOCK cuda_device
 )
+
+add_executable(output_embedding_device_e2e_test
+    tests/model/output_embedding/output_embedding_device_e2e_test.cu
+)
+
+target_link_libraries(output_embedding_device_e2e_test PRIVATE
+    output_embedding
+    policy_model
+)
+
+enable_project_warnings(output_embedding_device_e2e_test)
+
+add_test(NAME output_embedding_device_e2e_test COMMAND output_embedding_device_e2e_test)
+set_tests_properties(output_embedding_device_e2e_test PROPERTIES
+    LABELS "gpu;integration"
+    RESOURCE_LOCK cuda_device
+)
