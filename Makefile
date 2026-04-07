@@ -1,19 +1,24 @@
-.PHONY: configure build test smoke format clean build-and-test
+.PHONY: configure build test smoke format clean rebuild build-and-test
 
 -include .env
 
+export DOCKERCOMPOSE_UID
+export DOCKERCOMPOSE_GID
+export CUDA_DEVICE_ORDER
+export CUDA_VISIBLE_DEVICES
+
 FORMAT_FILES := $(shell find src tests -type f \( -name '*.hpp' -o -name '*.cpp' -o -name '*.cu' \) | sort)
 
-configure:
+configure: .env
 	cmake -S . -B build -G Ninja
 
-build: --env
+build: .env
 	cmake --build build
 
-test:
+test: .env
 	cd build && ctest --output-on-failure
 
-smoke:
+smoke: .env
 	cmake --build build --target input_encoder_device_smoke_test
 	./build/input_encoder_device_smoke_test
 
@@ -23,7 +28,10 @@ format:
 clean:
 	rm -rf build
 
-rebuild: --env clean format configure build test smoke
+rebuild: clean format configure build test smoke
 
---env:
-	@test -f .env || (echo ".env is missing. Please copy .env.example" >&2; exit 1)
+build-and-test: configure build test
+
+.env:
+	cp .env.example .env
+	@echo "Created .env from .env.example"

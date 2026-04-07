@@ -108,7 +108,7 @@ already exist.
 That `.env` file controls which CUDA device the `make smoke` command runs on:
 
 ```dotenv
-CUDA_DEVICE_ORDER=PCI_BUS_ID
+CUDA_DEVICE_ORDER=FASTEST_FIRST
 CUDA_VISIBLE_DEVICES=0
 ```
 
