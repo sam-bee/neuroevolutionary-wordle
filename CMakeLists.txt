@@ -26,7 +26,6 @@ endfunction()
 add_library(input_encoder STATIC
     src/model/input_encoder/shared_encoder.cu
     src/model/input_encoder/turn_features.cpp
-    src/model/input_encoder/wordle_grid_state.cpp
 )
 
 target_include_directories(input_encoder PUBLIC
@@ -35,6 +34,20 @@ target_include_directories(input_encoder PUBLIC
 )
 
 enable_project_warnings(input_encoder)
+
+add_library(model_input STATIC
+    src/model/model_input/wordle_grid_state.cpp
+)
+
+target_include_directories(model_input PUBLIC
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
+)
+
+target_link_libraries(model_input PUBLIC
+    input_encoder
+)
+
+enable_project_warnings(model_input)
 
 add_executable(turn_features_test
     tests/model/input_encoder/turn_features_test.cpp
@@ -65,7 +78,7 @@ add_executable(wordle_grid_state_test
 )
 
 target_link_libraries(wordle_grid_state_test PRIVATE
-    input_encoder
+    model_input
 )
 
 enable_project_warnings(wordle_grid_state_test)
@@ -89,7 +102,7 @@ add_executable(input_encoder_device_smoke_test EXCLUDE_FROM_ALL
 )
 
 target_link_libraries(input_encoder_device_smoke_test PRIVATE
-    input_encoder
+    model_input
 )
 
 enable_project_warnings(input_encoder_device_smoke_test)

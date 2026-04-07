@@ -6,7 +6,7 @@
 
 #include "model/input_encoder/encoder_spec.hpp"
 #include "model/input_encoder/shared_encoder.hpp"
-#include "model/input_encoder/wordle_grid_state.hpp"
+#include "model/model_input/wordle_grid_state.hpp"
 #include "shared_encoder_fixture.hpp"
 #include "wordle/word.hpp"
 #include "wordle/wordle_grid.hpp"
@@ -14,12 +14,12 @@
 namespace {
 
 using neuroevolution::model::input_encoder::EncodedTurnVector;
-using neuroevolution::model::input_encoder::EncodeWordleGridState;
 using neuroevolution::model::input_encoder::ForwardOccupiedTurn;
 using neuroevolution::model::input_encoder::kEncoderOutputSize;
-using neuroevolution::model::input_encoder::kModelInputTurnCount;
-using neuroevolution::model::input_encoder::ModelInputStateVector;
-using neuroevolution::model::input_encoder::ModelInputTurnOffset;
+using neuroevolution::model::model_input::EncodeWordleGridState;
+using neuroevolution::model::model_input::kModelInputTurnCount;
+using neuroevolution::model::model_input::ModelInputStateVector;
+using neuroevolution::model::model_input::ModelInputTurnOffset;
 using neuroevolution::tests::input_encoder::SharedEncoderGoldenFixture;
 using neuroevolution::wordle::MakeWordleGrid;
 using neuroevolution::wordle::TryAppendGuess;

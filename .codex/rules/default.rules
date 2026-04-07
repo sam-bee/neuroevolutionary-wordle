@@ -1,0 +1,32 @@
+# .codex/rules/default.rules
+
+prefix_rule(
+    pattern = ["make"],
+    decision = "allow",
+    justification = "Allow make commands without prompting",
+    match = [
+        "make",
+        "make test",
+        "make rebuild",
+        "make -j8",
+    ],
+    not_match = [
+        "cmake -S . -B build",
+    ],
+)
+
+prefix_rule(
+    pattern = ["git"],
+    decision = "allow",
+    justification = "Allow git commands without prompting",
+    match = [
+        "git status",
+        "git diff",
+        "git add",
+        "git commit",
+    ],
+    not_match = [
+        "gh pr view 123",
+    ],
+)
+

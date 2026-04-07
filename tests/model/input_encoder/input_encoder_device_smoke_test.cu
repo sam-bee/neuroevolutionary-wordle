@@ -6,16 +6,16 @@
 #include <stdexcept>
 #include <string_view>
 
-#include "model/input_encoder/wordle_grid_state.hpp"
+#include "model/model_input/wordle_grid_state.hpp"
 #include "shared_encoder_fixture.hpp"
 
 namespace {
 
-using neuroevolution::model::input_encoder::EncodeWordleGridState;
-using neuroevolution::model::input_encoder::kModelInputVectorSize;
-using neuroevolution::model::input_encoder::ModelInputStateVector;
 using neuroevolution::model::input_encoder::SharedEncoderParameters;
-using neuroevolution::model::input_encoder::TryEncodeWordleGridState;
+using neuroevolution::model::model_input::EncodeWordleGridState;
+using neuroevolution::model::model_input::kModelInputVectorSize;
+using neuroevolution::model::model_input::ModelInputStateVector;
+using neuroevolution::model::model_input::TryEncodeWordleGridState;
 using neuroevolution::tests::input_encoder::SharedEncoderGoldenFixture;
 using neuroevolution::wordle::MakeWordleGrid;
 using neuroevolution::wordle::TryMakeWordFromAscii;

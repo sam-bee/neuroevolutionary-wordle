@@ -10,8 +10,8 @@
 namespace {
 
 using neuroevolution::model::input_encoder::EncodedTurnVector;
-using neuroevolution::model::input_encoder::ForwardSharedEncoder;
 using neuroevolution::model::input_encoder::ForwardOccupiedTurn;
+using neuroevolution::model::input_encoder::ForwardSharedEncoder;
 using neuroevolution::model::input_encoder::kEncoderOutputSize;
 using neuroevolution::tests::input_encoder::SharedEncoderGoldenFixture;
 
