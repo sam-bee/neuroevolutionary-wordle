@@ -21,7 +21,7 @@ class SharedEncoderGoldenFixture {
     model::input_encoder::TurnInputVector MaterializedInput() const {
         const auto features = model::input_encoder::EncodeTurnFeatures(turn);
         model::input_encoder::TurnInputVector materialized{};
-        model::input_encoder::detail::MaterializeTurnInputInPlace(features, materialized);
+        model::input_encoder::MaterializeTurnInputInPlace(features, materialized);
         return materialized;
     }
 

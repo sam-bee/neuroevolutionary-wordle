@@ -10,9 +10,9 @@
 namespace {
 
 using neuroevolution::model::input_encoder::EncodedTurnVector;
+using neuroevolution::model::input_encoder::ForwardSharedEncoder;
 using neuroevolution::model::input_encoder::ForwardOccupiedTurn;
 using neuroevolution::model::input_encoder::kEncoderOutputSize;
-using neuroevolution::model::input_encoder::detail::ForwardSharedEncoder;
 using neuroevolution::tests::input_encoder::SharedEncoderGoldenFixture;
 
 constexpr float kTolerance = 1.0e-6f;

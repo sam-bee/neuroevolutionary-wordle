@@ -15,7 +15,7 @@ using neuroevolution::model::input_encoder::EncodeWordleGridState;
 using neuroevolution::model::input_encoder::kModelInputVectorSize;
 using neuroevolution::model::input_encoder::ModelInputStateVector;
 using neuroevolution::model::input_encoder::SharedEncoderParameters;
-using neuroevolution::model::input_encoder::detail::TryEncodeWordleGridState;
+using neuroevolution::model::input_encoder::TryEncodeWordleGridState;
 using neuroevolution::tests::input_encoder::SharedEncoderGoldenFixture;
 using neuroevolution::wordle::MakeWordleGrid;
 using neuroevolution::wordle::TryMakeWordFromAscii;

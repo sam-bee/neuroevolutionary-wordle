@@ -57,30 +57,30 @@ inline NEUROEVOLUTION_HOST_DEVICE void ApplyReLU(EncoderHiddenVector &activation
     }
 }
 
+} // namespace detail
+
 inline NEUROEVOLUTION_HOST_DEVICE void ForwardSharedEncoder(const SharedEncoderParameters &parameters,
                                                             const TurnInputVector &input_vector,
                                                             EncodedTurnVector &encoded_turn) noexcept {
     EncoderHiddenVector hidden{};
-    ApplyDenseLayer(parameters.input_to_hidden, input_vector, hidden);
-    ApplyReLU(hidden);
-    ApplyDenseLayer(parameters.hidden_to_output, hidden, encoded_turn);
+    detail::ApplyDenseLayer(parameters.input_to_hidden, input_vector, hidden);
+    detail::ApplyReLU(hidden);
+    detail::ApplyDenseLayer(parameters.hidden_to_output, hidden, encoded_turn);
 }
 
 inline NEUROEVOLUTION_HOST_DEVICE bool TryForwardOccupiedTurn(const SharedEncoderParameters &parameters,
                                                               const wordle::Turn &turn,
                                                               EncodedTurnVector &encoded_turn) noexcept {
     TurnInputFeatures features{};
-    if (!detail::TryEncodeTurnFeatures(turn, features)) {
+    if (!TryEncodeTurnFeatures(turn, features)) {
         return false;
     }
 
     TurnInputVector input_vector{};
-    detail::MaterializeTurnInputInPlace(features, input_vector);
+    MaterializeTurnInputInPlace(features, input_vector);
     ForwardSharedEncoder(parameters, input_vector, encoded_turn);
     return true;
 }
-
-} // namespace detail
 
 EncodedTurnVector ForwardOccupiedTurn(const SharedEncoderParameters &parameters, const wordle::Turn &turn);
 

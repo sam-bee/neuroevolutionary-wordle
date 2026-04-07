@@ -23,6 +23,8 @@ constexpr NEUROEVOLUTION_HOST_DEVICE std::size_t FeedbackIndex(const wordle::Til
     return static_cast<std::size_t>(feedback);
 }
 
+} // namespace detail
+
 inline NEUROEVOLUTION_HOST_DEVICE bool TryEncodeTurnFeatures(const wordle::Turn &turn,
                                                              TurnInputFeatures &features) noexcept {
     if (!wordle::IsValidTurn(turn)) {
@@ -52,8 +54,6 @@ inline NEUROEVOLUTION_HOST_DEVICE void MaterializeTurnInputInPlace(const TurnInp
         materialized[feature_index] = static_cast<float>(features.discrete[feature_index]);
     }
 }
-
-} // namespace detail
 
 TurnInputFeatures EncodeTurnFeatures(const wordle::Turn &turn);
 

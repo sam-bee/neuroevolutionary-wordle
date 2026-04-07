@@ -36,14 +36,17 @@ inline NEUROEVOLUTION_HOST_DEVICE void WriteEncodedTurnToModelInput(const Encode
     }
 }
 
+} // namespace detail
+
 inline NEUROEVOLUTION_HOST_DEVICE bool TryEncodeWordleGridState(const SharedEncoderParameters &parameters,
                                                                 const wordle::WordleGrid &grid,
                                                                 ModelInputStateVector &model_input_state) noexcept {
-    if (!wordle::IsValidWordleGrid(grid) || !IsValidModelInputStateTurnCount(grid.turn_count) || grid.IsFinished()) {
+    if (!wordle::IsValidWordleGrid(grid) || !detail::IsValidModelInputStateTurnCount(grid.turn_count) ||
+        grid.IsFinished()) {
         return false;
     }
 
-    ZeroModelInputState(model_input_state);
+    detail::ZeroModelInputState(model_input_state);
 
     for (std::size_t turn_index = 0; turn_index < grid.turn_count; ++turn_index) {
         EncodedTurnVector encoded_turn{};
@@ -51,13 +54,11 @@ inline NEUROEVOLUTION_HOST_DEVICE bool TryEncodeWordleGridState(const SharedEnco
             return false;
         }
 
-        WriteEncodedTurnToModelInput(encoded_turn, turn_index, model_input_state);
+        detail::WriteEncodedTurnToModelInput(encoded_turn, turn_index, model_input_state);
     }
 
     return true;
 }
-
-} // namespace detail
 
 ModelInputStateVector EncodeWordleGridState(const SharedEncoderParameters &parameters, const wordle::WordleGrid &grid);
 

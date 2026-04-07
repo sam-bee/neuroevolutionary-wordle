@@ -7,7 +7,7 @@ namespace neuroevolution::model::input_encoder {
 ModelInputStateVector EncodeWordleGridState(const SharedEncoderParameters &parameters, const wordle::WordleGrid &grid) {
     ModelInputStateVector model_input_state{};
 
-    if (!detail::TryEncodeWordleGridState(parameters, grid, model_input_state)) {
+    if (!TryEncodeWordleGridState(parameters, grid, model_input_state)) {
         throw std::invalid_argument(
             "Wordle grid must be a valid, non-terminal decision state with at most five turns.");
     }
