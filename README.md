@@ -90,9 +90,15 @@ The repository includes a `Makefile` with the basic project commands:
 make configure
 make build
 make test
+make test-cpu
+make test-gpu
+make test-gpu-sanitized
 make smoke
 make clean
 ```
+
+For end-to-end verification after a change, `make rebuild` is the preferred command. It reformats the code, rebuilds the
+project from scratch, and runs the full test suite, including the GPU-backed test.
 
 The configure step runs the underlying CMake command:
 
@@ -105,12 +111,16 @@ cmake -S . -B build -G Ninja
 The `Makefile` will create a local `.env` file from `.env.example` the first time you run it, if `.env` does not
 already exist.
 
-That `.env` file controls which CUDA device the `make smoke` command runs on:
+That `.env` file controls which CUDA device the GPU-backed test commands run on:
 
 ```dotenv
 CUDA_DEVICE_ORDER=FASTEST_FIRST
 CUDA_VISIBLE_DEVICES=0
 ```
+
+`make test` now includes the GPU smoke test by default. Use `make test-cpu` when you want to skip GPU coverage, and
+use `make test-gpu-sanitized` to run the device smoke test under `compute-sanitizer`. When you want the strongest local
+confirmation that a change is sound, use `make rebuild`.
 
 The checked-in example assumes a **single-device machine**, where the only CUDA device is logical device `0`.
 

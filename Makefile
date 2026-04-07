@@ -1,4 +1,4 @@
-.PHONY: configure build test smoke format clean rebuild build-and-test
+.PHONY: configure build test test-cpu test-gpu test-gpu-sanitized smoke format clean rebuild build-and-test
 
 -include .env
 
@@ -18,9 +18,17 @@ build: .env
 test: .env
 	cd build && ctest --output-on-failure
 
-smoke: .env
+test-cpu: .env
+	cd build && ctest --output-on-failure -L cpu
+
+test-gpu: .env
+	cd build && ctest --output-on-failure -L gpu
+
+test-gpu-sanitized: .env
 	cmake --build build --target input_encoder_device_smoke_test
-	./build/input_encoder_device_smoke_test
+	compute-sanitizer --error-exitcode=1 ./build/input_encoder_device_smoke_test
+
+smoke: test-gpu
 
 format:
 	clang-format -i $(FORMAT_FILES)
@@ -28,7 +36,7 @@ format:
 clean:
 	rm -rf build
 
-rebuild: clean format configure build test smoke
+rebuild: clean format configure build test
 
 build-and-test: configure build test
 

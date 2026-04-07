@@ -10,6 +10,9 @@ project, please see `docs/neural-net-design/neural-net-design.md` for more infor
 All there is to be said about this initially is that we are using CUDA. Target Nvidia Compute Compatibility level is
 12.0. Target hardware is an RTX 5070 Ti GPU with 16Gb of VRAM.
 
+For build-and-test feedback, prefer `make rebuild`. That is the project's best end-to-end verification command: it
+reformats the code, performs a clean rebuild, and runs the full test suite, including GPU-backed coverage.
+
 ## Coding Guidelines
 
 Writing unit tests first with Test Driven Development may help the agent, or it may not. A coding agent should think
@@ -53,6 +56,10 @@ agent's job to fix it if, for example:
 
 Agents MUST NOT attempt to fix such problems. Your job is not to install things. Please escalate any such issues to the
 user, who will do the necessary systems administration for you.
+
+If you need test feedback and your sandbox does not expose the CUDA device correctly, you should request permission to
+run `make rebuild` outside the sandbox by default rather than treating GPU tests as optional. GPU-backed testing is a
+normal and expected part of development on this project, and agents are allowed to use it.
 
 ## No-Go Areas
 

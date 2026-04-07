@@ -60,6 +60,9 @@ target_link_libraries(turn_features_test PRIVATE
 enable_project_warnings(turn_features_test)
 
 add_test(NAME turn_features_test COMMAND turn_features_test)
+set_tests_properties(turn_features_test PROPERTIES
+    LABELS "cpu;unit"
+)
 
 add_executable(shared_encoder_test
     tests/model/input_encoder/shared_encoder_test.cpp
@@ -72,6 +75,9 @@ target_link_libraries(shared_encoder_test PRIVATE
 enable_project_warnings(shared_encoder_test)
 
 add_test(NAME shared_encoder_test COMMAND shared_encoder_test)
+set_tests_properties(shared_encoder_test PROPERTIES
+    LABELS "cpu;unit"
+)
 
 add_executable(wordle_grid_state_test
     tests/model/input_encoder/wordle_grid_state_test.cpp
@@ -84,6 +90,9 @@ target_link_libraries(wordle_grid_state_test PRIVATE
 enable_project_warnings(wordle_grid_state_test)
 
 add_test(NAME wordle_grid_state_test COMMAND wordle_grid_state_test)
+set_tests_properties(wordle_grid_state_test PROPERTIES
+    LABELS "cpu;unit"
+)
 
 add_executable(wordle_grid_test
     tests/wordle/wordle_grid_test.cpp
@@ -96,8 +105,11 @@ target_include_directories(wordle_grid_test PRIVATE
 enable_project_warnings(wordle_grid_test)
 
 add_test(NAME wordle_grid_test COMMAND wordle_grid_test)
+set_tests_properties(wordle_grid_test PROPERTIES
+    LABELS "cpu;unit"
+)
 
-add_executable(input_encoder_device_smoke_test EXCLUDE_FROM_ALL
+add_executable(input_encoder_device_smoke_test
     tests/model/input_encoder/input_encoder_device_smoke_test.cu
 )
 
@@ -106,3 +118,9 @@ target_link_libraries(input_encoder_device_smoke_test PRIVATE
 )
 
 enable_project_warnings(input_encoder_device_smoke_test)
+
+add_test(NAME input_encoder_device_smoke_test COMMAND input_encoder_device_smoke_test)
+set_tests_properties(input_encoder_device_smoke_test PROPERTIES
+    LABELS "gpu;integration"
+    RESOURCE_LOCK cuda_device
+)
