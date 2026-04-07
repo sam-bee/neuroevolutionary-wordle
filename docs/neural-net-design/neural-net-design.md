@@ -232,15 +232,18 @@ They correspond to letters `A-Z`.
 
 For each such dimension:
 
-- `+1` if the corresponding letter appears at least once in the word
+- `+1` if the corresponding letter appears once in the word
+- `+2` if the corresponding letter appears twice in the word
+- and so on up to the actual count in the word
 - `-1` if the corresponding letter does not appear in the word
 
-This is a **presence-only** encoding. It does not encode counts.
+This is a **count-aware** encoding over the action word itself.
 
 Example:
 
 - for `CRASS`, the `A` dimension is `+1`
 - for `CRASS`, the `B` dimension is `-1`
+- for `CRASS`, the `S` dimension is `+2`
 
 ### 9.2 Trainable dimensions
 

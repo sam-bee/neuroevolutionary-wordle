@@ -78,6 +78,20 @@ target_link_libraries(policy_model PUBLIC
 
 enable_project_warnings(policy_model)
 
+add_library(output_embedding STATIC
+    src/model/output_embedding/output_embedding.cpp
+)
+
+target_include_directories(output_embedding PUBLIC
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
+)
+
+target_link_libraries(output_embedding PUBLIC
+    dense_trunk
+)
+
+enable_project_warnings(output_embedding)
+
 add_executable(turn_features_test
     tests/model/input_encoder/turn_features_test.cpp
 )
@@ -165,6 +179,21 @@ enable_project_warnings(policy_model_test)
 
 add_test(NAME policy_model_test COMMAND policy_model_test)
 set_tests_properties(policy_model_test PROPERTIES
+    LABELS "cpu;unit"
+)
+
+add_executable(output_embedding_test
+    tests/model/output_embedding/output_embedding_test.cpp
+)
+
+target_link_libraries(output_embedding_test PRIVATE
+    output_embedding
+)
+
+enable_project_warnings(output_embedding_test)
+
+add_test(NAME output_embedding_test COMMAND output_embedding_test)
+set_tests_properties(output_embedding_test PROPERTIES
     LABELS "cpu;unit"
 )
 
