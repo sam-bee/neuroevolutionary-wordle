@@ -6,42 +6,27 @@
 #include <stdexcept>
 #include <string_view>
 
-#include "model/model_input/wordle_grid_state.hpp"
-#include "shared_encoder_fixture.hpp"
+#include "../policy_model/policy_model_fixture.hpp"
+#include "model/policy_model/policy_model.hpp"
 #include "wordle/word.hpp"
 #include "wordle/wordle_grid.hpp"
 
 namespace {
 
-using neuroevolution::model::input_encoder::kEncoderOutputSize;
-using neuroevolution::model::input_encoder::SharedEncoderParameters;
-using neuroevolution::model::model_input::kModelInputVectorSize;
-using neuroevolution::model::model_input::kModelInputVirginFlagOffset;
-using neuroevolution::model::model_input::ModelInputStateVector;
-using neuroevolution::model::model_input::ModelInputTurnOffset;
-using neuroevolution::model::model_input::TryEncodeWordleGridState;
-using neuroevolution::tests::input_encoder::SharedEncoderGoldenFixture;
+using neuroevolution::model::dense_trunk::kDenseTrunkOutputSize;
+using neuroevolution::model::policy_model::PolicyModelParameters;
+using neuroevolution::model::policy_model::PolicyVector;
+using neuroevolution::model::policy_model::TryForwardPolicyModel;
+using neuroevolution::tests::policy_model::PolicyModelGoldenFixture;
 using neuroevolution::wordle::MakeWordleGrid;
 using neuroevolution::wordle::TryAppendGuess;
-using neuroevolution::wordle::TryMakeWordFromAscii;
 using neuroevolution::wordle::Word;
 using neuroevolution::wordle::WordleGrid;
 
 constexpr float kTolerance = 1.0e-6f;
 constexpr int kSelectedVisibleDeviceIndex = 0;
 constexpr int kStatusAppendGuessFailed = 1;
-constexpr int kStatusEncodeFailed = 2;
-
-Word MakeWord(const char (&letters)[neuroevolution::wordle::kWordLength + 1]) {
-    Word word{};
-
-    if (!TryMakeWordFromAscii(letters, word)) {
-        throw std::invalid_argument(
-            "Device end-to-end test word literal must contain exactly five uppercase ASCII letters.");
-    }
-
-    return word;
-}
+constexpr int kStatusPolicyForwardFailed = 2;
 
 bool CheckCuda(const cudaError_t error, const std::string_view action) {
     if (error != cudaSuccess) {
@@ -93,10 +78,10 @@ bool SelectVisibleCudaDevice() {
     return true;
 }
 
-bool ExpectVectorNear(const ModelInputStateVector &actual, const ModelInputStateVector &expected) {
+bool ExpectVectorNear(const PolicyVector &actual, const PolicyVector &expected) {
     bool ok = true;
 
-    for (std::size_t index = 0; index < kModelInputVectorSize; ++index) {
+    for (std::size_t index = 0; index < kDenseTrunkOutputSize; ++index) {
         const float delta = std::fabs(actual[index] - expected[index]);
         if (delta > kTolerance) {
             std::cerr << "FAIL: output mismatch at index " << index << ", expected " << expected[index] << ", got "
@@ -108,20 +93,8 @@ bool ExpectVectorNear(const ModelInputStateVector &actual, const ModelInputState
     return ok;
 }
 
-ModelInputStateVector MakeExpectedOutput(const SharedEncoderGoldenFixture &fixture) {
-    ModelInputStateVector expected{};
-    expected[kModelInputVirginFlagOffset] = 0.0f;
-
-    const std::size_t first_turn_offset = ModelInputTurnOffset(0);
-    for (std::size_t value_index = 0; value_index < kEncoderOutputSize; ++value_index) {
-        expected[first_turn_offset + value_index] = fixture.expected_output[value_index];
-    }
-
-    return expected;
-}
-
-__global__ void WordleGridDeviceEndToEndKernel(const SharedEncoderParameters *parameters, const Word *solution,
-                                               const Word *guess, ModelInputStateVector *output, int *status) {
+__global__ void WordleGridDeviceEndToEndKernel(const PolicyModelParameters *parameters, const Word *solution,
+                                               const Word *guess, PolicyVector *output, int *status) {
     if ((blockIdx.x != 0) || (threadIdx.x != 0)) {
         return;
     }
@@ -132,13 +105,13 @@ __global__ void WordleGridDeviceEndToEndKernel(const SharedEncoderParameters *pa
         return;
     }
 
-    ModelInputStateVector encoded_state{};
-    if (!TryEncodeWordleGridState(*parameters, grid, encoded_state)) {
-        *status = kStatusEncodeFailed;
+    PolicyVector policy_output{};
+    if (!TryForwardPolicyModel(*parameters, grid, policy_output)) {
+        *status = kStatusPolicyForwardFailed;
         return;
     }
 
-    *output = encoded_state;
+    *output = policy_output;
     *status = 0;
 }
 
@@ -149,15 +122,15 @@ int main() {
         return 1;
     }
 
-    const SharedEncoderGoldenFixture fixture{};
-    const Word solution = MakeWord("AEBDF");
-    const Word guess = MakeWord("ABCDE");
-    const ModelInputStateVector expected_output = MakeExpectedOutput(fixture);
+    const PolicyModelGoldenFixture fixture{};
+    const Word solution = fixture.solution;
+    const Word guess = fixture.guess;
+    const PolicyVector expected_output = fixture.expected_single_turn_output;
 
-    SharedEncoderParameters *device_parameters = nullptr;
+    PolicyModelParameters *device_parameters = nullptr;
     Word *device_solution = nullptr;
     Word *device_guess = nullptr;
-    ModelInputStateVector *device_output = nullptr;
+    PolicyVector *device_output = nullptr;
     int *device_status = nullptr;
 
     bool ok = true;
@@ -165,13 +138,13 @@ int main() {
     ok &= CheckCuda(cudaMalloc(&device_parameters, sizeof(fixture.parameters)), "allocating encoder parameters");
     ok &= CheckCuda(cudaMalloc(&device_solution, sizeof(solution)), "allocating solution input");
     ok &= CheckCuda(cudaMalloc(&device_guess, sizeof(guess)), "allocating guess input");
-    ok &= CheckCuda(cudaMalloc(&device_output, sizeof(ModelInputStateVector)), "allocating output buffer");
+    ok &= CheckCuda(cudaMalloc(&device_output, sizeof(PolicyVector)), "allocating output buffer");
     ok &= CheckCuda(cudaMalloc(&device_status, sizeof(int)), "allocating status buffer");
 
     if (ok) {
         ok &= CheckCuda(
             cudaMemcpy(device_parameters, &fixture.parameters, sizeof(fixture.parameters), cudaMemcpyHostToDevice),
-            "copying encoder parameters to device");
+            "copying policy-model parameters to device");
         ok &= CheckCuda(cudaMemcpy(device_solution, &solution, sizeof(solution), cudaMemcpyHostToDevice),
                         "copying solution input to device");
         ok &= CheckCuda(cudaMemcpy(device_guess, &guess, sizeof(guess), cudaMemcpyHostToDevice),
@@ -185,12 +158,12 @@ int main() {
         ok &= CheckCuda(cudaDeviceSynchronize(), "waiting for wordle-grid device end-to-end kernel completion");
     }
 
-    ModelInputStateVector host_output{};
+    PolicyVector host_output{};
     int host_status = -1;
 
     if (ok) {
-        ok &= CheckCuda(cudaMemcpy(&host_output, device_output, sizeof(ModelInputStateVector), cudaMemcpyDeviceToHost),
-                        "copying encoded output back to host");
+        ok &= CheckCuda(cudaMemcpy(&host_output, device_output, sizeof(PolicyVector), cudaMemcpyDeviceToHost),
+                        "copying policy output back to host");
         ok &= CheckCuda(cudaMemcpy(&host_status, device_status, sizeof(int), cudaMemcpyDeviceToHost),
                         "copying kernel status back to host");
     }
@@ -200,8 +173,8 @@ int main() {
         ok = false;
     }
 
-    if (ok && (host_status == kStatusEncodeFailed)) {
-        std::cerr << "FAIL: device kernel could not encode the device-built grid\n";
+    if (ok && (host_status == kStatusPolicyForwardFailed)) {
+        std::cerr << "FAIL: device kernel could not forward the device-built grid through the policy model\n";
         ok = false;
     }
 

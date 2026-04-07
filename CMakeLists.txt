@@ -64,6 +64,20 @@ target_link_libraries(dense_trunk PUBLIC
 
 enable_project_warnings(dense_trunk)
 
+add_library(policy_model STATIC
+    src/model/policy_model/policy_model.cpp
+)
+
+target_include_directories(policy_model PUBLIC
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
+)
+
+target_link_libraries(policy_model PUBLIC
+    dense_trunk
+)
+
+enable_project_warnings(policy_model)
+
 add_executable(turn_features_test
     tests/model/input_encoder/turn_features_test.cpp
 )
@@ -139,6 +153,21 @@ set_tests_properties(dense_trunk_test PROPERTIES
     LABELS "cpu;unit"
 )
 
+add_executable(policy_model_test
+    tests/model/policy_model/policy_model_test.cpp
+)
+
+target_link_libraries(policy_model_test PRIVATE
+    policy_model
+)
+
+enable_project_warnings(policy_model_test)
+
+add_test(NAME policy_model_test COMMAND policy_model_test)
+set_tests_properties(policy_model_test PROPERTIES
+    LABELS "cpu;unit"
+)
+
 add_executable(input_encoder_device_smoke_test
     tests/model/input_encoder/input_encoder_device_smoke_test.cu
 )
@@ -160,7 +189,7 @@ add_executable(wordle_grid_device_e2e_test
 )
 
 target_link_libraries(wordle_grid_device_e2e_test PRIVATE
-    model_input
+    policy_model
 )
 
 enable_project_warnings(wordle_grid_device_e2e_test)
