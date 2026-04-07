@@ -39,7 +39,7 @@ inline NEUROEVOLUTION_HOST_DEVICE void WriteEncodedTurnToModelInput(const Encode
 inline NEUROEVOLUTION_HOST_DEVICE bool TryEncodeWordleGridState(const SharedEncoderParameters &parameters,
                                                                 const wordle::WordleGrid &grid,
                                                                 ModelInputStateVector &model_input_state) noexcept {
-    if (!wordle::IsValidWordleGrid(grid) || !IsValidModelInputStateTurnCount(grid.turn_count)) {
+    if (!wordle::IsValidWordleGrid(grid) || !IsValidModelInputStateTurnCount(grid.turn_count) || grid.IsFinished()) {
         return false;
     }
 

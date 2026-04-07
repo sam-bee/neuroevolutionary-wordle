@@ -166,6 +166,22 @@ bool TestEncodeWordleGridStateRejectsSixTurnTerminalBoard() {
     return false;
 }
 
+bool TestEncodeWordleGridStateRejectsWonBoard() {
+    const SharedEncoderGoldenFixture fixture{};
+    WordleGrid grid = MakeWordleGrid(MakeWord("SOLAR"));
+    AppendGuessOrThrow(grid, "CRANE");
+    AppendGuessOrThrow(grid, "SOLAR");
+
+    try {
+        (void)EncodeWordleGridState(fixture.parameters, grid);
+    } catch (const std::invalid_argument &) {
+        return true;
+    }
+
+    std::cerr << "FAIL: won grid should not be encodable as a next-guess decision state\n";
+    return false;
+}
+
 } // namespace
 
 int main() {
@@ -186,6 +202,10 @@ int main() {
     }
 
     if (!TestEncodeWordleGridStateRejectsSixTurnTerminalBoard()) {
+        return 1;
+    }
+
+    if (!TestEncodeWordleGridStateRejectsWonBoard()) {
         return 1;
     }
 

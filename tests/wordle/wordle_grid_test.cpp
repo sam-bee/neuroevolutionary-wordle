@@ -177,6 +177,7 @@ bool TestWordleGridFinishesAfterSixTurns() {
 bool TestWordleGridReportsWinWhenAnyGuessMatchesSolution() {
     const Word solution = MakeWord("SOLAR");
     const Word opening_guess = MakeWord("CRANE");
+    const Word extra_guess = MakeWord("ALERT");
 
     WordleGrid grid = MakeWordleGrid(solution);
 
@@ -184,7 +185,8 @@ bool TestWordleGridReportsWinWhenAnyGuessMatchesSolution() {
     ok &= ExpectTrue(TryAppendGuess(grid, opening_guess), "Opening non-winning guess should append successfully");
     ok &= ExpectTrue(TryAppendGuess(grid, solution), "Solution guess should append successfully");
     ok &= ExpectTrue(grid.IsWon(), "Grid should report won when a stored guess matches the solution");
-    ok &= ExpectTrue(!grid.IsFinished(), "Grid should not report finished before six turns are taken");
+    ok &= ExpectTrue(grid.IsFinished(), "Grid should report finished immediately after a winning guess");
+    ok &= ExpectTrue(!TryAppendGuess(grid, extra_guess), "Solved grid should reject any later guesses");
     return ok;
 }
 

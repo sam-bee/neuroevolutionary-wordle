@@ -15,8 +15,6 @@ struct WordleGrid {
     common::FixedBuffer<Turn, kMaxTurnCount> turns{};
     std::size_t turn_count = 0;
 
-    constexpr NEUROEVOLUTION_HOST_DEVICE bool IsFinished() const noexcept { return turn_count >= kMaxTurnCount; }
-
     constexpr NEUROEVOLUTION_HOST_DEVICE bool IsWon() const noexcept {
         const std::size_t turns_to_check = (turn_count < kMaxTurnCount) ? turn_count : kMaxTurnCount;
 
@@ -27,6 +25,10 @@ struct WordleGrid {
         }
 
         return false;
+    }
+
+    constexpr NEUROEVOLUTION_HOST_DEVICE bool IsFinished() const noexcept {
+        return IsWon() || (turn_count >= kMaxTurnCount);
     }
 };
 
@@ -63,7 +65,7 @@ constexpr NEUROEVOLUTION_HOST_DEVICE bool IsValidWordleGrid(const WordleGrid &gr
 }
 
 inline NEUROEVOLUTION_HOST_DEVICE bool TryAppendGuess(WordleGrid &grid, const Word &guess) noexcept {
-    if (!IsValidWordleGrid(grid) || !IsValidWord(guess) || (grid.turn_count >= kMaxTurnCount)) {
+    if (!IsValidWordleGrid(grid) || !IsValidWord(guess) || grid.IsFinished()) {
         return false;
     }
 

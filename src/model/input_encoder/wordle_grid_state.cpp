@@ -9,7 +9,7 @@ ModelInputStateVector EncodeWordleGridState(const SharedEncoderParameters &param
 
     if (!detail::TryEncodeWordleGridState(parameters, grid, model_input_state)) {
         throw std::invalid_argument(
-            "Wordle grid must be valid and contain at most five turns for decision-state encoding.");
+            "Wordle grid must be a valid, non-terminal decision state with at most five turns.");
     }
 
     return model_input_state;
