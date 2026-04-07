@@ -124,3 +124,19 @@ set_tests_properties(input_encoder_device_smoke_test PROPERTIES
     LABELS "gpu;integration"
     RESOURCE_LOCK cuda_device
 )
+
+add_executable(wordle_grid_device_e2e_test
+    tests/model/input_encoder/wordle_grid_device_e2e_test.cu
+)
+
+target_link_libraries(wordle_grid_device_e2e_test PRIVATE
+    model_input
+)
+
+enable_project_warnings(wordle_grid_device_e2e_test)
+
+add_test(NAME wordle_grid_device_e2e_test COMMAND wordle_grid_device_e2e_test)
+set_tests_properties(wordle_grid_device_e2e_test PROPERTIES
+    LABELS "gpu;integration"
+    RESOURCE_LOCK cuda_device
+)
