@@ -16,6 +16,7 @@ namespace {
 using neuroevolution::model::input_encoder::kEncoderOutputSize;
 using neuroevolution::model::input_encoder::SharedEncoderParameters;
 using neuroevolution::model::model_input::kModelInputVectorSize;
+using neuroevolution::model::model_input::kModelInputVirginFlagOffset;
 using neuroevolution::model::model_input::ModelInputStateVector;
 using neuroevolution::model::model_input::ModelInputTurnOffset;
 using neuroevolution::model::model_input::TryEncodeWordleGridState;
@@ -109,6 +110,7 @@ bool ExpectVectorNear(const ModelInputStateVector &actual, const ModelInputState
 
 ModelInputStateVector MakeExpectedOutput(const SharedEncoderGoldenFixture &fixture) {
     ModelInputStateVector expected{};
+    expected[kModelInputVirginFlagOffset] = 0.0f;
 
     const std::size_t first_turn_offset = ModelInputTurnOffset(0);
     for (std::size_t value_index = 0; value_index < kEncoderOutputSize; ++value_index) {

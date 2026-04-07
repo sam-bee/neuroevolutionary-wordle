@@ -20,9 +20,9 @@ That 64-dimensional vector is then scored against every word in the action-space
 High-level shape:
 
 ```
-up to 5 previous turns
+virgin-grid flag + up to 5 previous turns
 -> shared per-turn input encoder
--> concatenate 5 encoded turn vectors
+-> prepend virgin-grid flag to 5 encoded turn vectors
 -> dense trunk
 -> 64D policy output
 -> dot product against output embedding
@@ -158,16 +158,21 @@ These are concatenated in chronological slot order:
 
 where each `h_k` is a 64-dimensional vector.
 
-Total size after concatenation:
+The model input also includes one scalar before those slot vectors:
+
+- `1` if the `WordleGrid` is virgin
+- `0` otherwise
+
+Total size after prepending that scalar:
 
 ```math
-5 * 64 = 320
+1 + (5 * 64) = 321
 ```
 
 Important detail:
 
-- concatenation does **not** introduce a learned 320-neuron layer
-- it simply forms one input vector of length 320 for the next dense layer
+- concatenation does **not** introduce a learned 321-neuron layer
+- it simply forms one input vector of length 321 for the next dense layer
 
 Slot order is preserved by concatenation order.
 
@@ -176,7 +181,7 @@ Slot order is preserved by concatenation order.
 After concatenation, the main network trunk is:
 
 ```math
-320 -> 256 -> 128 -> 64
+321 -> 256 -> 128 -> 64
 ```
 
 Interpretation:
@@ -193,7 +198,7 @@ Recommended default activation:
 
 ### 8.1 First hidden layer equation
 
-Let `x` be the concatenated 320-dimensional vector.
+Let `x` be the 321-dimensional model-input vector.
 
 A neuron in the 256-neuron layer computes:
 
@@ -204,10 +209,10 @@ y_j = f(sum_i(w_ji * x_i) + b_j)
 LaTeX form:
 
 ```math
-y_j = f\left(\sum_{i=1}^{320} w_{ji} x_i + b_j\right)
+y_j = f\left(\sum_{i=1}^{321} w_{ji} x_i + b_j\right)
 ```
 
-Each of the 256 neurons receives **all 320 inputs**.
+Each of the 256 neurons receives **all 321 inputs**.
 
 ## 9. Output embedding
 
@@ -289,7 +294,7 @@ For the initial implementation, the model contains:
 
 - encoder layer `145 -> 128` weights and biases
 - encoder layer `128 -> 64` weights and biases
-- trunk layer `320 -> 256` weights and biases
+- trunk layer `321 -> 256` weights and biases
 - trunk layer `256 -> 128` weights and biases
 - trunk layer `128 -> 64` weights and biases
 - trainable 38 dimensions for each of the 4,739 output embeddings
@@ -309,7 +314,7 @@ For now, the implementation target should stop at:
 2. model parameter storage
 3. forward pass through shared encoder
 4. handling of empty turn slots
-5. concatenation into 320 values
+5. concatenation into 321 values
 6. forward pass through dense trunk
 7. output embedding scoring
 8. repeated-guess masking
@@ -329,10 +334,10 @@ per empty turn:
 64D zero vector
 
 all 5 slots:
-concat to 320
+prepend virgin flag, then concat to 321
 
 dense trunk:
-320 -> 256 -> 128 -> 64
+321 -> 256 -> 128 -> 64
 
 action selection:
 dot product with 4,739 64D word embeddings

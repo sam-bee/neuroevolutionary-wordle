@@ -131,6 +131,7 @@ bool TestWordleGridStartsEmptyAndStoresSolution() {
     bool ok = true;
     ok &= ExpectTrue(grid.turn_count == 0, "New grid should start with zero turns");
     ok &= ExpectWordEquals(grid.solution, solution, "Stored solution");
+    ok &= ExpectTrue(grid.isVirgin(), "New grid should report itself as virgin");
     ok &= ExpectTrue(!grid.IsFinished(), "New grid should not be finished");
     ok &= ExpectTrue(!grid.IsWon(), "New grid should not be won");
     ok &= ExpectTrue(IsValidWordleGrid(grid), "New grid should be valid");
@@ -149,6 +150,7 @@ bool TestWordleGridAppendsTurnsWithCorrectFeedback() {
     ok &= ExpectWordEquals(grid.turns[0].guess, guess, "Stored guess");
     ok &= ExpectFeedbackEquals(grid.turns[0].feedback, Feedback{{'-', 'Y', 'Y', '-', '-'}},
                                "Stored feedback for CRANE vs SOLAR");
+    ok &= ExpectTrue(!grid.isVirgin(), "Grid should no longer be virgin after a guess");
     ok &= ExpectTrue(!grid.IsFinished(), "Grid should not be finished after one non-winning guess");
     ok &= ExpectTrue(!grid.IsWon(), "Grid should not be won after a non-matching guess");
     ok &= ExpectTrue(IsValidWordleGrid(grid), "Grid should remain valid after appending a guess");

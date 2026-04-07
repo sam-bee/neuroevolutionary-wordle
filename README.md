@@ -18,7 +18,7 @@ This project combines three main ideas:
 The structure of the model is as follows:
 
 1. Input encoding - turns a previous turn in a Wordle game into a 64-dimensional vector
-2. Encoded input concatenation creates 320 values to pass to the main neural net
+2. Encoded input concatenation creates 321 values to pass to the main neural net
 3. Main neural net - contains hidden layers of 256, 128 neurons, and a policy output head with 64 neurons
 4. Output embedding - contains 64-dimensional vectors for each of 4,739 5-letter words
 5. Model output selection - uses dot product method to choose a word from the action space
@@ -56,8 +56,8 @@ Each turn consists of:
 Each occupied turn is passed through a **shared input encoder**. Empty turn slots do not run through the encoder; they
 contribute a hard-coded 64-dimensional zero vector instead.
 
-The five 64-dimensional per-turn outputs are concatenated into a 320-dimensional vector, which is then processed by a
-small dense trunk to produce a final 64-dimensional policy vector.
+The model input begins with a single scalar that is `1` for a virgin grid and `0` otherwise. After that come the five
+64-dimensional per-turn outputs, for a total of 321 values passed to the dense trunk.
 
 That policy vector is scored against every word in the output embedding by dot product. Repeated guesses are masked out
 because they are illegal in Wordle.

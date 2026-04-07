@@ -23,6 +23,11 @@ inline NEUROEVOLUTION_HOST_DEVICE void ZeroModelInputState(ModelInputStateVector
     }
 }
 
+inline NEUROEVOLUTION_HOST_DEVICE void WriteVirginFlagToModelInput(const wordle::WordleGrid &grid,
+                                                                   ModelInputStateVector &model_input_state) noexcept {
+    model_input_state[kModelInputVirginFlagOffset] = grid.isVirgin() ? 1.0f : 0.0f;
+}
+
 inline NEUROEVOLUTION_HOST_DEVICE void
 WriteEncodedTurnToModelInput(const input_encoder::EncodedTurnVector &encoded_turn, const std::size_t turn_index,
                              ModelInputStateVector &model_input_state) noexcept {
@@ -44,6 +49,7 @@ TryEncodeWordleGridState(const input_encoder::SharedEncoderParameters &parameter
     }
 
     detail::ZeroModelInputState(model_input_state);
+    detail::WriteVirginFlagToModelInput(grid, model_input_state);
 
     for (std::size_t turn_index = 0; turn_index < grid.turn_count; ++turn_index) {
         input_encoder::EncodedTurnVector encoded_turn{};

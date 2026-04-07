@@ -15,6 +15,8 @@ struct WordleGrid {
     common::FixedBuffer<Turn, kMaxTurnCount> turns{};
     std::size_t turn_count = 0;
 
+    constexpr NEUROEVOLUTION_HOST_DEVICE bool isVirgin() const noexcept { return turn_count == 0; }
+
     constexpr NEUROEVOLUTION_HOST_DEVICE bool IsWon() const noexcept {
         const std::size_t turns_to_check = (turn_count < kMaxTurnCount) ? turn_count : kMaxTurnCount;
 

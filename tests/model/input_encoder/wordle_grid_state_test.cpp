@@ -18,6 +18,7 @@ using neuroevolution::model::input_encoder::ForwardOccupiedTurn;
 using neuroevolution::model::input_encoder::kEncoderOutputSize;
 using neuroevolution::model::model_input::EncodeWordleGridState;
 using neuroevolution::model::model_input::kModelInputTurnCount;
+using neuroevolution::model::model_input::kModelInputVirginFlagOffset;
 using neuroevolution::model::model_input::ModelInputStateVector;
 using neuroevolution::model::model_input::ModelInputTurnOffset;
 using neuroevolution::tests::input_encoder::SharedEncoderGoldenFixture;
@@ -77,12 +78,23 @@ bool ExpectSlotZero(const ModelInputStateVector &actual, const std::size_t slot_
     return ok;
 }
 
+bool ExpectVirginFlagEquals(const ModelInputStateVector &actual, const float expected, const std::string_view label) {
+    const float actual_value = actual[kModelInputVirginFlagOffset];
+    if (actual_value != expected) {
+        std::cerr << "FAIL: " << label << " virgin flag expected " << expected << ", got " << actual_value << '\n';
+        return false;
+    }
+
+    return true;
+}
+
 bool TestEncodeWordleGridStateEmptyGridUsesZeroVectors() {
     const SharedEncoderGoldenFixture fixture{};
     const WordleGrid grid = MakeWordleGrid(MakeWord("SOLAR"));
     const ModelInputStateVector encoded_state = EncodeWordleGridState(fixture.parameters, grid);
 
     bool ok = true;
+    ok &= ExpectVirginFlagEquals(encoded_state, 1.0f, "Empty grid");
     for (std::size_t slot_index = 0; slot_index < kModelInputTurnCount; ++slot_index) {
         ok &= ExpectSlotZero(encoded_state, slot_index, "Empty grid");
     }
@@ -99,6 +111,7 @@ bool TestEncodeWordleGridStateOneTurnZeroFillsRemainingSlots() {
     const EncodedTurnVector expected_first_turn = ForwardOccupiedTurn(fixture.parameters, grid.turns[0]);
 
     bool ok = true;
+    ok &= ExpectVirginFlagEquals(encoded_state, 0.0f, "One-turn grid");
     ok &= ExpectSlotEquals(encoded_state, expected_first_turn, 0, "One-turn grid");
     for (std::size_t slot_index = 1; slot_index < kModelInputTurnCount; ++slot_index) {
         ok &= ExpectSlotZero(encoded_state, slot_index, "One-turn grid");
@@ -117,6 +130,7 @@ bool TestEncodeWordleGridStatePreservesChronologicalOrderingForPartialGrid() {
     const ModelInputStateVector encoded_state = EncodeWordleGridState(fixture.parameters, grid);
 
     bool ok = true;
+    ok &= ExpectVirginFlagEquals(encoded_state, 0.0f, "Partial grid");
     ok &= ExpectSlotEquals(encoded_state, ForwardOccupiedTurn(fixture.parameters, grid.turns[0]), 0, "Partial grid");
     ok &= ExpectSlotEquals(encoded_state, ForwardOccupiedTurn(fixture.parameters, grid.turns[1]), 1, "Partial grid");
     ok &= ExpectSlotEquals(encoded_state, ForwardOccupiedTurn(fixture.parameters, grid.turns[2]), 2, "Partial grid");
@@ -138,6 +152,7 @@ bool TestEncodeWordleGridStateFiveTurnGridFillsAllSlots() {
     const ModelInputStateVector encoded_state = EncodeWordleGridState(fixture.parameters, grid);
 
     bool ok = true;
+    ok &= ExpectVirginFlagEquals(encoded_state, 0.0f, "Five-turn grid");
     for (std::size_t slot_index = 0; slot_index < kModelInputTurnCount; ++slot_index) {
         ok &= ExpectSlotEquals(encoded_state, ForwardOccupiedTurn(fixture.parameters, grid.turns[slot_index]),
                                slot_index, "Five-turn grid");
