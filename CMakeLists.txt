@@ -49,6 +49,21 @@ target_link_libraries(model_input PUBLIC
 
 enable_project_warnings(model_input)
 
+add_library(dense_trunk STATIC
+    src/model/dense_trunk/dense_trunk.cpp
+)
+
+target_include_directories(dense_trunk PUBLIC
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
+    ${CUDAToolkit_INCLUDE_DIRS}
+)
+
+target_link_libraries(dense_trunk PUBLIC
+    model_input
+)
+
+enable_project_warnings(dense_trunk)
+
 add_executable(turn_features_test
     tests/model/input_encoder/turn_features_test.cpp
 )
@@ -106,6 +121,21 @@ enable_project_warnings(wordle_grid_test)
 
 add_test(NAME wordle_grid_test COMMAND wordle_grid_test)
 set_tests_properties(wordle_grid_test PROPERTIES
+    LABELS "cpu;unit"
+)
+
+add_executable(dense_trunk_test
+    tests/model/dense_trunk/dense_trunk_test.cpp
+)
+
+target_link_libraries(dense_trunk_test PRIVATE
+    dense_trunk
+)
+
+enable_project_warnings(dense_trunk_test)
+
+add_test(NAME dense_trunk_test COMMAND dense_trunk_test)
+set_tests_properties(dense_trunk_test PROPERTIES
     LABELS "cpu;unit"
 )
 
