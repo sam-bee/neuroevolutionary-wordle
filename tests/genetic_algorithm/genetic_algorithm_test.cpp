@@ -20,10 +20,13 @@ using neuroevolution::genetic_algorithm::ClearPopulationFitness;
 using neuroevolution::genetic_algorithm::EvaluatePopulationFitness;
 using neuroevolution::genetic_algorithm::FitnessEvaluationConfig;
 using neuroevolution::genetic_algorithm::FitnessRandomEngine;
+using neuroevolution::genetic_algorithm::GenerationAssemblyConfig;
+using neuroevolution::genetic_algorithm::GenerationAssemblyRandomEngine;
 using neuroevolution::genetic_algorithm::GeneticAlgorithmConfig;
 using neuroevolution::genetic_algorithm::Individual;
 using neuroevolution::genetic_algorithm::IsValidBreedingConfig;
 using neuroevolution::genetic_algorithm::IsValidFitnessEvaluationConfig;
+using neuroevolution::genetic_algorithm::IsValidGenerationAssemblyConfig;
 using neuroevolution::genetic_algorithm::IsValidGeneticAlgorithmConfig;
 using neuroevolution::genetic_algorithm::IsValidParentSelectionConfig;
 using neuroevolution::genetic_algorithm::ModelGenome;
@@ -31,6 +34,7 @@ using neuroevolution::genetic_algorithm::ParentPair;
 using neuroevolution::genetic_algorithm::ParentSelectionConfig;
 using neuroevolution::genetic_algorithm::Population;
 using neuroevolution::genetic_algorithm::SelectionRandomEngine;
+using neuroevolution::genetic_algorithm::TryAssembleNextGeneration;
 using neuroevolution::genetic_algorithm::TryBreedChildGenome;
 using neuroevolution::genetic_algorithm::TryBreedChildGenomeFromPopulation;
 using neuroevolution::genetic_algorithm::TryFindBestIndividualIndex;
@@ -396,6 +400,96 @@ bool TestBreedingCanProduceChildGenomeFromEitherParentOrPopulationPair() {
     return ok;
 }
 
+bool TestNextGenerationAssemblyCopiesEliteAndBreedsRemainingChildren() {
+    constexpr std::size_t kPopulationSize = 4;
+
+    Population<ModelGenome<2>, kPopulationSize> current_population{};
+    current_population.generation_index = 5;
+    current_population.individuals[0].genome = MakeBreedingParentGenome(10.0f);
+    current_population.individuals[1].genome = MakeBreedingParentGenome(20.0f);
+    current_population.individuals[2].genome = MakeBreedingParentGenome(30.0f);
+    current_population.individuals[3].genome = MakeBreedingParentGenome(40.0f);
+
+    current_population.individuals[0].fitness = 1.0f;
+    current_population.individuals[1].fitness = 4.0f;
+    current_population.individuals[2].fitness = 7.0f;
+    current_population.individuals[3].fitness = 9.0f;
+
+    for (std::size_t individual_index = 0; individual_index < kPopulationSize; ++individual_index) {
+        current_population.individuals[individual_index].has_fitness = true;
+        current_population.individuals[individual_index].evaluation_count = 3;
+    }
+
+    GenerationAssemblyConfig valid_config{};
+    valid_config.genetic_algorithm.elite_count = 1;
+    valid_config.parent_selection.tournament_size = kPopulationSize;
+    valid_config.parent_selection.allow_self_parenting = false;
+    valid_config.breeding.first_parent_probability = 0.0f;
+
+    GenerationAssemblyRandomEngine random_engine(13);
+    Population<ModelGenome<2>, kPopulationSize> next_population{};
+    const bool assemble_ok =
+        TryAssembleNextGeneration(current_population, next_population, random_engine, valid_config);
+
+    bool metadata_ok = true;
+    for (std::size_t individual_index = 0; individual_index < kPopulationSize; ++individual_index) {
+        const auto &individual = next_population.individuals[individual_index];
+        metadata_ok &= !individual.has_fitness && (individual.evaluation_count == 0) && (individual.fitness == 0.0f);
+    }
+
+    bool ok = true;
+    ok &= ExpectTrue(IsValidGenerationAssemblyConfig<kPopulationSize>(valid_config),
+                     "Expected valid generation-assembly config");
+    ok &= ExpectTrue(assemble_ok, "Expected next-generation assembly to succeed for a fitted population");
+    ok &= ExpectTrue(next_population.generation_index == 6, "Expected next population generation index to increment");
+    ok &= ExpectSelectedGenomeValuesMatch(next_population.individuals[0].genome,
+                                          current_population.individuals[3].genome, "elite slot");
+    ok &= ExpectSelectedGenomeValuesMatch(next_population.individuals[1].genome,
+                                          current_population.individuals[2].genome, "bred slot 1");
+    ok &= ExpectSelectedGenomeValuesMatch(next_population.individuals[2].genome,
+                                          current_population.individuals[2].genome, "bred slot 2");
+    ok &= ExpectSelectedGenomeValuesMatch(next_population.individuals[3].genome,
+                                          current_population.individuals[2].genome, "bred slot 3");
+    ok &= ExpectTrue(metadata_ok, "Expected all next-generation individuals to be marked unevaluated");
+    ok &= ExpectTrue(current_population.generation_index == 5,
+                     "Expected current population generation metadata to stay unchanged");
+    ok &= ExpectTrue(current_population.individuals[3].has_fitness,
+                     "Expected current population fitness metadata to stay unchanged");
+    return ok;
+}
+
+bool TestNextGenerationAssemblyRejectsInvalidConfigAndImpossibleBreedingCases() {
+    GenerationAssemblyConfig invalid_config{};
+    invalid_config.genetic_algorithm.elite_count = 0;
+
+    Population<ModelGenome<2>, 2> one_parent_population{};
+    one_parent_population.individuals[0].genome = MakeBreedingParentGenome(10.0f);
+    one_parent_population.individuals[0].fitness = 5.0f;
+    one_parent_population.individuals[0].has_fitness = true;
+
+    GenerationAssemblyConfig valid_but_impossible_config{};
+    valid_but_impossible_config.genetic_algorithm.elite_count = 1;
+    valid_but_impossible_config.parent_selection.allow_self_parenting = false;
+
+    GenerationAssemblyRandomEngine random_engine_a(1);
+    Population<ModelGenome<2>, 2> next_population_a{};
+    const bool invalid_config_ok =
+        TryAssembleNextGeneration(one_parent_population, next_population_a, random_engine_a, invalid_config);
+
+    GenerationAssemblyRandomEngine random_engine_b(2);
+    Population<ModelGenome<2>, 2> next_population_b{};
+    const bool impossible_breeding_ok = TryAssembleNextGeneration(one_parent_population, next_population_b,
+                                                                  random_engine_b, valid_but_impossible_config);
+
+    bool ok = true;
+    ok &= ExpectTrue(!IsValidGenerationAssemblyConfig<2>(invalid_config),
+                     "Expected elite_count zero to invalidate generation assembly");
+    ok &= ExpectTrue(!invalid_config_ok, "Expected next-generation assembly to reject invalid config");
+    ok &= ExpectTrue(!impossible_breeding_ok,
+                     "Expected next-generation assembly to fail when no distinct parent pair can be selected");
+    return ok;
+}
+
 } // namespace
 
 int main() {
@@ -416,6 +510,14 @@ int main() {
     }
 
     if (!TestBreedingCanProduceChildGenomeFromEitherParentOrPopulationPair()) {
+        return 1;
+    }
+
+    if (!TestNextGenerationAssemblyCopiesEliteAndBreedsRemainingChildren()) {
+        return 1;
+    }
+
+    if (!TestNextGenerationAssemblyRejectsInvalidConfigAndImpossibleBreedingCases()) {
         return 1;
     }
 
