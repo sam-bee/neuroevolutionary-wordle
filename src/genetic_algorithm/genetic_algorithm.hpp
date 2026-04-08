@@ -6,4 +6,5 @@
 #include "genetic_algorithm/genome.hpp"
 #include "genetic_algorithm/mutation.hpp"
 #include "genetic_algorithm/population.hpp"
+#include "genetic_algorithm/population_initialization.hpp"
 #include "genetic_algorithm/selection.hpp"

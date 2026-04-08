@@ -30,6 +30,7 @@ using neuroevolution::genetic_algorithm::IsValidGenerationAssemblyConfig;
 using neuroevolution::genetic_algorithm::IsValidGeneticAlgorithmConfig;
 using neuroevolution::genetic_algorithm::IsValidMutationConfig;
 using neuroevolution::genetic_algorithm::IsValidParentSelectionConfig;
+using neuroevolution::genetic_algorithm::IsValidPopulationInitializationConfig;
 using neuroevolution::genetic_algorithm::ModelGenome;
 using neuroevolution::genetic_algorithm::MutateGenome;
 using neuroevolution::genetic_algorithm::MutationConfig;
@@ -37,11 +38,14 @@ using neuroevolution::genetic_algorithm::MutationRandomEngine;
 using neuroevolution::genetic_algorithm::ParentPair;
 using neuroevolution::genetic_algorithm::ParentSelectionConfig;
 using neuroevolution::genetic_algorithm::Population;
+using neuroevolution::genetic_algorithm::PopulationInitializationConfig;
+using neuroevolution::genetic_algorithm::PopulationInitializationRandomEngine;
 using neuroevolution::genetic_algorithm::SelectionRandomEngine;
 using neuroevolution::genetic_algorithm::TryAssembleNextGeneration;
 using neuroevolution::genetic_algorithm::TryBreedChildGenome;
 using neuroevolution::genetic_algorithm::TryBreedChildGenomeFromPopulation;
 using neuroevolution::genetic_algorithm::TryFindBestIndividualIndex;
+using neuroevolution::genetic_algorithm::TryInitializePopulation;
 using neuroevolution::genetic_algorithm::TryMaterializeActionEmbeddings;
 using neuroevolution::genetic_algorithm::TryMutateGenome;
 using neuroevolution::genetic_algorithm::TrySelectParentIndex;
@@ -484,6 +488,55 @@ bool TestMutationCanBeDisabledOrApplySeededNoise() {
     return ok;
 }
 
+bool TestPopulationInitializationSeedsRandomGenomesAndClearsMetadata() {
+    constexpr std::size_t kPopulationSize = 3;
+
+    PopulationInitializationConfig valid_config{};
+
+    PopulationInitializationConfig invalid_config = valid_config;
+    invalid_config.parameter_initialization.dense_weight_gain = 0.0f;
+
+    Population<ModelGenome<2>, kPopulationSize> population_a{};
+    Population<ModelGenome<2>, kPopulationSize> population_b{};
+    Population<ModelGenome<2>, kPopulationSize> population_c{};
+
+    PopulationInitializationRandomEngine random_engine_a(100);
+    PopulationInitializationRandomEngine random_engine_b(100);
+    PopulationInitializationRandomEngine random_engine_c(200);
+
+    const bool init_ok_a = TryInitializePopulation(population_a, random_engine_a, valid_config);
+    const bool init_ok_b = TryInitializePopulation(population_b, random_engine_b, valid_config);
+    const bool init_ok_c = TryInitializePopulation(population_c, random_engine_c, valid_config);
+
+    bool same_seed_matches = true;
+    bool different_seed_differs = false;
+    bool metadata_cleared = true;
+
+    for (std::size_t individual_index = 0; individual_index < kPopulationSize; ++individual_index) {
+        same_seed_matches &= TrackedGenomeValuesEqual(population_a.individuals[individual_index].genome,
+                                                      population_b.individuals[individual_index].genome);
+        different_seed_differs |= !TrackedGenomeValuesEqual(population_a.individuals[individual_index].genome,
+                                                            population_c.individuals[individual_index].genome);
+
+        const auto &individual = population_a.individuals[individual_index];
+        metadata_cleared &=
+            !individual.has_fitness && (individual.evaluation_count == 0) && (individual.fitness == 0.0f);
+    }
+
+    bool ok = true;
+    ok &= ExpectTrue(IsValidPopulationInitializationConfig(valid_config),
+                     "Expected valid population-initialization config");
+    ok &= ExpectTrue(!IsValidPopulationInitializationConfig(invalid_config),
+                     "Expected invalid parameter-init config to invalidate population initialization");
+    ok &= ExpectTrue(init_ok_a && init_ok_b && init_ok_c, "Expected population initialization to succeed");
+    ok &= ExpectTrue(same_seed_matches, "Expected same initialization seed to reproduce the same population");
+    ok &=
+        ExpectTrue(different_seed_differs, "Expected different initialization seeds to produce a different population");
+    ok &= ExpectTrue(metadata_cleared, "Expected initialized population metadata to be reset");
+    ok &= ExpectTrue(population_a.generation_index == 0, "Expected initialized population generation index to be zero");
+    return ok;
+}
+
 bool TestNextGenerationAssemblyCopiesEliteAndBreedsRemainingChildren() {
     constexpr std::size_t kPopulationSize = 4;
 
@@ -642,6 +695,10 @@ int main() {
     }
 
     if (!TestMutationCanBeDisabledOrApplySeededNoise()) {
+        return 1;
+    }
+
+    if (!TestPopulationInitializationSeedsRandomGenomesAndClearsMetadata()) {
         return 1;
     }
 

@@ -114,9 +114,20 @@ target_include_directories(genetic_algorithm INTERFACE
 )
 
 target_link_libraries(genetic_algorithm INTERFACE
+    model_initialization
     output_embedding
     policy_model
 )
+
+add_executable(run_genetic_algorithm
+    src/cli/run_genetic_algorithm.cpp
+)
+
+target_link_libraries(run_genetic_algorithm PRIVATE
+    genetic_algorithm
+)
+
+enable_project_warnings(run_genetic_algorithm)
 
 add_executable(turn_features_test
     tests/model/input_encoder/turn_features_test.cpp
@@ -251,6 +262,11 @@ enable_project_warnings(genetic_algorithm_test)
 add_test(NAME genetic_algorithm_test COMMAND genetic_algorithm_test)
 set_tests_properties(genetic_algorithm_test PROPERTIES
     LABELS "cpu;unit"
+)
+
+add_test(NAME run_genetic_algorithm_smoke_test COMMAND run_genetic_algorithm --seed 7 --generations 2)
+set_tests_properties(run_genetic_algorithm_smoke_test PROPERTIES
+    LABELS "cpu;integration"
 )
 
 add_executable(input_encoder_device_smoke_test
