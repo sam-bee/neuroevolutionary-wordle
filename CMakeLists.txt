@@ -92,6 +92,17 @@ target_link_libraries(output_embedding PUBLIC
 
 enable_project_warnings(output_embedding)
 
+add_library(genetic_algorithm INTERFACE)
+
+target_include_directories(genetic_algorithm INTERFACE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
+)
+
+target_link_libraries(genetic_algorithm INTERFACE
+    output_embedding
+    policy_model
+)
+
 add_executable(turn_features_test
     tests/model/input_encoder/turn_features_test.cpp
 )
@@ -194,6 +205,21 @@ enable_project_warnings(output_embedding_test)
 
 add_test(NAME output_embedding_test COMMAND output_embedding_test)
 set_tests_properties(output_embedding_test PROPERTIES
+    LABELS "cpu;unit"
+)
+
+add_executable(genetic_algorithm_test
+    tests/genetic_algorithm/genetic_algorithm_test.cpp
+)
+
+target_link_libraries(genetic_algorithm_test PRIVATE
+    genetic_algorithm
+)
+
+enable_project_warnings(genetic_algorithm_test)
+
+add_test(NAME genetic_algorithm_test COMMAND genetic_algorithm_test)
+set_tests_properties(genetic_algorithm_test PROPERTIES
     LABELS "cpu;unit"
 )
 
