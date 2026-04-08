@@ -107,6 +107,26 @@ target_link_libraries(model_initialization PUBLIC
 
 enable_project_warnings(model_initialization)
 
+add_library(training_folder STATIC
+    src/training_folder/training_data.cpp
+    src/training_folder/training_data.cu
+)
+
+target_include_directories(training_folder PUBLIC
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
+    ${CUDAToolkit_INCLUDE_DIRS}
+)
+
+target_compile_definitions(training_folder PUBLIC
+    NEUROEVOLUTION_PROJECT_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}"
+)
+
+enable_project_warnings(training_folder)
+
+set_target_properties(training_folder PROPERTIES
+    CUDA_SEPARABLE_COMPILATION ON
+)
+
 add_library(genetic_algorithm INTERFACE)
 
 target_include_directories(genetic_algorithm INTERFACE
@@ -264,6 +284,21 @@ set_tests_properties(genetic_algorithm_test PROPERTIES
     LABELS "cpu;unit"
 )
 
+add_executable(training_data_test
+    tests/training_folder/training_data_test.cpp
+)
+
+target_link_libraries(training_data_test PRIVATE
+    training_folder
+)
+
+enable_project_warnings(training_data_test)
+
+add_test(NAME training_data_test COMMAND training_data_test)
+set_tests_properties(training_data_test PROPERTIES
+    LABELS "cpu;unit"
+)
+
 add_test(NAME run_genetic_algorithm_smoke_test COMMAND run_genetic_algorithm --seed 7 --generations 2)
 set_tests_properties(run_genetic_algorithm_smoke_test PROPERTIES
     LABELS "cpu;integration"
@@ -314,6 +349,26 @@ enable_project_warnings(output_embedding_device_e2e_test)
 
 add_test(NAME output_embedding_device_e2e_test COMMAND output_embedding_device_e2e_test)
 set_tests_properties(output_embedding_device_e2e_test PROPERTIES
+    LABELS "gpu;integration"
+    RESOURCE_LOCK cuda_device
+)
+
+add_executable(training_data_device_test
+    tests/training_folder/training_data_device_test.cu
+)
+
+target_link_libraries(training_data_device_test PRIVATE
+    training_folder
+)
+
+enable_project_warnings(training_data_device_test)
+
+set_target_properties(training_data_device_test PROPERTIES
+    CUDA_SEPARABLE_COMPILATION ON
+)
+
+add_test(NAME training_data_device_test COMMAND training_data_device_test)
+set_tests_properties(training_data_device_test PROPERTIES
     LABELS "gpu;integration"
     RESOURCE_LOCK cuda_device
 )
