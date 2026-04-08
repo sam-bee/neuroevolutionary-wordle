@@ -2,6 +2,7 @@
 #include <cstddef>
 #include <iostream>
 #include <stdexcept>
+#include <string>
 #include <string_view>
 
 #include "common/fixed_buffer.hpp"
@@ -12,12 +13,16 @@ namespace {
 using neuroevolution::common::FixedBuffer;
 using neuroevolution::common::ToFloat;
 using neuroevolution::genetic_algorithm::BeginNextGeneration;
+using neuroevolution::genetic_algorithm::BreedChildGenome;
+using neuroevolution::genetic_algorithm::BreedingConfig;
+using neuroevolution::genetic_algorithm::BreedingRandomEngine;
 using neuroevolution::genetic_algorithm::ClearPopulationFitness;
 using neuroevolution::genetic_algorithm::EvaluatePopulationFitness;
 using neuroevolution::genetic_algorithm::FitnessEvaluationConfig;
 using neuroevolution::genetic_algorithm::FitnessRandomEngine;
 using neuroevolution::genetic_algorithm::GeneticAlgorithmConfig;
 using neuroevolution::genetic_algorithm::Individual;
+using neuroevolution::genetic_algorithm::IsValidBreedingConfig;
 using neuroevolution::genetic_algorithm::IsValidFitnessEvaluationConfig;
 using neuroevolution::genetic_algorithm::IsValidGeneticAlgorithmConfig;
 using neuroevolution::genetic_algorithm::IsValidParentSelectionConfig;
@@ -26,6 +31,8 @@ using neuroevolution::genetic_algorithm::ParentPair;
 using neuroevolution::genetic_algorithm::ParentSelectionConfig;
 using neuroevolution::genetic_algorithm::Population;
 using neuroevolution::genetic_algorithm::SelectionRandomEngine;
+using neuroevolution::genetic_algorithm::TryBreedChildGenome;
+using neuroevolution::genetic_algorithm::TryBreedChildGenomeFromPopulation;
 using neuroevolution::genetic_algorithm::TryFindBestIndividualIndex;
 using neuroevolution::genetic_algorithm::TryMaterializeActionEmbeddings;
 using neuroevolution::genetic_algorithm::TrySelectParentIndex;
@@ -278,6 +285,117 @@ bool TestParentSelectionUsesTournamentLogicAndSupportsParentPairs() {
     return ok;
 }
 
+ModelGenome<2> MakeBreedingParentGenome(const float base_value) {
+    ModelGenome<2> genome{};
+
+    genome.policy_model.input_encoder.input_to_hidden.weights[0] = base_value + 1.0f;
+    genome.policy_model.input_encoder.input_to_hidden.biases[0] = base_value + 2.0f;
+    genome.policy_model.input_encoder.hidden_to_output.weights[0] = base_value + 3.0f;
+    genome.policy_model.dense_trunk.input_to_hidden0.weights[0] = base_value + 4.0f;
+    genome.policy_model.dense_trunk.hidden0_to_hidden1.biases[0] = base_value + 5.0f;
+    genome.policy_model.dense_trunk.hidden1_to_output.weights[0] = base_value + 6.0f;
+    genome.output_embedding.trainable_tails[0][0] = base_value + 7.0f;
+    genome.output_embedding.trainable_tails[1][1] = base_value + 8.0f;
+
+    return genome;
+}
+
+bool ExpectSelectedGenomeValuesMatch(const ModelGenome<2> &actual, const ModelGenome<2> &expected,
+                                     const std::string_view label_prefix) {
+    bool ok = true;
+    ok &= ExpectNear(ToFloat(actual.policy_model.input_encoder.input_to_hidden.weights[0]),
+                     ToFloat(expected.policy_model.input_encoder.input_to_hidden.weights[0]),
+                     std::string(label_prefix) + " input->hidden weight");
+    ok &= ExpectNear(ToFloat(actual.policy_model.input_encoder.input_to_hidden.biases[0]),
+                     ToFloat(expected.policy_model.input_encoder.input_to_hidden.biases[0]),
+                     std::string(label_prefix) + " input->hidden bias");
+    ok &= ExpectNear(ToFloat(actual.policy_model.input_encoder.hidden_to_output.weights[0]),
+                     ToFloat(expected.policy_model.input_encoder.hidden_to_output.weights[0]),
+                     std::string(label_prefix) + " hidden->output weight");
+    ok &= ExpectNear(ToFloat(actual.policy_model.dense_trunk.input_to_hidden0.weights[0]),
+                     ToFloat(expected.policy_model.dense_trunk.input_to_hidden0.weights[0]),
+                     std::string(label_prefix) + " trunk input->hidden0 weight");
+    ok &= ExpectNear(ToFloat(actual.policy_model.dense_trunk.hidden0_to_hidden1.biases[0]),
+                     ToFloat(expected.policy_model.dense_trunk.hidden0_to_hidden1.biases[0]),
+                     std::string(label_prefix) + " trunk hidden0->hidden1 bias");
+    ok &= ExpectNear(ToFloat(actual.policy_model.dense_trunk.hidden1_to_output.weights[0]),
+                     ToFloat(expected.policy_model.dense_trunk.hidden1_to_output.weights[0]),
+                     std::string(label_prefix) + " trunk hidden1->output weight");
+    ok &= ExpectNear(ToFloat(actual.output_embedding.trainable_tails[0][0]),
+                     ToFloat(expected.output_embedding.trainable_tails[0][0]),
+                     std::string(label_prefix) + " output tail[0][0]");
+    ok &= ExpectNear(ToFloat(actual.output_embedding.trainable_tails[1][1]),
+                     ToFloat(expected.output_embedding.trainable_tails[1][1]),
+                     std::string(label_prefix) + " output tail[1][1]");
+    return ok;
+}
+
+bool TestBreedingCanProduceChildGenomeFromEitherParentOrPopulationPair() {
+    const ModelGenome<2> first_parent = MakeBreedingParentGenome(10.0f);
+    const ModelGenome<2> second_parent = MakeBreedingParentGenome(100.0f);
+
+    BreedingConfig first_parent_only_config{};
+    first_parent_only_config.first_parent_probability = 1.0f;
+
+    BreedingConfig second_parent_only_config{};
+    second_parent_only_config.first_parent_probability = 0.0f;
+
+    BreedingConfig invalid_config{};
+    invalid_config.first_parent_probability = 1.5f;
+
+    BreedingRandomEngine random_engine_a(3);
+    BreedingRandomEngine random_engine_b(3);
+
+    ModelGenome<2> first_child{};
+    ModelGenome<2> second_child{};
+
+    const bool first_breed_ok =
+        TryBreedChildGenome(first_parent, second_parent, first_child, random_engine_a, first_parent_only_config);
+    const bool second_breed_ok =
+        TryBreedChildGenome(first_parent, second_parent, second_child, random_engine_b, second_parent_only_config);
+
+    Population<ModelGenome<2>, 3> population{};
+    population.individuals[1].genome = first_parent;
+    population.individuals[2].genome = second_parent;
+
+    ParentPair parent_pair{};
+    parent_pair.first_parent_index = 1;
+    parent_pair.second_parent_index = 2;
+
+    BreedingRandomEngine random_engine_c(5);
+    ModelGenome<2> population_child{};
+    const bool population_breed_ok = TryBreedChildGenomeFromPopulation(population, parent_pair, population_child,
+                                                                       random_engine_c, second_parent_only_config);
+
+    ParentPair invalid_parent_pair{};
+    invalid_parent_pair.first_parent_index = 0;
+    invalid_parent_pair.second_parent_index = 4;
+
+    BreedingRandomEngine random_engine_d(7);
+    ModelGenome<2> invalid_child{};
+    const bool invalid_population_breed_ok = TryBreedChildGenomeFromPopulation(
+        population, invalid_parent_pair, invalid_child, random_engine_d, first_parent_only_config);
+
+    BreedingRandomEngine random_engine_e(9);
+    const ModelGenome<2> convenience_child =
+        BreedChildGenome(first_parent, second_parent, random_engine_e, first_parent_only_config);
+
+    bool ok = true;
+    ok &= ExpectTrue(IsValidBreedingConfig(first_parent_only_config), "Expected first-parent-only breeding config");
+    ok &= ExpectTrue(IsValidBreedingConfig(second_parent_only_config), "Expected second-parent-only breeding config");
+    ok &= ExpectTrue(!IsValidBreedingConfig(invalid_config), "Expected breeding probability above one to be rejected");
+    ok &= ExpectTrue(first_breed_ok, "Expected breeding to succeed with valid first-parent-only config");
+    ok &= ExpectTrue(second_breed_ok, "Expected breeding to succeed with valid second-parent-only config");
+    ok &= ExpectTrue(population_breed_ok, "Expected population-based breeding to succeed with valid parent indices");
+    ok &= ExpectTrue(!invalid_population_breed_ok,
+                     "Expected population-based breeding to reject out-of-range parent indices");
+    ok &= ExpectSelectedGenomeValuesMatch(first_child, first_parent, "first-only child");
+    ok &= ExpectSelectedGenomeValuesMatch(second_child, second_parent, "second-only child");
+    ok &= ExpectSelectedGenomeValuesMatch(population_child, second_parent, "population child");
+    ok &= ExpectSelectedGenomeValuesMatch(convenience_child, first_parent, "convenience child");
+    return ok;
+}
+
 } // namespace
 
 int main() {
@@ -294,6 +412,10 @@ int main() {
     }
 
     if (!TestParentSelectionUsesTournamentLogicAndSupportsParentPairs()) {
+        return 1;
+    }
+
+    if (!TestBreedingCanProduceChildGenomeFromEitherParentOrPopulationPair()) {
         return 1;
     }
 

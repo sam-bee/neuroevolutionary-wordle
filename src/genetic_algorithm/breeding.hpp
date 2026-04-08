@@ -1,0 +1,138 @@
+#pragma once
+
+#include <cstddef>
+#include <random>
+#include <stdexcept>
+
+#include "common/fixed_buffer.hpp"
+#include "genetic_algorithm/genome.hpp"
+#include "genetic_algorithm/selection.hpp"
+
+namespace neuroevolution::genetic_algorithm {
+
+using BreedingRandomEngine = std::mt19937;
+
+struct BreedingConfig {
+    float first_parent_probability = 0.5f;
+};
+
+constexpr bool IsValidBreedingConfig(const BreedingConfig &config) noexcept {
+    return (config.first_parent_probability >= 0.0f) && (config.first_parent_probability <= 1.0f);
+}
+
+namespace detail {
+
+template <typename Scalar>
+inline Scalar SelectParentScalar(const Scalar &first_parent_value, const Scalar &second_parent_value,
+                                 BreedingRandomEngine &random_engine, const BreedingConfig &config) {
+    std::bernoulli_distribution distribution(config.first_parent_probability);
+    return distribution(random_engine) ? first_parent_value : second_parent_value;
+}
+
+template <typename Scalar, std::size_t Size>
+inline void BreedFixedBuffer(const common::FixedBuffer<Scalar, Size> &first_parent,
+                             const common::FixedBuffer<Scalar, Size> &second_parent,
+                             common::FixedBuffer<Scalar, Size> &child, BreedingRandomEngine &random_engine,
+                             const BreedingConfig &config) {
+    for (std::size_t index = 0; index < Size; ++index) {
+        child[index] = SelectParentScalar(first_parent[index], second_parent[index], random_engine, config);
+    }
+}
+
+template <std::size_t InputSize, std::size_t OutputSize>
+inline void
+BreedDenseLayerParameters(const model::input_encoder::DenseLayerParameters<InputSize, OutputSize> &first_parent,
+                          const model::input_encoder::DenseLayerParameters<InputSize, OutputSize> &second_parent,
+                          model::input_encoder::DenseLayerParameters<InputSize, OutputSize> &child,
+                          BreedingRandomEngine &random_engine, const BreedingConfig &config) {
+    BreedFixedBuffer(first_parent.weights, second_parent.weights, child.weights, random_engine, config);
+    BreedFixedBuffer(first_parent.biases, second_parent.biases, child.biases, random_engine, config);
+}
+
+template <std::size_t InputSize, std::size_t OutputSize>
+inline void
+BreedDenseLayerParameters(const model::dense_trunk::DenseLayerParameters<InputSize, OutputSize> &first_parent,
+                          const model::dense_trunk::DenseLayerParameters<InputSize, OutputSize> &second_parent,
+                          model::dense_trunk::DenseLayerParameters<InputSize, OutputSize> &child,
+                          BreedingRandomEngine &random_engine, const BreedingConfig &config) {
+    BreedFixedBuffer(first_parent.weights, second_parent.weights, child.weights, random_engine, config);
+    BreedFixedBuffer(first_parent.biases, second_parent.biases, child.biases, random_engine, config);
+}
+
+} // namespace detail
+
+inline void BreedPolicyModelParameters(const model::policy_model::PolicyModelParameters &first_parent,
+                                       const model::policy_model::PolicyModelParameters &second_parent,
+                                       model::policy_model::PolicyModelParameters &child,
+                                       BreedingRandomEngine &random_engine, const BreedingConfig &config = {}) {
+    detail::BreedDenseLayerParameters(first_parent.input_encoder.input_to_hidden,
+                                      second_parent.input_encoder.input_to_hidden, child.input_encoder.input_to_hidden,
+                                      random_engine, config);
+    detail::BreedDenseLayerParameters(first_parent.input_encoder.hidden_to_output,
+                                      second_parent.input_encoder.hidden_to_output,
+                                      child.input_encoder.hidden_to_output, random_engine, config);
+    detail::BreedDenseLayerParameters(first_parent.dense_trunk.input_to_hidden0,
+                                      second_parent.dense_trunk.input_to_hidden0, child.dense_trunk.input_to_hidden0,
+                                      random_engine, config);
+    detail::BreedDenseLayerParameters(first_parent.dense_trunk.hidden0_to_hidden1,
+                                      second_parent.dense_trunk.hidden0_to_hidden1,
+                                      child.dense_trunk.hidden0_to_hidden1, random_engine, config);
+    detail::BreedDenseLayerParameters(first_parent.dense_trunk.hidden1_to_output,
+                                      second_parent.dense_trunk.hidden1_to_output, child.dense_trunk.hidden1_to_output,
+                                      random_engine, config);
+}
+
+template <std::size_t ActionCount>
+inline void BreedOutputEmbeddingGenome(const OutputEmbeddingGenome<ActionCount> &first_parent,
+                                       const OutputEmbeddingGenome<ActionCount> &second_parent,
+                                       OutputEmbeddingGenome<ActionCount> &child, BreedingRandomEngine &random_engine,
+                                       const BreedingConfig &config = {}) {
+    for (std::size_t action_index = 0; action_index < ActionCount; ++action_index) {
+        detail::BreedFixedBuffer(first_parent.trainable_tails[action_index],
+                                 second_parent.trainable_tails[action_index], child.trainable_tails[action_index],
+                                 random_engine, config);
+    }
+}
+
+template <std::size_t ActionCount>
+inline bool TryBreedChildGenome(const ModelGenome<ActionCount> &first_parent,
+                                const ModelGenome<ActionCount> &second_parent, ModelGenome<ActionCount> &child,
+                                BreedingRandomEngine &random_engine, const BreedingConfig &config = {}) {
+    if (!IsValidBreedingConfig(config)) {
+        return false;
+    }
+
+    BreedPolicyModelParameters(first_parent.policy_model, second_parent.policy_model, child.policy_model, random_engine,
+                               config);
+    BreedOutputEmbeddingGenome(first_parent.output_embedding, second_parent.output_embedding, child.output_embedding,
+                               random_engine, config);
+    return true;
+}
+
+template <std::size_t ActionCount, std::size_t PopulationSize>
+inline bool TryBreedChildGenomeFromPopulation(const Population<ModelGenome<ActionCount>, PopulationSize> &population,
+                                              const ParentPair &parent_pair, ModelGenome<ActionCount> &child,
+                                              BreedingRandomEngine &random_engine, const BreedingConfig &config = {}) {
+    if ((parent_pair.first_parent_index >= PopulationSize) || (parent_pair.second_parent_index >= PopulationSize)) {
+        return false;
+    }
+
+    return TryBreedChildGenome(population.individuals[parent_pair.first_parent_index].genome,
+                               population.individuals[parent_pair.second_parent_index].genome, child, random_engine,
+                               config);
+}
+
+template <std::size_t ActionCount>
+inline ModelGenome<ActionCount>
+BreedChildGenome(const ModelGenome<ActionCount> &first_parent, const ModelGenome<ActionCount> &second_parent,
+                 BreedingRandomEngine &random_engine, const BreedingConfig &config = {}) {
+    ModelGenome<ActionCount> child{};
+    const bool breed_ok = TryBreedChildGenome(first_parent, second_parent, child, random_engine, config);
+    if (!breed_ok) {
+        throw std::invalid_argument("Breeding requires a valid recombination config.");
+    }
+
+    return child;
+}
+
+} // namespace neuroevolution::genetic_algorithm
