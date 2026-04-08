@@ -20,10 +20,16 @@ using neuroevolution::genetic_algorithm::GeneticAlgorithmConfig;
 using neuroevolution::genetic_algorithm::Individual;
 using neuroevolution::genetic_algorithm::IsValidFitnessEvaluationConfig;
 using neuroevolution::genetic_algorithm::IsValidGeneticAlgorithmConfig;
+using neuroevolution::genetic_algorithm::IsValidParentSelectionConfig;
 using neuroevolution::genetic_algorithm::ModelGenome;
+using neuroevolution::genetic_algorithm::ParentPair;
+using neuroevolution::genetic_algorithm::ParentSelectionConfig;
 using neuroevolution::genetic_algorithm::Population;
+using neuroevolution::genetic_algorithm::SelectionRandomEngine;
 using neuroevolution::genetic_algorithm::TryFindBestIndividualIndex;
 using neuroevolution::genetic_algorithm::TryMaterializeActionEmbeddings;
+using neuroevolution::genetic_algorithm::TrySelectParentIndex;
+using neuroevolution::genetic_algorithm::TrySelectParentPair;
 using neuroevolution::model::output_embedding::ActionEmbedding;
 using neuroevolution::model::output_embedding::kTrainableFeatureDimension;
 using neuroevolution::wordle::Word;
@@ -207,6 +213,71 @@ bool TestPlaceholderFitnessEvaluationAssignsSeededScoresAndBookkeeping() {
     return ok;
 }
 
+bool TestParentSelectionUsesTournamentLogicAndSupportsParentPairs() {
+    constexpr std::size_t kPopulationSize = 4;
+
+    Population<ModelGenome<2>, kPopulationSize> population{};
+    population.individuals[0].fitness = 1.0f;
+    population.individuals[1].fitness = 6.0f;
+    population.individuals[2].fitness = 8.0f;
+    population.individuals[3].fitness = 10.0f;
+
+    for (std::size_t individual_index = 0; individual_index < kPopulationSize; ++individual_index) {
+        population.individuals[individual_index].has_fitness = true;
+    }
+
+    ParentSelectionConfig valid_config{};
+    valid_config.tournament_size = kPopulationSize;
+    valid_config.allow_self_parenting = false;
+
+    ParentSelectionConfig invalid_config = valid_config;
+    invalid_config.tournament_size = 0;
+
+    SelectionRandomEngine random_engine_a(7);
+    SelectionRandomEngine random_engine_b(7);
+
+    std::size_t selected_parent_index = 0;
+    ParentPair parent_pair{};
+
+    const bool select_ok = TrySelectParentIndex(population, random_engine_a, selected_parent_index, valid_config);
+    const bool pair_ok = TrySelectParentPair(population, random_engine_b, parent_pair, valid_config);
+
+    ParentSelectionConfig self_parenting_config = valid_config;
+    self_parenting_config.allow_self_parenting = true;
+
+    SelectionRandomEngine random_engine_c(7);
+    ParentPair self_parenting_pair{};
+    const bool self_pair_ok =
+        TrySelectParentPair(population, random_engine_c, self_parenting_pair, self_parenting_config);
+
+    Population<ModelGenome<2>, 1> one_individual_population{};
+    one_individual_population.individuals[0].fitness = 5.0f;
+    one_individual_population.individuals[0].has_fitness = true;
+    SelectionRandomEngine random_engine_d(11);
+    ParentPair impossible_pair{};
+    const bool impossible_pair_ok = TrySelectParentPair(one_individual_population, random_engine_d, impossible_pair);
+
+    bool ok = true;
+    ok &= ExpectTrue(IsValidParentSelectionConfig(valid_config), "Expected valid parent-selection config");
+    ok &= ExpectTrue(!IsValidParentSelectionConfig(invalid_config), "Expected zero tournament size to be rejected");
+    ok &= ExpectTrue(select_ok, "Expected parent selection to succeed for a fitted population");
+    ok &= ExpectTrue(selected_parent_index == 3,
+                     "Expected full-population tournament selection to choose the fittest parent");
+    ok &= ExpectTrue(pair_ok, "Expected distinct-parent selection to succeed when enough fitted individuals exist");
+    ok &=
+        ExpectTrue(parent_pair.first_parent_index == 3, "Expected first selected parent to be the fittest individual");
+    ok &= ExpectTrue(parent_pair.second_parent_index == 2,
+                     "Expected second selected parent to be the best remaining individual");
+    ok &= ExpectTrue(self_pair_ok, "Expected self-parenting selection to succeed");
+    ok &= ExpectTrue(self_parenting_pair.first_parent_index == 3,
+                     "Expected self-parenting mode to select the fittest first parent");
+    ok &= ExpectTrue(self_parenting_pair.second_parent_index == 3,
+                     "Expected self-parenting mode to allow the same best individual twice");
+    ok &= ExpectTrue(!impossible_pair_ok,
+                     "Expected distinct-parent selection to fail for a population with only one fitted individual");
+    return ok;
+}
+
 } // namespace
 
 int main() {
@@ -219,6 +290,10 @@ int main() {
     }
 
     if (!TestPlaceholderFitnessEvaluationAssignsSeededScoresAndBookkeeping()) {
+        return 1;
+    }
+
+    if (!TestParentSelectionUsesTournamentLogicAndSupportsParentPairs()) {
         return 1;
     }
 
