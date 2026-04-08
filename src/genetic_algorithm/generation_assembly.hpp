@@ -6,6 +6,7 @@
 
 #include "common/fixed_buffer.hpp"
 #include "genetic_algorithm/breeding.hpp"
+#include "genetic_algorithm/mutation.hpp"
 #include "genetic_algorithm/selection.hpp"
 
 namespace neuroevolution::genetic_algorithm {
@@ -16,12 +17,14 @@ struct GenerationAssemblyConfig {
     GeneticAlgorithmConfig genetic_algorithm{};
     ParentSelectionConfig parent_selection{};
     BreedingConfig breeding{};
+    MutationConfig mutation{};
 };
 
 template <std::size_t PopulationSize>
 constexpr bool IsValidGenerationAssemblyConfig(const GenerationAssemblyConfig &config) noexcept {
     return IsValidGeneticAlgorithmConfig<PopulationSize>(config.genetic_algorithm) &&
-           IsValidParentSelectionConfig(config.parent_selection) && IsValidBreedingConfig(config.breeding);
+           IsValidParentSelectionConfig(config.parent_selection) && IsValidBreedingConfig(config.breeding) &&
+           IsValidMutationConfig(config.mutation);
 }
 
 namespace detail {
@@ -104,6 +107,10 @@ inline bool TryAssembleNextGeneration(const Population<ModelGenome<ActionCount>,
         ModelGenome<ActionCount> child_genome{};
         if (!TryBreedChildGenomeFromPopulation(current_population, parent_pair, child_genome, random_engine,
                                                config.breeding)) {
+            return false;
+        }
+
+        if (!TryMutateGenome(child_genome, random_engine, config.mutation)) {
             return false;
         }
 

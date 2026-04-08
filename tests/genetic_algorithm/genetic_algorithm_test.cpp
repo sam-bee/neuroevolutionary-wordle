@@ -28,8 +28,12 @@ using neuroevolution::genetic_algorithm::IsValidBreedingConfig;
 using neuroevolution::genetic_algorithm::IsValidFitnessEvaluationConfig;
 using neuroevolution::genetic_algorithm::IsValidGenerationAssemblyConfig;
 using neuroevolution::genetic_algorithm::IsValidGeneticAlgorithmConfig;
+using neuroevolution::genetic_algorithm::IsValidMutationConfig;
 using neuroevolution::genetic_algorithm::IsValidParentSelectionConfig;
 using neuroevolution::genetic_algorithm::ModelGenome;
+using neuroevolution::genetic_algorithm::MutateGenome;
+using neuroevolution::genetic_algorithm::MutationConfig;
+using neuroevolution::genetic_algorithm::MutationRandomEngine;
 using neuroevolution::genetic_algorithm::ParentPair;
 using neuroevolution::genetic_algorithm::ParentSelectionConfig;
 using neuroevolution::genetic_algorithm::Population;
@@ -39,6 +43,7 @@ using neuroevolution::genetic_algorithm::TryBreedChildGenome;
 using neuroevolution::genetic_algorithm::TryBreedChildGenomeFromPopulation;
 using neuroevolution::genetic_algorithm::TryFindBestIndividualIndex;
 using neuroevolution::genetic_algorithm::TryMaterializeActionEmbeddings;
+using neuroevolution::genetic_algorithm::TryMutateGenome;
 using neuroevolution::genetic_algorithm::TrySelectParentIndex;
 using neuroevolution::genetic_algorithm::TrySelectParentPair;
 using neuroevolution::model::output_embedding::ActionEmbedding;
@@ -93,8 +98,6 @@ bool TestConfigValidationAndPopulationBookkeeping() {
 
     GeneticAlgorithmConfig valid_config{};
     valid_config.elite_count = 1;
-    valid_config.mutation_probability = 0.1f;
-    valid_config.mutation_sigma = 0.25f;
 
     GeneticAlgorithmConfig invalid_config = valid_config;
     invalid_config.elite_count = 4;
@@ -400,6 +403,87 @@ bool TestBreedingCanProduceChildGenomeFromEitherParentOrPopulationPair() {
     return ok;
 }
 
+bool TrackedGenomeValuesEqual(const ModelGenome<2> &lhs, const ModelGenome<2> &rhs) {
+    return (ToFloat(lhs.policy_model.input_encoder.input_to_hidden.weights[0]) ==
+            ToFloat(rhs.policy_model.input_encoder.input_to_hidden.weights[0])) &&
+           (ToFloat(lhs.policy_model.input_encoder.input_to_hidden.biases[0]) ==
+            ToFloat(rhs.policy_model.input_encoder.input_to_hidden.biases[0])) &&
+           (ToFloat(lhs.policy_model.input_encoder.hidden_to_output.weights[0]) ==
+            ToFloat(rhs.policy_model.input_encoder.hidden_to_output.weights[0])) &&
+           (ToFloat(lhs.policy_model.dense_trunk.input_to_hidden0.weights[0]) ==
+            ToFloat(rhs.policy_model.dense_trunk.input_to_hidden0.weights[0])) &&
+           (ToFloat(lhs.policy_model.dense_trunk.hidden0_to_hidden1.biases[0]) ==
+            ToFloat(rhs.policy_model.dense_trunk.hidden0_to_hidden1.biases[0])) &&
+           (ToFloat(lhs.policy_model.dense_trunk.hidden1_to_output.weights[0]) ==
+            ToFloat(rhs.policy_model.dense_trunk.hidden1_to_output.weights[0])) &&
+           (ToFloat(lhs.output_embedding.trainable_tails[0][0]) ==
+            ToFloat(rhs.output_embedding.trainable_tails[0][0])) &&
+           (ToFloat(lhs.output_embedding.trainable_tails[1][1]) == ToFloat(rhs.output_embedding.trainable_tails[1][1]));
+}
+
+bool TestMutationCanBeDisabledOrApplySeededNoise() {
+    const ModelGenome<2> baseline = MakeBreedingParentGenome(10.0f);
+
+    MutationConfig zero_probability_config{};
+    zero_probability_config.mutation_probability = 0.0f;
+    zero_probability_config.mutation_sigma = 1.0f;
+
+    MutationConfig zero_sigma_config{};
+    zero_sigma_config.mutation_probability = 1.0f;
+    zero_sigma_config.mutation_sigma = 0.0f;
+
+    MutationConfig active_config{};
+    active_config.mutation_probability = 1.0f;
+    active_config.mutation_sigma = 0.5f;
+
+    MutationConfig invalid_config{};
+    invalid_config.mutation_probability = 1.5f;
+
+    ModelGenome<2> zero_probability_genome = baseline;
+    ModelGenome<2> zero_sigma_genome = baseline;
+    ModelGenome<2> active_genome_a = baseline;
+    ModelGenome<2> active_genome_b = baseline;
+    ModelGenome<2> active_genome_c = baseline;
+
+    MutationRandomEngine random_engine_a(1);
+    MutationRandomEngine random_engine_b(2);
+    MutationRandomEngine random_engine_c(123);
+    MutationRandomEngine random_engine_d(123);
+    MutationRandomEngine random_engine_e(456);
+
+    const bool zero_probability_ok = TryMutateGenome(zero_probability_genome, random_engine_a, zero_probability_config);
+    const bool zero_sigma_ok = TryMutateGenome(zero_sigma_genome, random_engine_b, zero_sigma_config);
+    const bool active_ok_a = TryMutateGenome(active_genome_a, random_engine_c, active_config);
+    const bool active_ok_b = TryMutateGenome(active_genome_b, random_engine_d, active_config);
+    const bool active_ok_c = TryMutateGenome(active_genome_c, random_engine_e, active_config);
+
+    MutationRandomEngine random_engine_f(789);
+    ModelGenome<2> convenience_genome = baseline;
+    MutateGenome(convenience_genome, random_engine_f, zero_probability_config);
+
+    bool ok = true;
+    ok &= ExpectTrue(IsValidMutationConfig(zero_probability_config), "Expected zero-probability mutation config");
+    ok &= ExpectTrue(IsValidMutationConfig(zero_sigma_config), "Expected zero-sigma mutation config");
+    ok &= ExpectTrue(IsValidMutationConfig(active_config), "Expected active mutation config");
+    ok &= ExpectTrue(!IsValidMutationConfig(invalid_config), "Expected mutation probability above one to be rejected");
+    ok &= ExpectTrue(zero_probability_ok, "Expected zero-probability mutation call to succeed");
+    ok &= ExpectTrue(zero_sigma_ok, "Expected zero-sigma mutation call to succeed");
+    ok &= ExpectTrue(active_ok_a && active_ok_b && active_ok_c, "Expected active mutation calls to succeed");
+    ok &= ExpectTrue(TrackedGenomeValuesEqual(zero_probability_genome, baseline),
+                     "Expected zero mutation probability to leave the genome unchanged");
+    ok &= ExpectTrue(TrackedGenomeValuesEqual(zero_sigma_genome, baseline),
+                     "Expected zero mutation sigma to leave the genome unchanged");
+    ok &= ExpectTrue(TrackedGenomeValuesEqual(active_genome_a, active_genome_b),
+                     "Expected same mutation seed to reproduce the same mutated genome");
+    ok &= ExpectTrue(!TrackedGenomeValuesEqual(active_genome_a, baseline),
+                     "Expected active mutation to change at least one tracked genome value");
+    ok &= ExpectTrue(!TrackedGenomeValuesEqual(active_genome_a, active_genome_c),
+                     "Expected different mutation seeds to produce different mutated genomes");
+    ok &= ExpectTrue(TrackedGenomeValuesEqual(convenience_genome, baseline),
+                     "Expected the convenience mutation wrapper to respect zero-probability config");
+    return ok;
+}
+
 bool TestNextGenerationAssemblyCopiesEliteAndBreedsRemainingChildren() {
     constexpr std::size_t kPopulationSize = 4;
 
@@ -425,6 +509,8 @@ bool TestNextGenerationAssemblyCopiesEliteAndBreedsRemainingChildren() {
     valid_config.parent_selection.tournament_size = kPopulationSize;
     valid_config.parent_selection.allow_self_parenting = false;
     valid_config.breeding.first_parent_probability = 0.0f;
+    valid_config.mutation.mutation_probability = 0.0f;
+    valid_config.mutation.mutation_sigma = 1.0f;
 
     GenerationAssemblyRandomEngine random_engine(13);
     Population<ModelGenome<2>, kPopulationSize> next_population{};
@@ -490,6 +576,48 @@ bool TestNextGenerationAssemblyRejectsInvalidConfigAndImpossibleBreedingCases() 
     return ok;
 }
 
+bool TestNextGenerationAssemblyAppliesMutationToBredChildrenButNotElites() {
+    constexpr std::size_t kPopulationSize = 3;
+
+    Population<ModelGenome<2>, kPopulationSize> current_population{};
+    current_population.generation_index = 2;
+    current_population.individuals[0].genome = MakeBreedingParentGenome(10.0f);
+    current_population.individuals[1].genome = MakeBreedingParentGenome(20.0f);
+    current_population.individuals[2].genome = MakeBreedingParentGenome(30.0f);
+
+    current_population.individuals[0].fitness = 1.0f;
+    current_population.individuals[1].fitness = 5.0f;
+    current_population.individuals[2].fitness = 9.0f;
+
+    for (std::size_t individual_index = 0; individual_index < kPopulationSize; ++individual_index) {
+        current_population.individuals[individual_index].has_fitness = true;
+    }
+
+    GenerationAssemblyConfig config{};
+    config.genetic_algorithm.elite_count = 1;
+    config.parent_selection.tournament_size = kPopulationSize;
+    config.parent_selection.allow_self_parenting = false;
+    config.breeding.first_parent_probability = 0.0f;
+    config.mutation.mutation_probability = 1.0f;
+    config.mutation.mutation_sigma = 0.5f;
+
+    GenerationAssemblyRandomEngine random_engine(17);
+    Population<ModelGenome<2>, kPopulationSize> next_population{};
+    const bool assemble_ok = TryAssembleNextGeneration(current_population, next_population, random_engine, config);
+
+    bool ok = true;
+    ok &= ExpectTrue(assemble_ok, "Expected next-generation assembly with mutation to succeed");
+    ok &= ExpectSelectedGenomeValuesMatch(next_population.individuals[0].genome,
+                                          current_population.individuals[2].genome, "mutating assembly elite slot");
+    ok &= ExpectTrue(
+        !TrackedGenomeValuesEqual(next_population.individuals[1].genome, current_population.individuals[1].genome),
+        "Expected first bred child to differ from its pre-mutation source parent");
+    ok &= ExpectTrue(
+        !TrackedGenomeValuesEqual(next_population.individuals[2].genome, current_population.individuals[1].genome),
+        "Expected second bred child to differ from its pre-mutation source parent");
+    return ok;
+}
+
 } // namespace
 
 int main() {
@@ -513,11 +641,19 @@ int main() {
         return 1;
     }
 
+    if (!TestMutationCanBeDisabledOrApplySeededNoise()) {
+        return 1;
+    }
+
     if (!TestNextGenerationAssemblyCopiesEliteAndBreedsRemainingChildren()) {
         return 1;
     }
 
     if (!TestNextGenerationAssemblyRejectsInvalidConfigAndImpossibleBreedingCases()) {
+        return 1;
+    }
+
+    if (!TestNextGenerationAssemblyAppliesMutationToBredChildrenButNotElites()) {
         return 1;
     }
 

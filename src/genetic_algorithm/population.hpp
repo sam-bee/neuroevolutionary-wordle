@@ -10,8 +10,6 @@ namespace neuroevolution::genetic_algorithm {
 
 struct GeneticAlgorithmConfig {
     std::size_t elite_count = 1;
-    float mutation_probability = 0.02f;
-    float mutation_sigma = 0.05f;
 };
 
 template <typename Genome> struct Individual {
@@ -30,9 +28,7 @@ template <typename Genome, std::size_t PopulationSize> struct Population {
 
 template <std::size_t PopulationSize>
 constexpr NEUROEVOLUTION_HOST_DEVICE bool IsValidGeneticAlgorithmConfig(const GeneticAlgorithmConfig &config) noexcept {
-    return (config.elite_count > 0) && (config.elite_count <= PopulationSize) &&
-           (config.mutation_probability >= 0.0f) && (config.mutation_probability <= 1.0f) &&
-           (config.mutation_sigma >= 0.0f);
+    return (config.elite_count > 0) && (config.elite_count <= PopulationSize);
 }
 
 template <typename Genome, std::size_t PopulationSize>
