@@ -13,8 +13,12 @@ using neuroevolution::common::FixedBuffer;
 using neuroevolution::common::ToFloat;
 using neuroevolution::genetic_algorithm::BeginNextGeneration;
 using neuroevolution::genetic_algorithm::ClearPopulationFitness;
+using neuroevolution::genetic_algorithm::EvaluatePopulationFitness;
+using neuroevolution::genetic_algorithm::FitnessEvaluationConfig;
+using neuroevolution::genetic_algorithm::FitnessRandomEngine;
 using neuroevolution::genetic_algorithm::GeneticAlgorithmConfig;
 using neuroevolution::genetic_algorithm::Individual;
+using neuroevolution::genetic_algorithm::IsValidFitnessEvaluationConfig;
 using neuroevolution::genetic_algorithm::IsValidGeneticAlgorithmConfig;
 using neuroevolution::genetic_algorithm::ModelGenome;
 using neuroevolution::genetic_algorithm::Population;
@@ -151,6 +155,58 @@ bool TestGenomeMaterializesOutputEmbeddingTrainableParametersAgainstFixedWords()
     return ok;
 }
 
+bool TestPlaceholderFitnessEvaluationAssignsSeededScoresAndBookkeeping() {
+    constexpr std::size_t kPopulationSize = 3;
+
+    FitnessEvaluationConfig valid_config{};
+    valid_config.minimum_fitness = -2.0f;
+    valid_config.maximum_fitness = 3.0f;
+
+    FitnessEvaluationConfig invalid_config = valid_config;
+    invalid_config.minimum_fitness = 5.0f;
+    invalid_config.maximum_fitness = 4.0f;
+
+    Population<ModelGenome<2>, kPopulationSize> population_a{};
+    Population<ModelGenome<2>, kPopulationSize> population_b{};
+    Population<ModelGenome<2>, kPopulationSize> population_c{};
+
+    FitnessRandomEngine random_engine_a(123);
+    FitnessRandomEngine random_engine_b(123);
+    FitnessRandomEngine random_engine_c(456);
+
+    EvaluatePopulationFitness(population_a, random_engine_a, valid_config);
+    EvaluatePopulationFitness(population_b, random_engine_b, valid_config);
+    EvaluatePopulationFitness(population_c, random_engine_c, valid_config);
+
+    bool same_seed_matches = true;
+    bool different_seed_differs = false;
+    bool scores_in_range = true;
+    bool bookkeeping_ok = true;
+
+    for (std::size_t individual_index = 0; individual_index < kPopulationSize; ++individual_index) {
+        const auto &individual_a = population_a.individuals[individual_index];
+        const auto &individual_b = population_b.individuals[individual_index];
+        const auto &individual_c = population_c.individuals[individual_index];
+
+        same_seed_matches &= (individual_a.fitness == individual_b.fitness);
+        different_seed_differs |= (individual_a.fitness != individual_c.fitness);
+        scores_in_range &= (individual_a.fitness >= valid_config.minimum_fitness) &&
+                           (individual_a.fitness <= valid_config.maximum_fitness);
+        bookkeeping_ok &= individual_a.has_fitness && (individual_a.evaluation_count == 1);
+    }
+
+    bool ok = true;
+    ok &= ExpectTrue(IsValidFitnessEvaluationConfig(valid_config), "Expected valid fitness config");
+    ok &= ExpectTrue(!IsValidFitnessEvaluationConfig(invalid_config),
+                     "Expected fitness config with inverted range to be rejected");
+    ok &= ExpectTrue(same_seed_matches, "Expected placeholder fitness scores to be reproducible with the same seed");
+    ok &=
+        ExpectTrue(different_seed_differs, "Expected placeholder fitness scores to differ when using a different seed");
+    ok &= ExpectTrue(scores_in_range, "Expected placeholder fitness scores to stay within configured bounds");
+    ok &= ExpectTrue(bookkeeping_ok, "Expected placeholder fitness evaluation to set flags and increment counts");
+    return ok;
+}
+
 } // namespace
 
 int main() {
@@ -159,6 +215,10 @@ int main() {
     }
 
     if (!TestGenomeMaterializesOutputEmbeddingTrainableParametersAgainstFixedWords()) {
+        return 1;
+    }
+
+    if (!TestPlaceholderFitnessEvaluationAssignsSeededScoresAndBookkeeping()) {
         return 1;
     }
 
