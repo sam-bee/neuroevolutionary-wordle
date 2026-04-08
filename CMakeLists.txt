@@ -92,6 +92,21 @@ target_link_libraries(output_embedding PUBLIC
 
 enable_project_warnings(output_embedding)
 
+add_library(model_initialization STATIC
+    src/model/initialization/parameter_initialization.cpp
+)
+
+target_include_directories(model_initialization PUBLIC
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
+)
+
+target_link_libraries(model_initialization PUBLIC
+    output_embedding
+    policy_model
+)
+
+enable_project_warnings(model_initialization)
+
 add_library(genetic_algorithm INTERFACE)
 
 target_include_directories(genetic_algorithm INTERFACE
@@ -205,6 +220,21 @@ enable_project_warnings(output_embedding_test)
 
 add_test(NAME output_embedding_test COMMAND output_embedding_test)
 set_tests_properties(output_embedding_test PROPERTIES
+    LABELS "cpu;unit"
+)
+
+add_executable(parameter_initialization_test
+    tests/model/initialization/parameter_initialization_test.cpp
+)
+
+target_link_libraries(parameter_initialization_test PRIVATE
+    model_initialization
+)
+
+enable_project_warnings(parameter_initialization_test)
+
+add_test(NAME parameter_initialization_test COMMAND parameter_initialization_test)
+set_tests_properties(parameter_initialization_test PROPERTIES
     LABELS "cpu;unit"
 )
 
