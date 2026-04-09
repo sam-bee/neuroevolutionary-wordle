@@ -14,4 +14,15 @@ wordle::Word SelectBestActionWord(const PolicyVector &policy_vector, const Actio
     return selected_action.word;
 }
 
+wordle::Word SelectBestLegalActionWord(const PolicyVector &policy_vector, const wordle::WordleGrid &grid,
+                                       const ActionEmbedding *action_embeddings, const std::size_t action_count) {
+    SelectedAction selected_action{};
+    if (!TrySelectBestLegalAction(policy_vector, grid, action_embeddings, action_count, selected_action)) {
+        throw std::invalid_argument(
+            "Output embedding legal selection requires a valid unfinished grid and a legal action.");
+    }
+
+    return selected_action.word;
+}
+
 } // namespace neuroevolution::model::output_embedding

@@ -18,7 +18,7 @@ namespace {
 using neuroevolution::common::FixedBuffer;
 using neuroevolution::model::output_embedding::ActionEmbedding;
 using neuroevolution::model::output_embedding::SelectedAction;
-using neuroevolution::model::output_embedding::TrySelectBestAction;
+using neuroevolution::model::output_embedding::TrySelectBestLegalAction;
 using neuroevolution::model::policy_model::PolicyModelParameters;
 using neuroevolution::model::policy_model::PolicyVector;
 using neuroevolution::model::policy_model::TryForwardPolicyModel;
@@ -147,13 +147,157 @@ __global__ void OutputEmbeddingDeviceEndToEndKernel(const PolicyModelParameters 
     }
 
     SelectedAction action{};
-    if (!TrySelectBestAction(policy_output, action_embeddings, kActionCount, action)) {
+    if (!TrySelectBestLegalAction(policy_output, grid, action_embeddings, kActionCount, action)) {
         *status = kStatusActionSelectionFailed;
         return;
     }
 
     *selected_action = action;
     *status = 0;
+}
+
+__global__ void OutputEmbeddingDeviceMaskedSelectionKernel(const PolicyVector *policy_vector, const Word *solution,
+                                                           const Word *guess, const ActionEmbedding *action_embeddings,
+                                                           SelectedAction *selected_action, int *status) {
+    if ((blockIdx.x != 0) || (threadIdx.x != 0)) {
+        return;
+    }
+
+    WordleGrid grid = MakeWordleGrid(*solution);
+    if (!TryAppendGuess(grid, *guess)) {
+        *status = kStatusAppendGuessFailed;
+        return;
+    }
+
+    SelectedAction action{};
+    if (!TrySelectBestLegalAction(*policy_vector, grid, action_embeddings, kActionCount, action)) {
+        *status = kStatusActionSelectionFailed;
+        return;
+    }
+
+    *selected_action = action;
+    *status = 0;
+}
+
+bool TestDeviceLegalSelectionMasksRepeatedGuess() {
+    const Word solution = MakeWord("SOLAR");
+    const Word repeated_guess = MakeWord("BEEFY");
+    FixedBuffer<ActionEmbedding, kActionCount> action_embeddings{};
+    action_embeddings[0].word = MakeWord("APPLE");
+    action_embeddings[1].word = repeated_guess;
+    action_embeddings[2].word = MakeWord("MUMMY");
+
+    action_embeddings[0].trainable_tail[0] = 0.5f;
+    action_embeddings[0].trainable_tail[1] = -1.0f;
+    action_embeddings[1].trainable_tail[0] = 1.0f;
+    action_embeddings[1].trainable_tail[1] = 0.25f;
+    action_embeddings[2].trainable_tail[0] = -0.5f;
+    action_embeddings[2].trainable_tail[1] = 2.0f;
+
+    PolicyVector policy_vector{};
+    policy_vector[static_cast<std::size_t>(neuroevolution::wordle::LetterIndexFromAscii('A'))] = 1.0f;
+    policy_vector[static_cast<std::size_t>(neuroevolution::wordle::LetterIndexFromAscii('B'))] = 2.0f;
+    policy_vector[static_cast<std::size_t>(neuroevolution::wordle::LetterIndexFromAscii('E'))] = 3.0f;
+    policy_vector[static_cast<std::size_t>(neuroevolution::wordle::LetterIndexFromAscii('M'))] = -1.0f;
+    policy_vector[neuroevolution::model::output_embedding::kWordFeatureDimension + 0] = 4.0f;
+    policy_vector[neuroevolution::model::output_embedding::kWordFeatureDimension + 1] = -2.0f;
+
+    PolicyVector *device_policy_vector = nullptr;
+    Word *device_solution = nullptr;
+    Word *device_guess = nullptr;
+    ActionEmbedding *device_action_embeddings = nullptr;
+    SelectedAction *device_selected_action = nullptr;
+    int *device_status = nullptr;
+
+    bool ok = true;
+    ok &= CheckCuda(cudaMalloc(&device_policy_vector, sizeof(policy_vector)), "allocating policy vector");
+    ok &= CheckCuda(cudaMalloc(&device_solution, sizeof(solution)), "allocating masked-selection solution");
+    ok &= CheckCuda(cudaMalloc(&device_guess, sizeof(repeated_guess)), "allocating masked-selection guess");
+    ok &= CheckCuda(cudaMalloc(&device_action_embeddings, sizeof(ActionEmbedding) * kActionCount),
+                    "allocating masked-selection action table");
+    ok &= CheckCuda(cudaMalloc(&device_selected_action, sizeof(SelectedAction)),
+                    "allocating masked-selection output buffer");
+    ok &= CheckCuda(cudaMalloc(&device_status, sizeof(int)), "allocating masked-selection status buffer");
+
+    if (ok) {
+        ok &= CheckCuda(cudaMemcpy(device_policy_vector, &policy_vector, sizeof(policy_vector), cudaMemcpyHostToDevice),
+                        "copying policy vector to device");
+        ok &= CheckCuda(cudaMemcpy(device_solution, &solution, sizeof(solution), cudaMemcpyHostToDevice),
+                        "copying masked-selection solution to device");
+        ok &= CheckCuda(cudaMemcpy(device_guess, &repeated_guess, sizeof(repeated_guess), cudaMemcpyHostToDevice),
+                        "copying masked-selection guess to device");
+        ok &= CheckCuda(cudaMemcpy(device_action_embeddings, action_embeddings.values,
+                                   sizeof(ActionEmbedding) * kActionCount, cudaMemcpyHostToDevice),
+                        "copying masked-selection actions to device");
+    }
+
+    if (ok) {
+        OutputEmbeddingDeviceMaskedSelectionKernel<<<1, 1>>>(device_policy_vector, device_solution, device_guess,
+                                                             device_action_embeddings, device_selected_action,
+                                                             device_status);
+        ok &= CheckCuda(cudaGetLastError(), "launching masked-selection kernel");
+        ok &= CheckCuda(cudaDeviceSynchronize(), "waiting for masked-selection kernel completion");
+    }
+
+    SelectedAction host_selected_action{};
+    int host_status = -1;
+
+    if (ok) {
+        ok &= CheckCuda(
+            cudaMemcpy(&host_selected_action, device_selected_action, sizeof(SelectedAction), cudaMemcpyDeviceToHost),
+            "copying masked-selection result to host");
+        ok &= CheckCuda(cudaMemcpy(&host_status, device_status, sizeof(int), cudaMemcpyDeviceToHost),
+                        "copying masked-selection status to host");
+    }
+
+    if (ok && (host_status == kStatusAppendGuessFailed)) {
+        std::cerr << "FAIL: masked-selection kernel could not append the repeated guess\n";
+        ok = false;
+    }
+
+    if (ok && (host_status == kStatusActionSelectionFailed)) {
+        std::cerr << "FAIL: masked-selection kernel could not select a legal action\n";
+        ok = false;
+    }
+
+    if (ok && (host_status != 0)) {
+        std::cerr << "FAIL: masked-selection kernel returned unexpected status " << host_status << '\n';
+        ok = false;
+    }
+
+    if (ok) {
+        ok &= (host_selected_action.action_index == 0);
+        if (!ok) {
+            std::cerr << "FAIL: expected masked-selection action index 0, got " << host_selected_action.action_index
+                      << '\n';
+        }
+    }
+
+    if (ok) {
+        ok &= ExpectNear(host_selected_action.score, 7.0f, "masked selected action score");
+        ok &= ExpectWordEquals(host_selected_action.word, MakeWord("APPLE"), "masked selected action word");
+    }
+
+    if (device_status != nullptr) {
+        cudaFree(device_status);
+    }
+    if (device_selected_action != nullptr) {
+        cudaFree(device_selected_action);
+    }
+    if (device_action_embeddings != nullptr) {
+        cudaFree(device_action_embeddings);
+    }
+    if (device_guess != nullptr) {
+        cudaFree(device_guess);
+    }
+    if (device_solution != nullptr) {
+        cudaFree(device_solution);
+    }
+    if (device_policy_vector != nullptr) {
+        cudaFree(device_policy_vector);
+    }
+
+    return ok;
 }
 
 } // namespace
@@ -272,6 +416,10 @@ int main() {
     }
 
     if (!ok) {
+        return 1;
+    }
+
+    if (!TestDeviceLegalSelectionMasksRepeatedGuess()) {
         return 1;
     }
 

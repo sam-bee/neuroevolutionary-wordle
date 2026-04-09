@@ -11,6 +11,7 @@
 namespace {
 
 using neuroevolution::wordle::Feedback;
+using neuroevolution::wordle::HasGuess;
 using neuroevolution::wordle::IsValidWordleGrid;
 using neuroevolution::wordle::kMaxTurnCount;
 using neuroevolution::wordle::MakeWordleGrid;
@@ -157,6 +158,24 @@ bool TestWordleGridAppendsTurnsWithCorrectFeedback() {
     return ok;
 }
 
+bool TestWordleGridTracksPreviousGuesses() {
+    const Word solution = MakeWord("SOLAR");
+    const Word first_guess = MakeWord("CRANE");
+    const Word second_guess = MakeWord("ALERT");
+    const Word unseen_guess = MakeWord("MIGHT");
+
+    WordleGrid grid = MakeWordleGrid(solution);
+
+    bool ok = true;
+    ok &= ExpectTrue(!HasGuess(grid, first_guess), "Virgin grid should report no previous guesses");
+    ok &= ExpectTrue(TryAppendGuess(grid, first_guess), "First guess should append successfully");
+    ok &= ExpectTrue(TryAppendGuess(grid, second_guess), "Second guess should append successfully");
+    ok &= ExpectTrue(HasGuess(grid, first_guess), "Grid should report the first guess as already played");
+    ok &= ExpectTrue(HasGuess(grid, second_guess), "Grid should report the second guess as already played");
+    ok &= ExpectTrue(!HasGuess(grid, unseen_guess), "Grid should not report unseen guesses as already played");
+    return ok;
+}
+
 bool TestWordleGridFinishesAfterSixTurns() {
     const Word solution = MakeWord("SOLAR");
     const Word guess = MakeWord("CRANE");
@@ -231,6 +250,10 @@ int main() {
     }
 
     if (!TestWordleGridAppendsTurnsWithCorrectFeedback()) {
+        return 1;
+    }
+
+    if (!TestWordleGridTracksPreviousGuesses()) {
         return 1;
     }
 

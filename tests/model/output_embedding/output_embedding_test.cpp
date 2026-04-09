@@ -20,10 +20,15 @@ using neuroevolution::model::output_embedding::MaterializeActionEmbedding;
 using neuroevolution::model::output_embedding::PolicyVector;
 using neuroevolution::model::output_embedding::ScoreActionEmbedding;
 using neuroevolution::model::output_embedding::SelectBestActionWord;
+using neuroevolution::model::output_embedding::SelectBestLegalActionWord;
 using neuroevolution::model::output_embedding::SelectedAction;
 using neuroevolution::model::output_embedding::TrySelectBestAction;
+using neuroevolution::model::output_embedding::TrySelectBestLegalAction;
 using neuroevolution::wordle::LetterIndexFromAscii;
+using neuroevolution::wordle::MakeWordleGrid;
+using neuroevolution::wordle::TryAppendGuess;
 using neuroevolution::wordle::Word;
+using neuroevolution::wordle::WordleGrid;
 
 constexpr float kTolerance = 1.0e-6f;
 
@@ -143,6 +148,61 @@ bool TestTrySelectBestActionRejectsEmptyTables() {
     return ExpectTrue(!select_ok, "Expected empty output-embedding table to be rejected");
 }
 
+bool TestTrySelectBestLegalActionSkipsPreviouslyGuessedWords() {
+    FixedBuffer<ActionEmbedding, 3> action_embeddings{};
+    action_embeddings[0] = MakeActionEmbedding("APPLE");
+    action_embeddings[1] = MakeActionEmbedding("BEEFY");
+    action_embeddings[2] = MakeActionEmbedding("MUMMY");
+
+    action_embeddings[0].trainable_tail[0] = 0.5f;
+    action_embeddings[0].trainable_tail[1] = -1.0f;
+    action_embeddings[1].trainable_tail[0] = 1.0f;
+    action_embeddings[1].trainable_tail[1] = 0.25f;
+    action_embeddings[2].trainable_tail[0] = -0.5f;
+    action_embeddings[2].trainable_tail[1] = 2.0f;
+
+    PolicyVector policy_vector{};
+    policy_vector[static_cast<std::size_t>(LetterIndexFromAscii('A'))] = 1.0f;
+    policy_vector[static_cast<std::size_t>(LetterIndexFromAscii('B'))] = 2.0f;
+    policy_vector[static_cast<std::size_t>(LetterIndexFromAscii('E'))] = 3.0f;
+    policy_vector[static_cast<std::size_t>(LetterIndexFromAscii('M'))] = -1.0f;
+    policy_vector[kWordFeatureDimension + 0] = 4.0f;
+    policy_vector[kWordFeatureDimension + 1] = -2.0f;
+
+    WordleGrid grid = MakeWordleGrid(MakeWord("SOLAR"));
+    if (!TryAppendGuess(grid, MakeWord("BEEFY"))) {
+        throw std::invalid_argument("Legal-selection test fixture could not append the repeated guess.");
+    }
+
+    SelectedAction selected_action{};
+    const bool select_ok = TrySelectBestLegalAction(policy_vector, grid, action_embeddings.values, 3, selected_action);
+    const Word selected_word = SelectBestLegalActionWord(policy_vector, grid, action_embeddings.values, 3);
+
+    bool ok = true;
+    ok &= ExpectTrue(select_ok, "Expected legal selection to succeed when at least one action remains legal");
+    ok &= ExpectTrue(selected_action.action_index == 0,
+                     "Expected APPLE to be selected after masking the repeated BEEFY guess");
+    ok &= ExpectNear(selected_action.score, 7.0f, "selected legal action score");
+    ok &= ExpectWordEquals(selected_action.word, MakeWord("APPLE"), "selected legal action word");
+    ok &= ExpectWordEquals(selected_word, MakeWord("APPLE"), "selected legal wrapper word");
+    return ok;
+}
+
+bool TestTrySelectBestLegalActionRejectsTablesWithNoLegalActions() {
+    FixedBuffer<ActionEmbedding, 1> action_embeddings{};
+    action_embeddings[0] = MakeActionEmbedding("BEEFY");
+
+    PolicyVector policy_vector{};
+    WordleGrid grid = MakeWordleGrid(MakeWord("SOLAR"));
+    if (!TryAppendGuess(grid, MakeWord("BEEFY"))) {
+        throw std::invalid_argument("No-legal-action test fixture could not append the repeated guess.");
+    }
+
+    SelectedAction selected_action{};
+    const bool select_ok = TrySelectBestLegalAction(policy_vector, grid, action_embeddings.values, 1, selected_action);
+    return ExpectTrue(!select_ok, "Expected legal selection to fail when every action is a repeated guess");
+}
+
 } // namespace
 
 int main() {
@@ -159,6 +219,14 @@ int main() {
     }
 
     if (!TestTrySelectBestActionRejectsEmptyTables()) {
+        return 1;
+    }
+
+    if (!TestTrySelectBestLegalActionSkipsPreviouslyGuessedWords()) {
+        return 1;
+    }
+
+    if (!TestTrySelectBestLegalActionRejectsTablesWithNoLegalActions()) {
         return 1;
     }
 
