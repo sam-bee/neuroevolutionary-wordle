@@ -26,7 +26,7 @@ The structure of the model is as follows:
 The current action space is **4,739 valid 5-letter guesses**. It is smaller than the full guess list, but still includes
 all allowed solutions while biasing the action space toward common words derived from subtitle-frequency data.
 
-More information on data is available at [`docs/data-docs.md`](docs/data-docs.md).
+More information on data is available at [`docs/data/data-docs.md`](docs/data/data-docs.md).
 
 ## Why this exists
 
@@ -41,8 +41,8 @@ At a high level, the intended training story is:
 - evolve parameters with a genetic algorithm
 - later add reinforcement-learning ideas if they prove useful
 
-Development is starting with the **model structure only**. Training, fitness evaluation, and the genetic algorithm
-machinery will come afterwards.
+Development started with the **model structure first**. The repository now also includes early training-data and
+genetic-algorithm runtime work, while fuller training and learning-loop design still come later.
 
 ## Current model idea
 
@@ -59,14 +59,13 @@ contribute a hard-coded 64-dimensional zero vector instead.
 The model input begins with a single scalar that is `1` for a virgin grid and `0` otherwise. After that come the five
 64-dimensional per-turn outputs, for a total of 321 values passed to the dense trunk.
 
-That policy vector is scored against every word in the output embedding by dot product. Repeated guesses are masked out
-because they are illegal in Wordle.
+That policy vector is scored against every word in the output embedding by dot product.
 
 ## Output embedding
 
 Each action word has a 64-dimensional embedding vector.
 
-- **26 dimensions are fixed** and indicate whether each letter `A-Z` appears in the word
+- **26 dimensions are fixed** and encode per-letter counts for `A-Z` in the word
 - **38 dimensions are trainable** and are initialised randomly
 
 The network therefore does **not** emit one output per word. Instead, it emits a 64-dimensional vector in the same space
@@ -80,7 +79,8 @@ For implementation detail on the neural network itself, see:
 - [accompanying design diagram](docs/neural-net-design/neural-net-design-diagram.png)
 
 That document is intended to be concrete enough for CUDA implementation of the model structure, while deliberately
-stopping short of the genetic algorithm, reinforcement learning, and training-loop design.
+staying focused on the policy model rather than the wider genetic algorithm, reinforcement learning, and training-loop
+design.
 
 ## Build setup
 
@@ -130,14 +130,13 @@ right place for per-machine CUDA selection.
 
 ## Status
 
-This repository is currently at the **build the model** stage.
+This repository is currently at the **model implementation plus early genetic-algorithm** stage.
 
 Immediate goals:
 
-- represent Wordle game state in a GPU-friendly form
-- implement the shared input encoder
-- implement the dense trunk and 64-dimensional policy head
-- implement the output embedding and action scoring
-- verify that forward inference works end-to-end
+- continue validating forward inference end-to-end
+- build out training-data handling for GA experiments
+- continue implementing and refining the genetic-algorithm runtime
+- later explore reinforcement-learning ideas if they prove useful
 
-Training design comes later.
+Broader training design still comes later.

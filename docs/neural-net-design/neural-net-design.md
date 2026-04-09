@@ -2,7 +2,9 @@
 
 This document describes the agreed neural-network structure for the Wordle policy model.
 
-It is intended as an implementation guide for the initial CUDA/C++ work. The scope of this document ends at **model structure and forward inference**. It does **not** yet specify:
+It is intended as an implementation guide for the CUDA/C++ model work. The repository now also contains early
+genetic-algorithm and device-runtime code, but the scope of this document still ends at **model structure and forward
+inference**. It does **not** yet specify:
 
 - genetic algorithm mechanics
 - reinforcement learning
