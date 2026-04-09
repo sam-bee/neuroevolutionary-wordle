@@ -31,7 +31,9 @@ using neuroevolution::wordle::TryAppendGuess;
 using neuroevolution::wordle::Word;
 using neuroevolution::wordle::WordleGrid;
 
-NEUROEVOLUTION_HOST_DEVICE constexpr int DeviceStatusValue(const DeviceRuntimeStatusCode status_code) { return static_cast<int>(status_code); }
+NEUROEVOLUTION_HOST_DEVICE constexpr int DeviceStatusValue(const DeviceRuntimeStatusCode status_code) {
+    return static_cast<int>(status_code);
+}
 
 struct DeviceRandomState {
     std::uint64_t state = 0;
