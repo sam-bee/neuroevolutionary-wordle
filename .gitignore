@@ -1,2 +1,6 @@
 /build/
 .env
+
+profiling/*
+!profiling/.gitkeep
+
