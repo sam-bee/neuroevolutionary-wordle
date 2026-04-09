@@ -111,7 +111,11 @@ cmake -S . -B build -G Ninja
 The `Makefile` will create a local `.env` file from `.env.example` the first time you run it, if `.env` does not
 already exist.
 
-That `.env` file controls which CUDA device the GPU-backed test commands run on:
+The CUDA-backed executables in this project use the process environment at runtime when deciding which GPU is visible as
+logical device `0`. In practice, that means the code assumes `CUDA_DEVICE_ORDER` and `CUDA_VISIBLE_DEVICES` are already
+set the way you want before you launch the binary.
+
+For the `make` targets, those variables come from the local `.env` file:
 
 ```dotenv
 CUDA_DEVICE_ORDER=FASTEST_FIRST
@@ -126,7 +130,8 @@ The checked-in example assumes a **single-device machine**, where the only CUDA 
 
 If you want to choose a different GPU on a multi-device machine, change your local `.env` file and set
 `CUDA_VISIBLE_DEVICES` to the device you want. The `.env` file is machine-local and is ignored by git, so it is the
-right place for per-machine CUDA selection.
+right place for per-machine CUDA selection when using `make`. If you launch `./build/run_genetic_algorithm` or another
+binary directly, it will inherit whatever values your shell or profiling tool already exported.
 
 ## Status
 
