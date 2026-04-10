@@ -246,7 +246,11 @@ int main(int argc, char **argv) {
         std::cout << "Running device GA demo with population=" << cli_config.population_size
                   << ", action_count=" << neuroevolution::genetic_algorithm::device::kDeviceActionCount
                   << ", generations=" << cli_config.generation_count << ", seed=" << cli_config.seed
-                  << ", training_shard_entries=" << training_shard.entry_count
+                  << ", training_curriculum_entries=" << training_shard.entry_count
+                  << ", initial_training_shard_entries="
+                  << neuroevolution::training_folder::kTrainingDataEntriesPerShard
+                  << ", phased_curriculum_second_shard_generation="
+                  << neuroevolution::training_folder::kPhasedCurriculumSecondShardGeneration
                   << ", training_source=" << training_data_path.filename().string()
                   << ", training_storage=constant_memory\n";
         std::cout << std::fixed << std::setprecision(4);

@@ -9,7 +9,7 @@
 
 namespace neuroevolution::genetic_algorithm::device {
 
-constexpr std::size_t kDeviceActionCount = training_folder::kInitialTrainingDataShardEntryCount;
+constexpr std::size_t kDeviceActionCount = training_folder::kTrainingDataCurriculumEntryCount;
 constexpr std::size_t kDevicePopulationCapacity = 256;
 constexpr std::size_t kDefaultDevicePopulationSize = 100;
 

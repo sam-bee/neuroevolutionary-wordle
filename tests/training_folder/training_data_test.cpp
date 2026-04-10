@@ -9,14 +9,17 @@
 
 namespace {
 
+using neuroevolution::training_folder::ActiveTrainingDataEntryCountForGeneration;
 using neuroevolution::training_folder::DefaultActionSpacePath;
 using neuroevolution::training_folder::IsValidTrainingDataShard;
-using neuroevolution::training_folder::kInitialTrainingDataShardEntryCount;
+using neuroevolution::training_folder::kPhasedCurriculumSecondShardGeneration;
+using neuroevolution::training_folder::kTrainingDataCurriculumEntryCount;
+using neuroevolution::training_folder::kTrainingDataEntriesPerShard;
 using neuroevolution::training_folder::LoadInitialTrainingDataShardFromActionSpace;
 using neuroevolution::training_folder::TrainingDataShard;
 using neuroevolution::wordle::Word;
 
-constexpr std::array<const char *, kInitialTrainingDataShardEntryCount> kExpectedTrainingWords = {
+constexpr std::array<const char *, kTrainingDataCurriculumEntryCount> kExpectedTrainingWords = {
     "MINOS", "VODKA", "RAZOR", "GRADS", "CURLS", "BILGE", "GREET", "PYLON", "ENTER", "READY",
     "VERDE", "AUGER", "FOOTS", "BRACE", "PURTY", "SPORT", "TIRES", "FRISK", "AFFIX", "CHUMS",
 };
@@ -89,10 +92,30 @@ bool TestLoadInitialTrainingDataShardReadsTopTwentyRandomisedActionSpaceWords() 
     return ok;
 }
 
+bool TestPhasedCurriculumUsesOneShardBeforeGenerationOneHundredAndBothAfterwards() {
+    const TrainingDataShard shard = LoadInitialTrainingDataShardFromActionSpace();
+
+    bool ok = true;
+    ok &= ExpectTrue(ActiveTrainingDataEntryCountForGeneration(shard, 0) == kTrainingDataEntriesPerShard,
+                     "Expected phased curriculum generation zero to use only the first training-data shard");
+    ok &=
+        ExpectTrue(ActiveTrainingDataEntryCountForGeneration(shard, kPhasedCurriculumSecondShardGeneration - 1) ==
+                       kTrainingDataEntriesPerShard,
+                   "Expected phased curriculum to keep using only the first training-data shard before generation 100");
+    ok &= ExpectTrue(ActiveTrainingDataEntryCountForGeneration(shard, kPhasedCurriculumSecondShardGeneration) ==
+                         kTrainingDataCurriculumEntryCount,
+                     "Expected phased curriculum generation 100 to include both training-data shards");
+    ok &= ExpectTrue(ActiveTrainingDataEntryCountForGeneration(shard, kPhasedCurriculumSecondShardGeneration + 1) ==
+                         kTrainingDataCurriculumEntryCount,
+                     "Expected phased curriculum to keep both training-data shards active after generation 100");
+    return ok;
+}
+
 } // namespace
 
 int main() {
-    if (!TestLoadInitialTrainingDataShardReadsTopTwentyRandomisedActionSpaceWords()) {
+    if (!TestLoadInitialTrainingDataShardReadsTopTwentyRandomisedActionSpaceWords() ||
+        !TestPhasedCurriculumUsesOneShardBeforeGenerationOneHundredAndBothAfterwards()) {
         return 1;
     }
 

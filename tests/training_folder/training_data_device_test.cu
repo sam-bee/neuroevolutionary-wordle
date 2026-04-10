@@ -12,7 +12,7 @@
 namespace {
 
 using neuroevolution::training_folder::DeviceTrainingDataShard;
-using neuroevolution::training_folder::kInitialTrainingDataShardEntryCount;
+using neuroevolution::training_folder::kTrainingDataCurriculumEntryCount;
 using neuroevolution::training_folder::LoadInitialTrainingDataShardFromActionSpace;
 using neuroevolution::training_folder::TrainingDataShard;
 using neuroevolution::training_folder::UploadTrainingDataShardToDeviceConstantMemory;
@@ -20,7 +20,7 @@ using neuroevolution::wordle::Word;
 
 constexpr int kSelectedVisibleDeviceIndex = 0;
 constexpr int kStatusInvalidConstantShard = 1;
-constexpr std::array<const char *, kInitialTrainingDataShardEntryCount> kExpectedTrainingWords = {
+constexpr std::array<const char *, kTrainingDataCurriculumEntryCount> kExpectedTrainingWords = {
     "MINOS", "VODKA", "RAZOR", "GRADS", "CURLS", "BILGE", "GREET", "PYLON", "ENTER", "READY",
     "VERDE", "AUGER", "FOOTS", "BRACE", "PURTY", "SPORT", "TIRES", "FRISK", "AFFIX", "CHUMS",
 };

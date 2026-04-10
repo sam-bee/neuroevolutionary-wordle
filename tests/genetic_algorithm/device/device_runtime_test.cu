@@ -23,6 +23,8 @@ using neuroevolution::genetic_algorithm::device::TryCreateDeviceRuntimeBuffers;
 using neuroevolution::genetic_algorithm::device::TryEvaluatePopulationFitnessOnDevice;
 using neuroevolution::genetic_algorithm::device::TryReadPopulationFitnessSummaryFromDevice;
 using neuroevolution::genetic_algorithm::device::TryUploadCurrentPopulationToDevice;
+using neuroevolution::training_folder::ActiveTrainingDataEntryCountForGeneration;
+using neuroevolution::training_folder::kPhasedCurriculumSecondShardGeneration;
 using neuroevolution::training_folder::LoadInitialTrainingDataShardFromActionSpace;
 using neuroevolution::training_folder::UploadTrainingDataShardToDeviceConstantMemory;
 
@@ -30,6 +32,12 @@ constexpr int kSelectedVisibleDeviceIndex = 0;
 constexpr std::size_t kTestPopulationSize = 6;
 constexpr float kMaximumEpisodeWinScore = 15.0f;
 constexpr float kEpisodesPerTrainingEntry = 3.0f;
+
+float MaximumPossibleFitnessForGeneration(const neuroevolution::training_folder::TrainingDataShard &training_shard,
+                                          const std::size_t generation_index) {
+    return kEpisodesPerTrainingEntry * kMaximumEpisodeWinScore *
+           static_cast<float>(ActiveTrainingDataEntryCountForGeneration(training_shard, generation_index));
+}
 
 bool CheckCuda(const cudaError_t error, const std::string_view action) {
     if (error != cudaSuccess) {
@@ -125,21 +133,83 @@ bool TestDeviceRuntimeEvaluatesAndAssemblesPopulationsOnDevice() {
     ok &= ExpectTrue(summary_generation_1.best_index < kTestPopulationSize,
                      "Expected valid best index for generation one");
     ok &= ExpectInRange(summary_generation_0.best_fitness, 0.0f,
-                        kEpisodesPerTrainingEntry * kMaximumEpisodeWinScore *
-                            static_cast<float>(training_shard.entry_count),
+                        MaximumPossibleFitnessForGeneration(training_shard, summary_generation_0.generation_index),
                         "generation zero best fitness");
     ok &= ExpectInRange(summary_generation_0.average_fitness, 0.0f,
-                        kEpisodesPerTrainingEntry * kMaximumEpisodeWinScore *
-                            static_cast<float>(training_shard.entry_count),
+                        MaximumPossibleFitnessForGeneration(training_shard, summary_generation_0.generation_index),
                         "generation zero average fitness");
     ok &= ExpectInRange(summary_generation_1.best_fitness, 0.0f,
-                        kEpisodesPerTrainingEntry * kMaximumEpisodeWinScore *
-                            static_cast<float>(training_shard.entry_count),
+                        MaximumPossibleFitnessForGeneration(training_shard, summary_generation_1.generation_index),
                         "generation one best fitness");
     ok &= ExpectInRange(summary_generation_1.average_fitness, 0.0f,
-                        kEpisodesPerTrainingEntry * kMaximumEpisodeWinScore *
-                            static_cast<float>(training_shard.entry_count),
+                        MaximumPossibleFitnessForGeneration(training_shard, summary_generation_1.generation_index),
                         "generation one average fitness");
+    return ok;
+}
+
+bool TestDeviceRuntimeActivatesSecondTrainingShardAtGenerationOneHundred() {
+    const auto training_shard = LoadInitialTrainingDataShardFromActionSpace();
+    if (!UploadTrainingDataShardToDeviceConstantMemory(training_shard)) {
+        std::cerr << "FAIL: could not upload training-data shard to device constant memory\n";
+        return false;
+    }
+
+    PopulationInitializationRandomEngine initialization_random_engine(42);
+    auto host_population = std::make_unique<DevicePopulation>();
+    if (!TryInitializePopulation<neuroevolution::genetic_algorithm::device::kDeviceActionCount,
+                                 neuroevolution::genetic_algorithm::device::kDevicePopulationCapacity>(
+            *host_population, initialization_random_engine)) {
+        std::cerr << "FAIL: could not initialize the host population\n";
+        return false;
+    }
+
+    host_population->active_individual_count = kTestPopulationSize;
+    host_population->generation_index = kPhasedCurriculumSecondShardGeneration - 1;
+
+    DeviceRuntimeBuffers buffers{};
+    bool ok = TryCreateDeviceRuntimeBuffers(buffers);
+    ok &= TryUploadCurrentPopulationToDevice(*host_population, buffers);
+    ok &= TryEvaluatePopulationFitnessOnDevice(buffers);
+
+    PopulationFitnessSummary summary_generation_99{};
+    ok &= TryReadPopulationFitnessSummaryFromDevice(buffers, summary_generation_99);
+
+    GenerationAssemblyConfig assembly_config{};
+    assembly_config.genetic_algorithm.elite_count = 1;
+    assembly_config.parent_selection.tournament_size = 3;
+    assembly_config.parent_selection.allow_self_parenting = false;
+    assembly_config.breeding.first_parent_probability = 0.5f;
+    assembly_config.mutation.mutation_probability = 0.02f;
+    assembly_config.mutation.mutation_sigma = 0.05f;
+
+    ok &= TryAssembleNextGenerationOnDevice(buffers, 77U, assembly_config);
+    SwapDevicePopulationBuffers(buffers);
+    ok &= TryEvaluatePopulationFitnessOnDevice(buffers);
+
+    PopulationFitnessSummary summary_generation_100{};
+    ok &= TryReadPopulationFitnessSummaryFromDevice(buffers, summary_generation_100);
+
+    DestroyDeviceRuntimeBuffers(buffers);
+
+    ok &= ExpectTrue(summary_generation_99.generation_index == (kPhasedCurriculumSecondShardGeneration - 1),
+                     "Expected pre-curriculum-expansion generation index to remain at 99");
+    ok &= ExpectTrue(summary_generation_100.generation_index == kPhasedCurriculumSecondShardGeneration,
+                     "Expected next generation to cross the phased-curriculum activation threshold");
+    ok &= ExpectInRange(summary_generation_99.best_fitness, 0.0f,
+                        MaximumPossibleFitnessForGeneration(training_shard, summary_generation_99.generation_index),
+                        "generation 99 best fitness");
+    ok &= ExpectInRange(summary_generation_99.average_fitness, 0.0f,
+                        MaximumPossibleFitnessForGeneration(training_shard, summary_generation_99.generation_index),
+                        "generation 99 average fitness");
+    ok &= ExpectInRange(summary_generation_100.best_fitness, 0.0f,
+                        MaximumPossibleFitnessForGeneration(training_shard, summary_generation_100.generation_index),
+                        "generation 100 best fitness");
+    ok &= ExpectInRange(summary_generation_100.average_fitness, 0.0f,
+                        MaximumPossibleFitnessForGeneration(training_shard, summary_generation_100.generation_index),
+                        "generation 100 average fitness");
+    ok &= ExpectTrue(MaximumPossibleFitnessForGeneration(training_shard, summary_generation_100.generation_index) >
+                         MaximumPossibleFitnessForGeneration(training_shard, summary_generation_99.generation_index),
+                     "Expected phased curriculum generation 100 to activate a larger training set");
     return ok;
 }
 
@@ -150,7 +220,8 @@ int main() {
         return 1;
     }
 
-    if (!TestDeviceRuntimeEvaluatesAndAssemblesPopulationsOnDevice()) {
+    if (!TestDeviceRuntimeEvaluatesAndAssemblesPopulationsOnDevice() ||
+        !TestDeviceRuntimeActivatesSecondTrainingShardAtGenerationOneHundred()) {
         return 1;
     }
 

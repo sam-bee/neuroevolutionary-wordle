@@ -71,7 +71,7 @@ TrainingDataShard LoadInitialTrainingDataShardFromActionSpace(const std::filesys
     TrainingDataShard shard{};
     if (!TryLoadInitialTrainingDataShardFromActionSpace(action_space_path, shard)) {
         throw std::runtime_error(
-            "Could not load the initial training-data shard from the configured action-space word list.");
+            "Could not load the training-data curriculum from the configured action-space word list.");
     }
 
     return shard;

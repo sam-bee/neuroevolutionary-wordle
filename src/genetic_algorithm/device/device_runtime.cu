@@ -23,6 +23,7 @@ using neuroevolution::model::output_embedding::SelectedAction;
 using neuroevolution::model::output_embedding::TrySelectBestAction;
 using neuroevolution::model::policy_model::PolicyVector;
 using neuroevolution::model::policy_model::TryForwardPolicyModel;
+using neuroevolution::training_folder::ActiveTrainingDataEntryCountForGeneration;
 using neuroevolution::training_folder::DeviceTrainingDataShard;
 using neuroevolution::training_folder::IsValidTrainingDataShard;
 using neuroevolution::training_folder::TrainingDataShard;
@@ -121,13 +122,14 @@ __device__ std::size_t WrapTrainingShardIndex(const std::size_t index, const std
 __device__ DeviceRuntimeStatusCode TryInitializePrefilledGrid(const TrainingDataShard &training_shard,
                                                               const Word &solution, const std::size_t first_guess_index,
                                                               const std::size_t second_guess_index,
+                                                              const std::size_t active_training_entry_count,
                                                               WordleGrid &grid_out) {
     grid_out = MakeWordleGrid(solution);
 
     const Word first_guess =
-        training_shard.entries[WrapTrainingShardIndex(first_guess_index, training_shard.entry_count)].word;
+        training_shard.entries[WrapTrainingShardIndex(first_guess_index, active_training_entry_count)].word;
     const Word second_guess =
-        training_shard.entries[WrapTrainingShardIndex(second_guess_index, training_shard.entry_count)].word;
+        training_shard.entries[WrapTrainingShardIndex(second_guess_index, active_training_entry_count)].word;
 
     if (!TryAppendGuess(grid_out, first_guess) || !TryAppendGuess(grid_out, second_guess)) {
         return DeviceRuntimeStatusCode::kGuessAppendFailed;
@@ -166,10 +168,15 @@ __device__ DeviceRuntimeStatusCode TryPlayWordleToCompletion(const DeviceGenome 
     return DeviceRuntimeStatusCode::kOk;
 }
 
-__device__ DeviceRuntimeStatusCode TryEvaluateIndividualFitness(const DeviceGenome &genome, float &fitness_out) {
+__device__ DeviceRuntimeStatusCode TryEvaluateIndividualFitness(const DeviceGenome &genome,
+                                                                const std::size_t generation_index,
+                                                                float &fitness_out) {
     const TrainingDataShard &training_shard = DeviceTrainingDataShard();
-    if (!IsValidTrainingDataShard(training_shard) || (training_shard.entry_count == 0) ||
-        (training_shard.entry_count > kDeviceActionCount)) {
+    const std::size_t active_training_entry_count =
+        ActiveTrainingDataEntryCountForGeneration(training_shard, generation_index);
+
+    if (!IsValidTrainingDataShard(training_shard) || (active_training_entry_count == 0) ||
+        (active_training_entry_count > kDeviceActionCount)) {
         return DeviceRuntimeStatusCode::kInvalidTrainingShard;
     }
 
@@ -178,14 +185,14 @@ __device__ DeviceRuntimeStatusCode TryEvaluateIndividualFitness(const DeviceGeno
 
     float score_sum = 0.0f;
 
-    for (std::size_t entry_index = 0; entry_index < training_shard.entry_count; ++entry_index) {
+    for (std::size_t entry_index = 0; entry_index < active_training_entry_count; ++entry_index) {
         const Word solution = training_shard.entries[entry_index].word;
 
         {
             WordleGrid fresh_grid = MakeWordleGrid(solution);
             float episode_score = 0.0f;
             const DeviceRuntimeStatusCode episode_status = TryPlayWordleToCompletion(
-                genome, action_embeddings.values, training_shard.entry_count, fresh_grid, episode_score);
+                genome, action_embeddings.values, active_training_entry_count, fresh_grid, episode_score);
             if (episode_status != DeviceRuntimeStatusCode::kOk) {
                 return episode_status;
             }
@@ -196,14 +203,15 @@ __device__ DeviceRuntimeStatusCode TryEvaluateIndividualFitness(const DeviceGeno
         {
             WordleGrid prefilled_grid{};
             const DeviceRuntimeStatusCode initialize_status =
-                TryInitializePrefilledGrid(training_shard, solution, entry_index + 1, entry_index + 2, prefilled_grid);
+                TryInitializePrefilledGrid(training_shard, solution, entry_index + 1, entry_index + 2,
+                                           active_training_entry_count, prefilled_grid);
             if (initialize_status != DeviceRuntimeStatusCode::kOk) {
                 return initialize_status;
             }
 
             float episode_score = 0.0f;
             const DeviceRuntimeStatusCode episode_status = TryPlayWordleToCompletion(
-                genome, action_embeddings.values, training_shard.entry_count, prefilled_grid, episode_score);
+                genome, action_embeddings.values, active_training_entry_count, prefilled_grid, episode_score);
             if (episode_status != DeviceRuntimeStatusCode::kOk) {
                 return episode_status;
             }
@@ -214,14 +222,15 @@ __device__ DeviceRuntimeStatusCode TryEvaluateIndividualFitness(const DeviceGeno
         {
             WordleGrid prefilled_grid{};
             const DeviceRuntimeStatusCode initialize_status =
-                TryInitializePrefilledGrid(training_shard, solution, entry_index + 3, entry_index + 4, prefilled_grid);
+                TryInitializePrefilledGrid(training_shard, solution, entry_index + 3, entry_index + 4,
+                                           active_training_entry_count, prefilled_grid);
             if (initialize_status != DeviceRuntimeStatusCode::kOk) {
                 return initialize_status;
             }
 
             float episode_score = 0.0f;
             const DeviceRuntimeStatusCode episode_status = TryPlayWordleToCompletion(
-                genome, action_embeddings.values, training_shard.entry_count, prefilled_grid, episode_score);
+                genome, action_embeddings.values, active_training_entry_count, prefilled_grid, episode_score);
             if (episode_status != DeviceRuntimeStatusCode::kOk) {
                 return episode_status;
             }
@@ -441,8 +450,8 @@ __global__ void EvaluatePopulationFitnessKernel(DevicePopulation *population, in
     }
 
     float fitness = 0.0f;
-    const DeviceRuntimeStatusCode evaluation_status =
-        TryEvaluateIndividualFitness(population->individuals[individual_index].genome, fitness);
+    const DeviceRuntimeStatusCode evaluation_status = TryEvaluateIndividualFitness(
+        population->individuals[individual_index].genome, population->generation_index, fitness);
     if (evaluation_status != DeviceRuntimeStatusCode::kOk) {
         SetFailureStatus(status, evaluation_status);
         return;
