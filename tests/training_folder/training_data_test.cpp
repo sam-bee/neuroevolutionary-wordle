@@ -16,6 +16,7 @@ using neuroevolution::training_folder::kPhasedCurriculumSecondShardGeneration;
 using neuroevolution::training_folder::kTrainingDataCurriculumEntryCount;
 using neuroevolution::training_folder::kTrainingDataEntriesPerShard;
 using neuroevolution::training_folder::LoadInitialTrainingDataShardFromActionSpace;
+using neuroevolution::training_folder::SelectableTrainingActionCount;
 using neuroevolution::training_folder::TrainingDataShard;
 using neuroevolution::wordle::Word;
 
@@ -108,6 +109,8 @@ bool TestPhasedCurriculumUsesOneShardBeforeGenerationOneHundredAndBothAfterwards
     ok &= ExpectTrue(ActiveTrainingDataEntryCountForGeneration(shard, kPhasedCurriculumSecondShardGeneration + 1) ==
                          kTrainingDataCurriculumEntryCount,
                      "Expected phased curriculum to keep both training-data shards active after generation 100");
+    ok &= ExpectTrue(SelectableTrainingActionCount(shard) == kTrainingDataCurriculumEntryCount,
+                     "Expected action selection to keep the full training-data curriculum available");
     return ok;
 }
 

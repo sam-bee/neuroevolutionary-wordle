@@ -57,6 +57,15 @@ ActiveTrainingDataEntryCountForGeneration(const TrainingDataShard &shard, const 
     return shard.entry_count;
 }
 
+constexpr NEUROEVOLUTION_HOST_DEVICE std::size_t
+SelectableTrainingActionCount(const TrainingDataShard &shard) noexcept {
+    if (!IsValidTrainingDataShard(shard)) {
+        return 0;
+    }
+
+    return shard.entry_count;
+}
+
 std::filesystem::path DefaultActionSpacePath();
 
 bool TryLoadInitialTrainingDataShardFromActionSpace(const std::filesystem::path &action_space_path,

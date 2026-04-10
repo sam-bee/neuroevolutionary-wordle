@@ -26,8 +26,9 @@ solution is included in this file.
 
 `action-space-randomised.txt` contains the same curated action space in a randomized order. The current GA runtime uses
 the top 20 words from this file as a **phased curriculum** made of two 10-word training shards. All 20 words are
-uploaded to GPU constant memory while the run is in progress, but only the first shard is used before generation `100`;
-from generation `100` onward, both shards are included in fitness evaluation.
+uploaded to GPU constant memory while the run is in progress. Before generation `100`, only the first shard contributes
+training cases to fitness evaluation; from generation `100` onward, both shards are included. The model can still guess
+any of the 20 curriculum words throughout.
 
 ## More Information on Data
 

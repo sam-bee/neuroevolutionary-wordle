@@ -31,7 +31,8 @@ More information on data is available at [`docs/data/data-docs.md`](docs/data/da
 The current GA demo does not score against all 4,739 action words yet. During a run it loads the top 20 words from
 `data/action-space-randomised.txt`, treats them as two 10-word training shards, and uploads the full 20-word
 curriculum to GPU constant memory for the life of the process. This now runs as a **phased curriculum**: generations
-`0-99` use only the first shard, and generation `100` onward evaluates against both shards.
+`0-99` score only the first shard's training cases, and generation `100` onward evaluates against both shards. The
+policy can still emit any of the 20 curriculum words throughout.
 
 ## Why this exists
 
