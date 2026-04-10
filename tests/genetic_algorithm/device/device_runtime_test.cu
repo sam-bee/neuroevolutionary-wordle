@@ -28,6 +28,8 @@ using neuroevolution::training_folder::UploadTrainingDataShardToDeviceConstantMe
 
 constexpr int kSelectedVisibleDeviceIndex = 0;
 constexpr std::size_t kTestPopulationSize = 6;
+constexpr float kMaximumEpisodeWinScore = 15.0f;
+constexpr float kEpisodesPerTrainingEntry = 3.0f;
 
 bool CheckCuda(const cudaError_t error, const std::string_view action) {
     if (error != cudaSuccess) {
@@ -122,13 +124,21 @@ bool TestDeviceRuntimeEvaluatesAndAssemblesPopulationsOnDevice() {
                      "Expected valid best index for generation zero");
     ok &= ExpectTrue(summary_generation_1.best_index < kTestPopulationSize,
                      "Expected valid best index for generation one");
-    ok &= ExpectInRange(summary_generation_0.best_fitness, 0.0f, static_cast<float>(training_shard.entry_count),
+    ok &= ExpectInRange(summary_generation_0.best_fitness, 0.0f,
+                        kEpisodesPerTrainingEntry * kMaximumEpisodeWinScore *
+                            static_cast<float>(training_shard.entry_count),
                         "generation zero best fitness");
-    ok &= ExpectInRange(summary_generation_0.average_fitness, 0.0f, static_cast<float>(training_shard.entry_count),
+    ok &= ExpectInRange(summary_generation_0.average_fitness, 0.0f,
+                        kEpisodesPerTrainingEntry * kMaximumEpisodeWinScore *
+                            static_cast<float>(training_shard.entry_count),
                         "generation zero average fitness");
-    ok &= ExpectInRange(summary_generation_1.best_fitness, 0.0f, static_cast<float>(training_shard.entry_count),
+    ok &= ExpectInRange(summary_generation_1.best_fitness, 0.0f,
+                        kEpisodesPerTrainingEntry * kMaximumEpisodeWinScore *
+                            static_cast<float>(training_shard.entry_count),
                         "generation one best fitness");
-    ok &= ExpectInRange(summary_generation_1.average_fitness, 0.0f, static_cast<float>(training_shard.entry_count),
+    ok &= ExpectInRange(summary_generation_1.average_fitness, 0.0f,
+                        kEpisodesPerTrainingEntry * kMaximumEpisodeWinScore *
+                            static_cast<float>(training_shard.entry_count),
                         "generation one average fitness");
     return ok;
 }

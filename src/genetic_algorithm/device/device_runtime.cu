@@ -31,6 +31,8 @@ using neuroevolution::wordle::TryAppendGuess;
 using neuroevolution::wordle::Word;
 using neuroevolution::wordle::WordleGrid;
 
+constexpr float kWinScoreBase = 10.0f;
+
 NEUROEVOLUTION_HOST_DEVICE constexpr int DeviceStatusValue(const DeviceRuntimeStatusCode status_code) {
     return static_cast<int>(status_code);
 }
@@ -112,11 +114,32 @@ __device__ void BuildActionEmbeddingsFromTrainingShard(const DeviceGenome &genom
     }
 }
 
+__device__ std::size_t WrapTrainingShardIndex(const std::size_t index, const std::size_t entry_count) {
+    return (entry_count == 0) ? 0 : (index % entry_count);
+}
+
+__device__ DeviceRuntimeStatusCode TryInitializePrefilledGrid(const TrainingDataShard &training_shard,
+                                                              const Word &solution, const std::size_t first_guess_index,
+                                                              const std::size_t second_guess_index,
+                                                              WordleGrid &grid_out) {
+    grid_out = MakeWordleGrid(solution);
+
+    const Word first_guess =
+        training_shard.entries[WrapTrainingShardIndex(first_guess_index, training_shard.entry_count)].word;
+    const Word second_guess =
+        training_shard.entries[WrapTrainingShardIndex(second_guess_index, training_shard.entry_count)].word;
+
+    if (!TryAppendGuess(grid_out, first_guess) || !TryAppendGuess(grid_out, second_guess)) {
+        return DeviceRuntimeStatusCode::kGuessAppendFailed;
+    }
+
+    return DeviceRuntimeStatusCode::kOk;
+}
+
 __device__ DeviceRuntimeStatusCode TryPlayWordleToCompletion(const DeviceGenome &genome,
                                                              const ActionEmbedding *action_embeddings,
-                                                             const std::size_t action_count, const Word &solution,
+                                                             const std::size_t action_count, WordleGrid &grid,
                                                              float &episode_score_out) {
-    WordleGrid grid = MakeWordleGrid(solution);
 
     while (!grid.IsFinished()) {
         PolicyVector policy_vector{};
@@ -134,7 +157,12 @@ __device__ DeviceRuntimeStatusCode TryPlayWordleToCompletion(const DeviceGenome 
         }
     }
 
-    episode_score_out = grid.IsWon() ? 1.0f : 0.0f;
+    if (!grid.IsWon()) {
+        episode_score_out = 0.0f;
+        return DeviceRuntimeStatusCode::kOk;
+    }
+
+    episode_score_out = kWinScoreBase + static_cast<float>(neuroevolution::wordle::kMaxTurnCount - grid.turn_count);
     return DeviceRuntimeStatusCode::kOk;
 }
 
@@ -152,14 +180,54 @@ __device__ DeviceRuntimeStatusCode TryEvaluateIndividualFitness(const DeviceGeno
 
     for (std::size_t entry_index = 0; entry_index < training_shard.entry_count; ++entry_index) {
         const Word solution = training_shard.entries[entry_index].word;
-        float episode_score = 0.0f;
-        const DeviceRuntimeStatusCode episode_status = TryPlayWordleToCompletion(
-            genome, action_embeddings.values, training_shard.entry_count, solution, episode_score);
-        if (episode_status != DeviceRuntimeStatusCode::kOk) {
-            return episode_status;
+
+        {
+            WordleGrid fresh_grid = MakeWordleGrid(solution);
+            float episode_score = 0.0f;
+            const DeviceRuntimeStatusCode episode_status = TryPlayWordleToCompletion(
+                genome, action_embeddings.values, training_shard.entry_count, fresh_grid, episode_score);
+            if (episode_status != DeviceRuntimeStatusCode::kOk) {
+                return episode_status;
+            }
+
+            score_sum += episode_score;
         }
 
-        score_sum += episode_score;
+        {
+            WordleGrid prefilled_grid{};
+            const DeviceRuntimeStatusCode initialize_status =
+                TryInitializePrefilledGrid(training_shard, solution, entry_index + 1, entry_index + 2, prefilled_grid);
+            if (initialize_status != DeviceRuntimeStatusCode::kOk) {
+                return initialize_status;
+            }
+
+            float episode_score = 0.0f;
+            const DeviceRuntimeStatusCode episode_status = TryPlayWordleToCompletion(
+                genome, action_embeddings.values, training_shard.entry_count, prefilled_grid, episode_score);
+            if (episode_status != DeviceRuntimeStatusCode::kOk) {
+                return episode_status;
+            }
+
+            score_sum += episode_score;
+        }
+
+        {
+            WordleGrid prefilled_grid{};
+            const DeviceRuntimeStatusCode initialize_status =
+                TryInitializePrefilledGrid(training_shard, solution, entry_index + 3, entry_index + 4, prefilled_grid);
+            if (initialize_status != DeviceRuntimeStatusCode::kOk) {
+                return initialize_status;
+            }
+
+            float episode_score = 0.0f;
+            const DeviceRuntimeStatusCode episode_status = TryPlayWordleToCompletion(
+                genome, action_embeddings.values, training_shard.entry_count, prefilled_grid, episode_score);
+            if (episode_status != DeviceRuntimeStatusCode::kOk) {
+                return episode_status;
+            }
+
+            score_sum += episode_score;
+        }
     }
 
     fitness_out = score_sum;
