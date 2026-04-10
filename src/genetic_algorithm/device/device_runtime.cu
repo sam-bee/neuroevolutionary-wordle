@@ -35,6 +35,10 @@ NEUROEVOLUTION_HOST_DEVICE constexpr int DeviceStatusValue(const DeviceRuntimeSt
     return static_cast<int>(status_code);
 }
 
+NEUROEVOLUTION_HOST_DEVICE constexpr bool IsValidActivePopulationSize(const std::size_t population_size) {
+    return (population_size > 0) && (population_size <= kDevicePopulationCapacity);
+}
+
 struct DeviceRandomState {
     std::uint64_t state = 0;
 };
@@ -163,8 +167,8 @@ __device__ DeviceRuntimeStatusCode TryEvaluateIndividualFitness(const DeviceGeno
 }
 
 template <std::size_t PopulationSize>
-__device__ bool TryFindEliteIndexByRank(const DevicePopulation &population, const std::size_t elite_rank,
-                                        std::size_t &elite_index) {
+__device__ bool TryFindEliteIndexByRank(const DevicePopulation &population, const std::size_t active_population_size,
+                                        const std::size_t elite_rank, std::size_t &elite_index) {
     FixedBuffer<bool, PopulationSize> selected_flags{};
     ResetFixedBuffer(selected_flags);
 
@@ -173,7 +177,7 @@ __device__ bool TryFindEliteIndexByRank(const DevicePopulation &population, cons
         std::size_t best_index = 0;
         float best_fitness = 0.0f;
 
-        for (std::size_t individual_index = 0; individual_index < PopulationSize; ++individual_index) {
+        for (std::size_t individual_index = 0; individual_index < active_population_size; ++individual_index) {
             const auto &individual = population.individuals[individual_index];
             if (!individual.has_fitness || selected_flags[individual_index]) {
                 continue;
@@ -198,13 +202,13 @@ __device__ bool TryFindEliteIndexByRank(const DevicePopulation &population, cons
 }
 
 template <std::size_t PopulationSize>
-__device__ bool TrySelectParentIndexDevice(const DevicePopulation &population, DeviceRandomState &random_state,
-                                           const ParentSelectionConfig &config, std::size_t &selected_parent_index,
-                                           const std::size_t excluded_index) {
+__device__ bool TrySelectParentIndexDevice(const DevicePopulation &population, const std::size_t active_population_size,
+                                           DeviceRandomState &random_state, const ParentSelectionConfig &config,
+                                           std::size_t &selected_parent_index, const std::size_t excluded_index) {
     FixedBuffer<std::size_t, PopulationSize> selectable_indices{};
     std::size_t selectable_count = 0;
 
-    for (std::size_t individual_index = 0; individual_index < PopulationSize; ++individual_index) {
+    for (std::size_t individual_index = 0; individual_index < active_population_size; ++individual_index) {
         const auto &individual = population.individuals[individual_index];
         if (!individual.has_fitness || (individual_index == excluded_index)) {
             continue;
@@ -246,17 +250,18 @@ __device__ bool TrySelectParentIndexDevice(const DevicePopulation &population, D
 }
 
 template <std::size_t PopulationSize>
-__device__ bool TrySelectParentPairDevice(const DevicePopulation &population, DeviceRandomState &random_state,
-                                          const ParentSelectionConfig &config, ParentPair &parent_pair) {
-    if (!TrySelectParentIndexDevice<PopulationSize>(population, random_state, config, parent_pair.first_parent_index,
-                                                    kNoIndividualIndex)) {
+__device__ bool TrySelectParentPairDevice(const DevicePopulation &population, const std::size_t active_population_size,
+                                          DeviceRandomState &random_state, const ParentSelectionConfig &config,
+                                          ParentPair &parent_pair) {
+    if (!TrySelectParentIndexDevice<PopulationSize>(population, active_population_size, random_state, config,
+                                                    parent_pair.first_parent_index, kNoIndividualIndex)) {
         return false;
     }
 
     const std::size_t excluded_index =
         config.allow_self_parenting ? kNoIndividualIndex : parent_pair.first_parent_index;
-    return TrySelectParentIndexDevice<PopulationSize>(population, random_state, config, parent_pair.second_parent_index,
-                                                      excluded_index);
+    return TrySelectParentIndexDevice<PopulationSize>(population, active_population_size, random_state, config,
+                                                      parent_pair.second_parent_index, excluded_index);
 }
 
 template <std::size_t Size>
@@ -350,7 +355,14 @@ __device__ void WriteGenomeToUnevaluatedIndividual(const DeviceGenome &genome, I
 
 __global__ void EvaluatePopulationFitnessKernel(DevicePopulation *population, int *status) {
     const std::size_t individual_index = (blockIdx.x * blockDim.x) + threadIdx.x;
-    if (individual_index >= kDevicePopulationSize) {
+    if (!IsValidActivePopulationSize(population->active_individual_count)) {
+        if ((blockIdx.x == 0) && (threadIdx.x == 0)) {
+            SetFailureStatus(status, DeviceRuntimeStatusCode::kPopulationNotEvaluated);
+        }
+        return;
+    }
+
+    if (individual_index >= population->active_individual_count) {
         return;
     }
 
@@ -379,12 +391,17 @@ __global__ void SummarizePopulationKernel(const DevicePopulation *population, Po
         return;
     }
 
+    if (!IsValidActivePopulationSize(population->active_individual_count)) {
+        SetFailureStatus(status, DeviceRuntimeStatusCode::kPopulationNotEvaluated);
+        return;
+    }
+
     bool found_best = false;
     float best_fitness = 0.0f;
     float fitness_sum = 0.0f;
     std::size_t best_index = 0;
 
-    for (std::size_t individual_index = 0; individual_index < kDevicePopulationSize; ++individual_index) {
+    for (std::size_t individual_index = 0; individual_index < population->active_individual_count; ++individual_index) {
         const auto &individual = population->individuals[individual_index];
         if (!individual.has_fitness) {
             SetFailureStatus(status, DeviceRuntimeStatusCode::kPopulationNotEvaluated);
@@ -401,7 +418,7 @@ __global__ void SummarizePopulationKernel(const DevicePopulation *population, Po
     }
 
     summary->best_fitness = best_fitness;
-    summary->average_fitness = fitness_sum / static_cast<float>(kDevicePopulationSize);
+    summary->average_fitness = fitness_sum / static_cast<float>(population->active_individual_count);
     summary->best_index = best_index;
     summary->generation_index = population->generation_index;
 }
@@ -410,17 +427,26 @@ __global__ void AssembleNextGenerationKernel(const DevicePopulation *current_pop
                                              DevicePopulation *next_population, const std::uint32_t generation_seed,
                                              const GenerationAssemblyConfig config, int *status) {
     const std::size_t slot_index = (blockIdx.x * blockDim.x) + threadIdx.x;
-    if (slot_index >= kDevicePopulationSize) {
+    if (!IsValidActivePopulationSize(current_population->active_individual_count)) {
+        if ((blockIdx.x == 0) && (threadIdx.x == 0)) {
+            SetFailureStatus(status, DeviceRuntimeStatusCode::kInvalidAssemblyConfig);
+        }
+        return;
+    }
+
+    if (slot_index >= current_population->active_individual_count) {
         return;
     }
 
     if (threadIdx.x == 0 && blockIdx.x == 0) {
+        next_population->active_individual_count = current_population->active_individual_count;
         next_population->generation_index = current_population->generation_index + 1;
     }
 
     if (slot_index < config.genetic_algorithm.elite_count) {
         std::size_t elite_index = 0;
-        if (!TryFindEliteIndexByRank<kDevicePopulationSize>(*current_population, slot_index, elite_index)) {
+        if (!TryFindEliteIndexByRank<kDevicePopulationCapacity>(
+                *current_population, current_population->active_individual_count, slot_index, elite_index)) {
             SetFailureStatus(status, DeviceRuntimeStatusCode::kPopulationNotEvaluated);
             return;
         }
@@ -434,8 +460,9 @@ __global__ void AssembleNextGenerationKernel(const DevicePopulation *current_pop
         generation_seed, static_cast<std::uint32_t>(slot_index + (current_population->generation_index * 4099U)));
 
     ParentPair parent_pair{};
-    if (!TrySelectParentPairDevice<kDevicePopulationSize>(*current_population, random_state, config.parent_selection,
-                                                          parent_pair)) {
+    if (!TrySelectParentPairDevice<kDevicePopulationCapacity>(*current_population,
+                                                              current_population->active_individual_count, random_state,
+                                                              config.parent_selection, parent_pair)) {
         SetFailureStatus(status, DeviceRuntimeStatusCode::kParentSelectionFailed);
         return;
     }
@@ -499,6 +526,10 @@ void DestroyDeviceRuntimeBuffers(DeviceRuntimeBuffers &buffers) noexcept {
 }
 
 bool TryUploadCurrentPopulationToDevice(const DevicePopulation &host_population, DeviceRuntimeBuffers &buffers) {
+    if (!IsValidActivePopulationSize(host_population.active_individual_count)) {
+        return false;
+    }
+
     return CheckCuda(cudaMemcpy(buffers.current_population, &host_population, sizeof(DevicePopulation),
                                 cudaMemcpyHostToDevice)) &&
            CheckCuda(cudaMemset(buffers.next_population, 0, sizeof(DevicePopulation)));
@@ -514,7 +545,7 @@ bool TryEvaluatePopulationFitnessOnDevice(DeviceRuntimeBuffers &buffers) {
         return false;
     }
 
-    EvaluatePopulationFitnessKernel<<<1, kDevicePopulationSize>>>(buffers.current_population, buffers.status);
+    EvaluatePopulationFitnessKernel<<<1, kDevicePopulationCapacity>>>(buffers.current_population, buffers.status);
     if (!CheckCuda(cudaGetLastError()) || !CheckCuda(cudaDeviceSynchronize())) {
         return false;
     }
@@ -551,7 +582,7 @@ bool TryReadDeviceRuntimeStatus(const DeviceRuntimeBuffers &buffers, DeviceRunti
 
 bool TryAssembleNextGenerationOnDevice(DeviceRuntimeBuffers &buffers, const std::uint32_t generation_seed,
                                        const GenerationAssemblyConfig &config) {
-    if (!IsValidGenerationAssemblyConfig<kDevicePopulationSize>(config)) {
+    if (!IsValidGenerationAssemblyConfig<kDevicePopulationCapacity>(config)) {
         (void)WriteDeviceStatus(buffers, DeviceRuntimeStatusCode::kInvalidAssemblyConfig);
         return false;
     }
@@ -560,8 +591,8 @@ bool TryAssembleNextGenerationOnDevice(DeviceRuntimeBuffers &buffers, const std:
         return false;
     }
 
-    AssembleNextGenerationKernel<<<1, kDevicePopulationSize>>>(buffers.current_population, buffers.next_population,
-                                                               generation_seed, config, buffers.status);
+    AssembleNextGenerationKernel<<<1, kDevicePopulationCapacity>>>(buffers.current_population, buffers.next_population,
+                                                                   generation_seed, config, buffers.status);
     if (!CheckCuda(cudaGetLastError()) || !CheckCuda(cudaDeviceSynchronize())) {
         return false;
     }

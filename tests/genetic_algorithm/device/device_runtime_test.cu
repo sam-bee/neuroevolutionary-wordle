@@ -1,6 +1,7 @@
 #include <cuda_runtime.h>
 
 #include <iostream>
+#include <memory>
 #include <string_view>
 
 #include "genetic_algorithm/device/device_runtime.hpp"
@@ -10,8 +11,8 @@
 namespace {
 
 using neuroevolution::genetic_algorithm::GenerationAssemblyConfig;
-using neuroevolution::genetic_algorithm::InitializePopulation;
 using neuroevolution::genetic_algorithm::PopulationInitializationRandomEngine;
+using neuroevolution::genetic_algorithm::TryInitializePopulation;
 using neuroevolution::genetic_algorithm::device::DestroyDeviceRuntimeBuffers;
 using neuroevolution::genetic_algorithm::device::DevicePopulation;
 using neuroevolution::genetic_algorithm::device::DeviceRuntimeBuffers;
@@ -26,6 +27,7 @@ using neuroevolution::training_folder::LoadInitialTrainingDataShardFromActionSpa
 using neuroevolution::training_folder::UploadTrainingDataShardToDeviceConstantMemory;
 
 constexpr int kSelectedVisibleDeviceIndex = 0;
+constexpr std::size_t kTestPopulationSize = 6;
 
 bool CheckCuda(const cudaError_t error, const std::string_view action) {
     if (error != cudaSuccess) {
@@ -78,14 +80,19 @@ bool TestDeviceRuntimeEvaluatesAndAssemblesPopulationsOnDevice() {
     }
 
     PopulationInitializationRandomEngine initialization_random_engine(42);
-    const DevicePopulation host_population =
-        InitializePopulation<neuroevolution::genetic_algorithm::device::kDeviceActionCount,
-                             neuroevolution::genetic_algorithm::device::kDevicePopulationSize>(
-            initialization_random_engine);
+    auto host_population = std::make_unique<DevicePopulation>();
+    if (!TryInitializePopulation<neuroevolution::genetic_algorithm::device::kDeviceActionCount,
+                                 neuroevolution::genetic_algorithm::device::kDevicePopulationCapacity>(
+            *host_population, initialization_random_engine)) {
+        std::cerr << "FAIL: could not initialize the host population\n";
+        return false;
+    }
+
+    host_population->active_individual_count = kTestPopulationSize;
 
     DeviceRuntimeBuffers buffers{};
     bool ok = TryCreateDeviceRuntimeBuffers(buffers);
-    ok &= TryUploadCurrentPopulationToDevice(host_population, buffers);
+    ok &= TryUploadCurrentPopulationToDevice(*host_population, buffers);
     ok &= TryEvaluatePopulationFitnessOnDevice(buffers);
 
     PopulationFitnessSummary summary_generation_0{};
@@ -111,9 +118,9 @@ bool TestDeviceRuntimeEvaluatesAndAssemblesPopulationsOnDevice() {
     ok &= ExpectTrue(summary_generation_0.generation_index == 0, "Expected initial device population generation zero");
     ok &= ExpectTrue(summary_generation_1.generation_index == 1,
                      "Expected device-assembled next generation to increment generation index");
-    ok &= ExpectTrue(summary_generation_0.best_index < neuroevolution::genetic_algorithm::device::kDevicePopulationSize,
+    ok &= ExpectTrue(summary_generation_0.best_index < kTestPopulationSize,
                      "Expected valid best index for generation zero");
-    ok &= ExpectTrue(summary_generation_1.best_index < neuroevolution::genetic_algorithm::device::kDevicePopulationSize,
+    ok &= ExpectTrue(summary_generation_1.best_index < kTestPopulationSize,
                      "Expected valid best index for generation one");
     ok &= ExpectInRange(summary_generation_0.best_fitness, 0.0f, static_cast<float>(training_shard.entry_count),
                         "generation zero best fitness");

@@ -23,6 +23,7 @@ template <typename Genome, std::size_t PopulationSize> struct Population {
     static_assert(PopulationSize > 0, "Population size must be non-zero.");
 
     common::FixedBuffer<Individual<Genome>, PopulationSize> individuals{};
+    std::size_t active_individual_count = PopulationSize;
     std::size_t generation_index = 0;
 };
 
@@ -33,7 +34,7 @@ constexpr NEUROEVOLUTION_HOST_DEVICE bool IsValidGeneticAlgorithmConfig(const Ge
 
 template <typename Genome, std::size_t PopulationSize>
 inline NEUROEVOLUTION_HOST_DEVICE void ClearPopulationFitness(Population<Genome, PopulationSize> &population) noexcept {
-    for (std::size_t individual_index = 0; individual_index < PopulationSize; ++individual_index) {
+    for (std::size_t individual_index = 0; individual_index < population.active_individual_count; ++individual_index) {
         population.individuals[individual_index].fitness = 0.0f;
         population.individuals[individual_index].evaluation_count = 0;
         population.individuals[individual_index].has_fitness = false;
@@ -46,7 +47,7 @@ inline NEUROEVOLUTION_HOST_DEVICE bool TryFindBestIndividualIndex(const Populati
     bool found_best = false;
     float best_fitness = 0.0f;
 
-    for (std::size_t individual_index = 0; individual_index < PopulationSize; ++individual_index) {
+    for (std::size_t individual_index = 0; individual_index < population.active_individual_count; ++individual_index) {
         const Individual<Genome> &individual = population.individuals[individual_index];
         if (!individual.has_fitness) {
             continue;

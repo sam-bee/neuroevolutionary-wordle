@@ -10,10 +10,11 @@
 namespace neuroevolution::genetic_algorithm::device {
 
 constexpr std::size_t kDeviceActionCount = training_folder::kInitialTrainingDataShardEntryCount;
-constexpr std::size_t kDevicePopulationSize = 6;
+constexpr std::size_t kDevicePopulationCapacity = 256;
+constexpr std::size_t kDefaultDevicePopulationSize = 100;
 
 using DeviceGenome = ModelGenome<kDeviceActionCount>;
-using DevicePopulation = Population<DeviceGenome, kDevicePopulationSize>;
+using DevicePopulation = Population<DeviceGenome, kDevicePopulationCapacity>;
 
 enum class DeviceRuntimeStatusCode : int {
     kOk = 0,

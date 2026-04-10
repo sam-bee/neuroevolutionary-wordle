@@ -414,7 +414,7 @@ set_tests_properties(device_runtime_test PROPERTIES
     RESOURCE_LOCK cuda_device
 )
 
-add_test(NAME run_genetic_algorithm_smoke_test COMMAND run_genetic_algorithm --seed 7 --generations 2)
+add_test(NAME run_genetic_algorithm_smoke_test COMMAND run_genetic_algorithm --seed 7 --generations 2 --population-size 6)
 set_tests_properties(run_genetic_algorithm_smoke_test PROPERTIES
     LABELS "gpu;integration"
     RESOURCE_LOCK cuda_device

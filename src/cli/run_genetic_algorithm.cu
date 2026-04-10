@@ -7,6 +7,7 @@
 #include <iomanip>
 #include <iostream>
 #include <limits>
+#include <memory>
 #include <string>
 #include <string_view>
 
@@ -19,6 +20,7 @@ namespace {
 using neuroevolution::genetic_algorithm::GenerationAssemblyConfig;
 using neuroevolution::genetic_algorithm::InitializePopulation;
 using neuroevolution::genetic_algorithm::PopulationInitializationRandomEngine;
+using neuroevolution::genetic_algorithm::TryInitializePopulation;
 using neuroevolution::genetic_algorithm::device::DestroyDeviceRuntimeBuffers;
 using neuroevolution::genetic_algorithm::device::DeviceRuntimeBuffers;
 using neuroevolution::genetic_algorithm::device::DeviceRuntimeStatusCode;
@@ -40,6 +42,7 @@ constexpr int kSelectedVisibleDeviceIndex = 0;
 
 struct CliConfig {
     std::size_t generation_count = kDefaultGenerationCount;
+    std::size_t population_size = neuroevolution::genetic_algorithm::device::kDefaultDevicePopulationSize;
     std::uint32_t seed = 0;
     bool seed_was_provided = false;
 };
@@ -51,7 +54,9 @@ enum class ArgumentParseResult {
 };
 
 void PrintUsage() {
-    std::cout << "Usage: run_genetic_algorithm [--seed N] [--generations N]\n"
+    std::cout << "Usage: run_genetic_algorithm [--seed N] [--generations N] [--population-size N]\n"
+              << "If --population-size is omitted, the program uses "
+              << neuroevolution::genetic_algorithm::device::kDefaultDevicePopulationSize << ".\n"
               << "If --seed is omitted, the program uses the current time in microseconds.\n";
 }
 
@@ -113,7 +118,7 @@ ArgumentParseResult TryParseArguments(const int argc, char **argv, CliConfig &co
             return ArgumentParseResult::kHelpRequested;
         }
 
-        if ((argument == "--seed") || (argument == "--generations")) {
+        if ((argument == "--seed") || (argument == "--generations") || (argument == "--population-size")) {
             if ((arg_index + 1) >= argc) {
                 std::cerr << "Missing value for " << argument << '\n';
                 return ArgumentParseResult::kFailure;
@@ -133,13 +138,22 @@ ArgumentParseResult TryParseArguments(const int argc, char **argv, CliConfig &co
 
                 config.seed = static_cast<std::uint32_t>(parsed_value);
                 config.seed_was_provided = true;
-            } else {
+            } else if (argument == "--generations") {
                 if (parsed_value == 0) {
                     std::cerr << "Generation count must be at least 1.\n";
                     return ArgumentParseResult::kFailure;
                 }
 
                 config.generation_count = static_cast<std::size_t>(parsed_value);
+            } else {
+                if ((parsed_value == 0) ||
+                    (parsed_value > neuroevolution::genetic_algorithm::device::kDevicePopulationCapacity)) {
+                    std::cerr << "Population size must be between 1 and "
+                              << neuroevolution::genetic_algorithm::device::kDevicePopulationCapacity << ".\n";
+                    return ArgumentParseResult::kFailure;
+                }
+
+                config.population_size = static_cast<std::size_t>(parsed_value);
             }
 
             ++arg_index;
@@ -205,9 +219,15 @@ int main(int argc, char **argv) {
         }
 
         PopulationInitializationRandomEngine initialization_random_engine(cli_config.seed);
-        auto population = InitializePopulation<neuroevolution::genetic_algorithm::device::kDeviceActionCount,
-                                               neuroevolution::genetic_algorithm::device::kDevicePopulationSize>(
-            initialization_random_engine);
+        auto population = std::make_unique<neuroevolution::genetic_algorithm::device::DevicePopulation>();
+        if (!TryInitializePopulation<neuroevolution::genetic_algorithm::device::kDeviceActionCount,
+                                     neuroevolution::genetic_algorithm::device::kDevicePopulationCapacity>(
+                *population, initialization_random_engine)) {
+            std::cerr << "Could not initialize the starting population.\n";
+            return 1;
+        }
+
+        population->active_individual_count = cli_config.population_size;
 
         DeviceRuntimeBuffers buffers{};
         if (!TryCreateDeviceRuntimeBuffers(buffers)) {
@@ -217,14 +237,13 @@ int main(int argc, char **argv) {
 
         const GenerationAssemblyConfig assembly_config = MakeAssemblyConfig();
 
-        if (!TryUploadCurrentPopulationToDevice(population, buffers)) {
+        if (!TryUploadCurrentPopulationToDevice(*population, buffers)) {
             std::cerr << "Could not upload the initial population to device memory.\n";
             DestroyDeviceRuntimeBuffers(buffers);
             return 1;
         }
 
-        std::cout << "Running device GA demo with population="
-                  << neuroevolution::genetic_algorithm::device::kDevicePopulationSize
+        std::cout << "Running device GA demo with population=" << cli_config.population_size
                   << ", action_count=" << neuroevolution::genetic_algorithm::device::kDeviceActionCount
                   << ", generations=" << cli_config.generation_count << ", seed=" << cli_config.seed
                   << ", training_shard_entries=" << training_shard.entry_count
