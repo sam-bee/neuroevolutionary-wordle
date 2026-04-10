@@ -66,20 +66,6 @@ constexpr NEUROEVOLUTION_HOST_DEVICE bool IsValidWordleGrid(const WordleGrid &gr
     return true;
 }
 
-constexpr NEUROEVOLUTION_HOST_DEVICE bool HasGuess(const WordleGrid &grid, const Word &guess) noexcept {
-    if (!IsValidTurnCount(grid.turn_count) || !IsValidWord(guess)) {
-        return false;
-    }
-
-    for (std::size_t turn_index = 0; turn_index < grid.turn_count; ++turn_index) {
-        if (grid.turns[turn_index].guess == guess) {
-            return true;
-        }
-    }
-
-    return false;
-}
-
 inline NEUROEVOLUTION_HOST_DEVICE bool TryAppendGuess(WordleGrid &grid, const Word &guess) noexcept {
     if (!IsValidWordleGrid(grid) || !IsValidWord(guess) || grid.IsFinished()) {
         return false;

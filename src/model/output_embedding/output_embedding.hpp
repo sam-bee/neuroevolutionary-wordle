@@ -8,7 +8,6 @@
 #include "common/float16.hpp"
 #include "model/dense_trunk/dense_trunk.hpp"
 #include "wordle/word.hpp"
-#include "wordle/wordle_grid.hpp"
 
 namespace neuroevolution::model::output_embedding {
 
@@ -131,42 +130,7 @@ inline NEUROEVOLUTION_HOST_DEVICE bool TrySelectBestAction(const PolicyVector &p
     return true;
 }
 
-inline NEUROEVOLUTION_HOST_DEVICE bool TrySelectBestLegalAction(const PolicyVector &policy_vector,
-                                                                const wordle::WordleGrid &grid,
-                                                                const ActionEmbedding *action_embeddings,
-                                                                const std::size_t action_count,
-                                                                SelectedAction &selected_action) noexcept {
-    if (!wordle::IsValidWordleGrid(grid) || grid.IsFinished() || (action_embeddings == nullptr) ||
-        (action_count == 0)) {
-        return false;
-    }
-
-    bool found_candidate = false;
-
-    for (std::size_t action_index = 0; action_index < action_count; ++action_index) {
-        if (!IsValidActionEmbedding(action_embeddings[action_index])) {
-            return false;
-        }
-
-        if (wordle::HasGuess(grid, action_embeddings[action_index].word)) {
-            continue;
-        }
-
-        const float score = ScoreActionEmbedding(policy_vector, action_embeddings[action_index]);
-        if (!found_candidate || (score > selected_action.score)) {
-            found_candidate = true;
-            selected_action.action_index = action_index;
-            selected_action.word = action_embeddings[action_index].word;
-            selected_action.score = score;
-        }
-    }
-
-    return found_candidate;
-}
-
 wordle::Word SelectBestActionWord(const PolicyVector &policy_vector, const ActionEmbedding *action_embeddings,
                                   std::size_t action_count);
-wordle::Word SelectBestLegalActionWord(const PolicyVector &policy_vector, const wordle::WordleGrid &grid,
-                                       const ActionEmbedding *action_embeddings, std::size_t action_count);
 
 } // namespace neuroevolution::model::output_embedding

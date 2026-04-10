@@ -20,7 +20,7 @@ namespace {
 using neuroevolution::common::FixedBuffer;
 using neuroevolution::model::output_embedding::ActionEmbedding;
 using neuroevolution::model::output_embedding::SelectedAction;
-using neuroevolution::model::output_embedding::TrySelectBestLegalAction;
+using neuroevolution::model::output_embedding::TrySelectBestAction;
 using neuroevolution::model::policy_model::PolicyVector;
 using neuroevolution::model::policy_model::TryForwardPolicyModel;
 using neuroevolution::training_folder::DeviceTrainingDataShard;
@@ -135,8 +135,8 @@ __device__ DeviceRuntimeStatusCode TryEvaluateIndividualFitness(const DeviceGeno
         }
 
         SelectedAction selected_action{};
-        if (!TrySelectBestLegalAction(policy_vector, grid, action_embeddings.values, training_shard.entry_count,
-                                      selected_action)) {
+        if (!TrySelectBestAction(policy_vector, action_embeddings.values, training_shard.entry_count,
+                                 selected_action)) {
             return DeviceRuntimeStatusCode::kActionSelectionFailed;
         }
 

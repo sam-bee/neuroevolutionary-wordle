@@ -28,8 +28,7 @@ virgin-grid flag + up to 5 previous turns
 -> dense trunk
 -> 64D policy output
 -> dot product against output embedding
--> mask illegal repeated guesses
--> highest remaining score wins
+-> highest score wins
 ```
 
 ## 2. Action space
@@ -274,12 +273,7 @@ the action score is:
 score(w) = dot(p, e_w)
 ```
 
-The model computes this for all 4,739 action words.
-
-Then:
-
-1. mask out repeated guesses, because they are illegal
-2. select the legal word with the highest remaining score
+The model computes this for all 4,739 action words and then selects the highest-scoring word.
 
 This means the immediate inference path is:
 
@@ -287,7 +281,6 @@ This means the immediate inference path is:
 game state
 -> 64D policy output
 -> 4,739 dot products
--> masking
 -> argmax
 ```
 
@@ -307,7 +300,6 @@ For the initial implementation, the model contains:
 ### fixed data
 
 - action-word list
-- repeated-guess legality mask input for inference
 - fixed 26 dimensions for each output embedding word
 - hard-coded zero vector used for empty turn slots
 
@@ -322,8 +314,7 @@ For now, the implementation target should stop at:
 5. concatenation into 321 values
 6. forward pass through dense trunk
 7. output embedding scoring
-8. repeated-guess masking
-9. argmax action selection
+8. argmax action selection
 
 That is enough to validate the architecture and test inference.
 
@@ -346,8 +337,7 @@ dense trunk:
 
 action selection:
 dot product with 4,739 64D word embeddings
-mask repeated guesses
-highest legal score wins
+highest score wins
 ```
 
 This is the model structure to implement first.
