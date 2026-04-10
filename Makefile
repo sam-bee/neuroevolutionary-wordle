@@ -1,4 +1,4 @@
-.PHONY: configure build test test-cpu test-gpu test-gpu-sanitized smoke format clean rebuild sandbox-rebuild build-and-test
+.PHONY: configure build test test-cpu test-gpu test-gpu-sanitized smoke format clean rebuild agents-rebuild build-and-test
 
 -include .env
 
@@ -7,8 +7,8 @@ export DOCKERCOMPOSE_GID
 export CUDA_DEVICE_ORDER
 export CUDA_VISIBLE_DEVICES
 
-SANDBOX_CUDA_DEVICE_ORDER := $(if $(CUDA_DEVICE_ORDER),$(CUDA_DEVICE_ORDER),FASTEST_FIRST)
-SANDBOX_CUDA_VISIBLE_DEVICES := $(if $(CUDA_VISIBLE_DEVICES),$(CUDA_VISIBLE_DEVICES),0)
+AGENTS_CUDA_DEVICE_ORDER := $(if $(CUDA_DEVICE_ORDER),$(CUDA_DEVICE_ORDER),FASTEST_FIRST)
+AGENTS_CUDA_VISIBLE_DEVICES := $(if $(CUDA_VISIBLE_DEVICES),$(CUDA_VISIBLE_DEVICES),0)
 
 FORMAT_FILES := $(shell find src tests -type f \( -name '*.hpp' -o -name '*.cpp' -o -name '*.cu' \) | sort)
 
@@ -41,8 +41,8 @@ clean:
 
 rebuild: clean format configure build test
 
-sandbox-rebuild: .env
-	CUDA_DEVICE_ORDER=$(SANDBOX_CUDA_DEVICE_ORDER) CUDA_VISIBLE_DEVICES=$(SANDBOX_CUDA_VISIBLE_DEVICES) $(MAKE) rebuild
+agents-rebuild: .env
+	CUDA_DEVICE_ORDER=$(AGENTS_CUDA_DEVICE_ORDER) CUDA_VISIBLE_DEVICES=$(AGENTS_CUDA_VISIBLE_DEVICES) $(MAKE) rebuild
 
 build-and-test: configure build test
 

@@ -14,8 +14,10 @@ For build-and-test feedback, prefer `make rebuild`. That is the project's best e
 reformats the code, performs a clean rebuild, and runs the full test suite, including GPU-backed coverage.
 
 When an agent wants that same full rebuild while explicitly pinning CUDA device-selection vars into the process tree,
-use `make sandbox-rebuild`. That target prepends `CUDA_DEVICE_ORDER` and `CUDA_VISIBLE_DEVICES` to the recursive
+use `make agents-rebuild`. That target prepends `CUDA_DEVICE_ORDER` and `CUDA_VISIBLE_DEVICES` to the recursive
 `make rebuild` invocation, using values from `.env` when present and otherwise defaulting to `FASTEST_FIRST` and `0`.
+Agents are forbidden from trying to run `make agents-rebuild` inside the sandbox: there is no GPU passthrough there, so
+the command must be run outside the sandbox.
 
 ## Coding Guidelines
 
@@ -61,10 +63,9 @@ agent's job to fix it if, for example:
 Agents MUST NOT attempt to fix such problems. Your job is not to install things. Please escalate any such issues to the
 user, who will do the necessary systems administration for you.
 
-If you need test feedback and your sandbox does not expose the CUDA device correctly, first try `make sandbox-rebuild`.
-If GPU access is still unavailable, request permission to run `make sandbox-rebuild` outside the sandbox rather than
-treating GPU tests as optional. GPU-backed testing is a normal and expected part of development on this project, and
-agents are allowed to use it.
+If you need full build-and-test feedback as an agent, do not try `make agents-rebuild` inside the sandbox. Run
+`make agents-rebuild` outside the sandbox instead. GPU-backed testing is a normal and expected part of development on
+this project, and agents are allowed to use it.
 
 ## No-Go Areas
 

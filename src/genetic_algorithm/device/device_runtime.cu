@@ -108,8 +108,33 @@ __device__ void BuildActionEmbeddingsFromTrainingShard(const DeviceGenome &genom
     }
 }
 
-__device__ DeviceRuntimeStatusCode TryEvaluateIndividualFitness(const DeviceGenome &genome, const Word &opening_guess,
-                                                                float &fitness_out) {
+__device__ DeviceRuntimeStatusCode TryPlayWordleToCompletion(const DeviceGenome &genome,
+                                                             const ActionEmbedding *action_embeddings,
+                                                             const std::size_t action_count, const Word &solution,
+                                                             float &episode_score_out) {
+    WordleGrid grid = MakeWordleGrid(solution);
+
+    while (!grid.IsFinished()) {
+        PolicyVector policy_vector{};
+        if (!TryForwardPolicyModel(genome.policy_model, grid, policy_vector)) {
+            return DeviceRuntimeStatusCode::kPolicyForwardFailed;
+        }
+
+        SelectedAction selected_action{};
+        if (!TrySelectBestAction(policy_vector, action_embeddings, action_count, selected_action)) {
+            return DeviceRuntimeStatusCode::kActionSelectionFailed;
+        }
+
+        if (!TryAppendGuess(grid, selected_action.word)) {
+            return DeviceRuntimeStatusCode::kGuessAppendFailed;
+        }
+    }
+
+    episode_score_out = grid.IsWon() ? 1.0f : 0.0f;
+    return DeviceRuntimeStatusCode::kOk;
+}
+
+__device__ DeviceRuntimeStatusCode TryEvaluateIndividualFitness(const DeviceGenome &genome, float &fitness_out) {
     const TrainingDataShard &training_shard = DeviceTrainingDataShard();
     if (!IsValidTrainingDataShard(training_shard) || (training_shard.entry_count == 0) ||
         (training_shard.entry_count > kDeviceActionCount)) {
@@ -123,29 +148,17 @@ __device__ DeviceRuntimeStatusCode TryEvaluateIndividualFitness(const DeviceGeno
 
     for (std::size_t entry_index = 0; entry_index < training_shard.entry_count; ++entry_index) {
         const Word solution = training_shard.entries[entry_index].word;
-        WordleGrid grid = MakeWordleGrid(solution);
-
-        if (!(opening_guess == solution) && !TryAppendGuess(grid, opening_guess)) {
-            return DeviceRuntimeStatusCode::kOpeningGuessAppendFailed;
+        float episode_score = 0.0f;
+        const DeviceRuntimeStatusCode episode_status = TryPlayWordleToCompletion(
+            genome, action_embeddings.values, training_shard.entry_count, solution, episode_score);
+        if (episode_status != DeviceRuntimeStatusCode::kOk) {
+            return episode_status;
         }
 
-        PolicyVector policy_vector{};
-        if (!TryForwardPolicyModel(genome.policy_model, grid, policy_vector)) {
-            return DeviceRuntimeStatusCode::kPolicyForwardFailed;
-        }
-
-        SelectedAction selected_action{};
-        if (!TrySelectBestAction(policy_vector, action_embeddings.values, training_shard.entry_count,
-                                 selected_action)) {
-            return DeviceRuntimeStatusCode::kActionSelectionFailed;
-        }
-
-        if (selected_action.word == solution) {
-            score_sum += 1.0f;
-        }
+        score_sum += episode_score;
     }
 
-    fitness_out = score_sum / static_cast<float>(training_shard.entry_count);
+    fitness_out = score_sum;
     return DeviceRuntimeStatusCode::kOk;
 }
 
@@ -335,7 +348,7 @@ __device__ void WriteGenomeToUnevaluatedIndividual(const DeviceGenome &genome, I
     MarkIndividualUnevaluated(individual);
 }
 
-__global__ void EvaluatePopulationFitnessKernel(DevicePopulation *population, const Word opening_guess, int *status) {
+__global__ void EvaluatePopulationFitnessKernel(DevicePopulation *population, int *status) {
     const std::size_t individual_index = (blockIdx.x * blockDim.x) + threadIdx.x;
     if (individual_index >= kDevicePopulationSize) {
         return;
@@ -349,7 +362,7 @@ __global__ void EvaluatePopulationFitnessKernel(DevicePopulation *population, co
 
     float fitness = 0.0f;
     const DeviceRuntimeStatusCode evaluation_status =
-        TryEvaluateIndividualFitness(population->individuals[individual_index].genome, opening_guess, fitness);
+        TryEvaluateIndividualFitness(population->individuals[individual_index].genome, fitness);
     if (evaluation_status != DeviceRuntimeStatusCode::kOk) {
         SetFailureStatus(status, evaluation_status);
         return;
@@ -496,13 +509,12 @@ bool TryDownloadCurrentPopulationFromDevice(const DeviceRuntimeBuffers &buffers,
         cudaMemcpy(&host_population, buffers.current_population, sizeof(DevicePopulation), cudaMemcpyDeviceToHost));
 }
 
-bool TryEvaluatePopulationFitnessOnDevice(DeviceRuntimeBuffers &buffers, const Word &opening_guess) {
+bool TryEvaluatePopulationFitnessOnDevice(DeviceRuntimeBuffers &buffers) {
     if (!ResetDeviceStatus(buffers)) {
         return false;
     }
 
-    EvaluatePopulationFitnessKernel<<<1, kDevicePopulationSize>>>(buffers.current_population, opening_guess,
-                                                                  buffers.status);
+    EvaluatePopulationFitnessKernel<<<1, kDevicePopulationSize>>>(buffers.current_population, buffers.status);
     if (!CheckCuda(cudaGetLastError()) || !CheckCuda(cudaDeviceSynchronize())) {
         return false;
     }
@@ -569,8 +581,8 @@ const char *DeviceRuntimeStatusCodeString(const DeviceRuntimeStatusCode status_c
         return "cuda failure";
     case DeviceRuntimeStatusCode::kInvalidTrainingShard:
         return "invalid training-data shard";
-    case DeviceRuntimeStatusCode::kOpeningGuessAppendFailed:
-        return "could not append the opening guess to the Wordle grid";
+    case DeviceRuntimeStatusCode::kGuessAppendFailed:
+        return "could not append a model-selected guess to the Wordle grid";
     case DeviceRuntimeStatusCode::kPolicyForwardFailed:
         return "policy model forward pass failed";
     case DeviceRuntimeStatusCode::kActionSelectionFailed:

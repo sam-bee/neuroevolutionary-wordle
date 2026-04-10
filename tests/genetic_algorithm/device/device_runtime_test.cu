@@ -1,7 +1,6 @@
 #include <cuda_runtime.h>
 
 #include <iostream>
-#include <stdexcept>
 #include <string_view>
 
 #include "genetic_algorithm/device/device_runtime.hpp"
@@ -25,21 +24,8 @@ using neuroevolution::genetic_algorithm::device::TryReadPopulationFitnessSummary
 using neuroevolution::genetic_algorithm::device::TryUploadCurrentPopulationToDevice;
 using neuroevolution::training_folder::LoadInitialTrainingDataShardFromActionSpace;
 using neuroevolution::training_folder::UploadTrainingDataShardToDeviceConstantMemory;
-using neuroevolution::wordle::TryMakeWordFromAscii;
-using neuroevolution::wordle::Word;
 
 constexpr int kSelectedVisibleDeviceIndex = 0;
-
-Word MakeWord(const char (&letters)[neuroevolution::wordle::kWordLength + 1]) {
-    Word word{};
-
-    if (!TryMakeWordFromAscii(letters, word)) {
-        throw std::invalid_argument(
-            "Device-runtime test word literal must contain exactly five uppercase ASCII letters.");
-    }
-
-    return word;
-}
 
 bool CheckCuda(const cudaError_t error, const std::string_view action) {
     if (error != cudaSuccess) {
@@ -100,10 +86,7 @@ bool TestDeviceRuntimeEvaluatesAndAssemblesPopulationsOnDevice() {
     DeviceRuntimeBuffers buffers{};
     bool ok = TryCreateDeviceRuntimeBuffers(buffers);
     ok &= TryUploadCurrentPopulationToDevice(host_population, buffers);
-
-    const Word opening_guess = MakeWord("CRANE");
-
-    ok &= TryEvaluatePopulationFitnessOnDevice(buffers, opening_guess);
+    ok &= TryEvaluatePopulationFitnessOnDevice(buffers);
 
     PopulationFitnessSummary summary_generation_0{};
     ok &= TryReadPopulationFitnessSummaryFromDevice(buffers, summary_generation_0);
@@ -118,7 +101,7 @@ bool TestDeviceRuntimeEvaluatesAndAssemblesPopulationsOnDevice() {
 
     ok &= TryAssembleNextGenerationOnDevice(buffers, 77U, assembly_config);
     SwapDevicePopulationBuffers(buffers);
-    ok &= TryEvaluatePopulationFitnessOnDevice(buffers, opening_guess);
+    ok &= TryEvaluatePopulationFitnessOnDevice(buffers);
 
     PopulationFitnessSummary summary_generation_1{};
     ok &= TryReadPopulationFitnessSummaryFromDevice(buffers, summary_generation_1);
@@ -132,10 +115,14 @@ bool TestDeviceRuntimeEvaluatesAndAssemblesPopulationsOnDevice() {
                      "Expected valid best index for generation zero");
     ok &= ExpectTrue(summary_generation_1.best_index < neuroevolution::genetic_algorithm::device::kDevicePopulationSize,
                      "Expected valid best index for generation one");
-    ok &= ExpectInRange(summary_generation_0.best_fitness, 0.0f, 1.0f, "generation zero best fitness");
-    ok &= ExpectInRange(summary_generation_0.average_fitness, 0.0f, 1.0f, "generation zero average fitness");
-    ok &= ExpectInRange(summary_generation_1.best_fitness, 0.0f, 1.0f, "generation one best fitness");
-    ok &= ExpectInRange(summary_generation_1.average_fitness, 0.0f, 1.0f, "generation one average fitness");
+    ok &= ExpectInRange(summary_generation_0.best_fitness, 0.0f, static_cast<float>(training_shard.entry_count),
+                        "generation zero best fitness");
+    ok &= ExpectInRange(summary_generation_0.average_fitness, 0.0f, static_cast<float>(training_shard.entry_count),
+                        "generation zero average fitness");
+    ok &= ExpectInRange(summary_generation_1.best_fitness, 0.0f, static_cast<float>(training_shard.entry_count),
+                        "generation one best fitness");
+    ok &= ExpectInRange(summary_generation_1.average_fitness, 0.0f, static_cast<float>(training_shard.entry_count),
+                        "generation one average fitness");
     return ok;
 }
 

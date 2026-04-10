@@ -19,7 +19,7 @@ enum class DeviceRuntimeStatusCode : int {
     kOk = 0,
     kCudaFailure = 1,
     kInvalidTrainingShard = 2,
-    kOpeningGuessAppendFailed = 3,
+    kGuessAppendFailed = 3,
     kPolicyForwardFailed = 4,
     kActionSelectionFailed = 5,
     kPopulationNotEvaluated = 6,
@@ -49,7 +49,7 @@ bool TryUploadCurrentPopulationToDevice(const DevicePopulation &host_population,
 
 bool TryDownloadCurrentPopulationFromDevice(const DeviceRuntimeBuffers &buffers, DevicePopulation &host_population);
 
-bool TryEvaluatePopulationFitnessOnDevice(DeviceRuntimeBuffers &buffers, const wordle::Word &opening_guess);
+bool TryEvaluatePopulationFitnessOnDevice(DeviceRuntimeBuffers &buffers);
 
 bool TryReadPopulationFitnessSummaryFromDevice(const DeviceRuntimeBuffers &buffers, PopulationFitnessSummary &summary);
 

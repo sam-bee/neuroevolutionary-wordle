@@ -6,14 +6,12 @@
 #include <iomanip>
 #include <iostream>
 #include <limits>
-#include <stdexcept>
 #include <string>
 #include <string_view>
 
 #include "genetic_algorithm/device/device_runtime.hpp"
 #include "genetic_algorithm/genetic_algorithm.hpp"
 #include "training_folder/training_data.hpp"
-#include "wordle/word.hpp"
 
 namespace {
 
@@ -35,8 +33,6 @@ using neuroevolution::genetic_algorithm::device::TryUploadCurrentPopulationToDev
 using neuroevolution::training_folder::DefaultActionSpacePath;
 using neuroevolution::training_folder::LoadInitialTrainingDataShardFromActionSpace;
 using neuroevolution::training_folder::UploadTrainingDataShardToDeviceConstantMemory;
-using neuroevolution::wordle::TryMakeWordFromAscii;
-using neuroevolution::wordle::Word;
 
 constexpr std::size_t kDefaultGenerationCount = 3;
 constexpr std::uint32_t kDefaultSeed = 12345;
@@ -76,15 +72,6 @@ bool SelectVisibleCudaDevice() {
     }
 
     return CheckCuda(cudaSetDevice(kSelectedVisibleDeviceIndex), "selecting visible CUDA device");
-}
-
-Word MakeWord(const char (&letters)[neuroevolution::wordle::kWordLength + 1]) {
-    Word word{};
-    if (!TryMakeWordFromAscii(letters, word)) {
-        throw std::invalid_argument("Opening-guess literal must contain exactly five uppercase ASCII letters.");
-    }
-
-    return word;
 }
 
 bool TryParseUnsigned(const char *text, std::uint64_t &value) {
@@ -210,7 +197,6 @@ int main(int argc, char **argv) {
             return 1;
         }
 
-        const Word opening_guess = MakeWord("CRANE");
         const GenerationAssemblyConfig assembly_config = MakeAssemblyConfig();
 
         if (!TryUploadCurrentPopulationToDevice(population, buffers)) {
@@ -223,14 +209,13 @@ int main(int argc, char **argv) {
                   << neuroevolution::genetic_algorithm::device::kDevicePopulationSize
                   << ", action_count=" << neuroevolution::genetic_algorithm::device::kDeviceActionCount
                   << ", generations=" << cli_config.generation_count << ", seed=" << cli_config.seed
-                  << ", opening_guess=CRANE"
                   << ", training_shard_entries=" << training_shard.entry_count
                   << ", training_source=" << training_data_path.filename().string()
                   << ", training_storage=constant_memory\n";
         std::cout << std::fixed << std::setprecision(4);
 
         for (std::size_t generation_step = 0; generation_step < cli_config.generation_count; ++generation_step) {
-            if (!TryEvaluatePopulationFitnessOnDevice(buffers, opening_guess)) {
+            if (!TryEvaluatePopulationFitnessOnDevice(buffers)) {
                 (void)ReportDeviceRuntimeFailure(buffers, "Population fitness evaluation");
                 DestroyDeviceRuntimeBuffers(buffers);
                 return 1;
