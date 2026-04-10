@@ -7,6 +7,7 @@
 #include <iostream>
 #include <limits>
 #include <stdexcept>
+#include <string>
 #include <string_view>
 
 #include "genetic_algorithm/device/device_runtime.hpp"
@@ -31,6 +32,7 @@ using neuroevolution::genetic_algorithm::device::TryEvaluatePopulationFitnessOnD
 using neuroevolution::genetic_algorithm::device::TryReadDeviceRuntimeStatus;
 using neuroevolution::genetic_algorithm::device::TryReadPopulationFitnessSummaryFromDevice;
 using neuroevolution::genetic_algorithm::device::TryUploadCurrentPopulationToDevice;
+using neuroevolution::training_folder::DefaultActionSpacePath;
 using neuroevolution::training_folder::LoadInitialTrainingDataShardFromActionSpace;
 using neuroevolution::training_folder::UploadTrainingDataShardToDeviceConstantMemory;
 using neuroevolution::wordle::TryMakeWordFromAscii;
@@ -190,7 +192,8 @@ int main(int argc, char **argv) {
             return 1;
         }
 
-        const auto training_shard = LoadInitialTrainingDataShardFromActionSpace();
+        const auto training_data_path = DefaultActionSpacePath();
+        const auto training_shard = LoadInitialTrainingDataShardFromActionSpace(training_data_path);
         if (!UploadTrainingDataShardToDeviceConstantMemory(training_shard)) {
             std::cerr << "Could not upload the training-data shard to device constant memory.\n";
             return 1;
@@ -220,7 +223,10 @@ int main(int argc, char **argv) {
                   << neuroevolution::genetic_algorithm::device::kDevicePopulationSize
                   << ", action_count=" << neuroevolution::genetic_algorithm::device::kDeviceActionCount
                   << ", generations=" << cli_config.generation_count << ", seed=" << cli_config.seed
-                  << ", opening_guess=CRANE\n";
+                  << ", opening_guess=CRANE"
+                  << ", training_shard_entries=" << training_shard.entry_count
+                  << ", training_source=" << training_data_path.filename().string()
+                  << ", training_storage=constant_memory\n";
         std::cout << std::fixed << std::setprecision(4);
 
         for (std::size_t generation_step = 0; generation_step < cli_config.generation_count; ++generation_step) {

@@ -36,7 +36,7 @@ std::string NormalizeLine(std::string line) {
 } // namespace
 
 std::filesystem::path DefaultActionSpacePath() {
-    return std::filesystem::path(NEUROEVOLUTION_PROJECT_SOURCE_DIR) / "data" / "action-space.txt";
+    return std::filesystem::path(NEUROEVOLUTION_PROJECT_SOURCE_DIR) / "data" / "action-space-randomised.txt";
 }
 
 bool TryLoadInitialTrainingDataShardFromActionSpace(const std::filesystem::path &action_space_path,
@@ -70,7 +70,8 @@ bool TryLoadInitialTrainingDataShardFromActionSpace(const std::filesystem::path 
 TrainingDataShard LoadInitialTrainingDataShardFromActionSpace(const std::filesystem::path &action_space_path) {
     TrainingDataShard shard{};
     if (!TryLoadInitialTrainingDataShardFromActionSpace(action_space_path, shard)) {
-        throw std::runtime_error("Could not load the initial training-data shard from the action-space word list.");
+        throw std::runtime_error(
+            "Could not load the initial training-data shard from the configured action-space word list.");
     }
 
     return shard;

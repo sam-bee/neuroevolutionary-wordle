@@ -9,7 +9,7 @@
 
 namespace neuroevolution::training_folder {
 
-constexpr std::size_t kInitialTrainingDataShardEntryCount = 5;
+constexpr std::size_t kInitialTrainingDataShardEntryCount = 20;
 
 struct TrainingDataEntry {
     wordle::Word word{};

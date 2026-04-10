@@ -1,6 +1,8 @@
+#include <array>
 #include <filesystem>
 #include <iostream>
 #include <stdexcept>
+#include <string>
 #include <string_view>
 
 #include "training_folder/training_data.hpp"
@@ -9,17 +11,29 @@ namespace {
 
 using neuroevolution::training_folder::DefaultActionSpacePath;
 using neuroevolution::training_folder::IsValidTrainingDataShard;
+using neuroevolution::training_folder::kInitialTrainingDataShardEntryCount;
 using neuroevolution::training_folder::LoadInitialTrainingDataShardFromActionSpace;
 using neuroevolution::training_folder::TrainingDataShard;
-using neuroevolution::wordle::TryMakeWordFromAscii;
 using neuroevolution::wordle::Word;
 
-Word MakeWord(const char (&letters)[neuroevolution::wordle::kWordLength + 1]) {
-    Word word{};
+constexpr std::array<const char *, kInitialTrainingDataShardEntryCount> kExpectedTrainingWords = {
+    "MINOS", "VODKA", "RAZOR", "GRADS", "CURLS", "BILGE", "GREET", "PYLON", "ENTER", "READY",
+    "VERDE", "AUGER", "FOOTS", "BRACE", "PURTY", "SPORT", "TIRES", "FRISK", "AFFIX", "CHUMS",
+};
 
-    if (!TryMakeWordFromAscii(letters, word)) {
-        throw std::invalid_argument(
-            "Training-data test word literal must contain exactly five uppercase ASCII letters.");
+Word MakeWord(const std::string_view letters) {
+    if (letters.size() != neuroevolution::wordle::kWordLength) {
+        throw std::invalid_argument("Training-data test word view must contain exactly five characters.");
+    }
+
+    Word word{};
+    for (std::size_t position = 0; position < neuroevolution::wordle::kWordLength; ++position) {
+        const char value = letters[position];
+        if (!neuroevolution::wordle::IsAsciiUppercaseLetter(value)) {
+            throw std::invalid_argument("Training-data test word view must contain only uppercase ASCII letters.");
+        }
+
+        word.letter_indices[position] = neuroevolution::wordle::LetterIndexFromAscii(value);
     }
 
     return word;
@@ -47,26 +61,38 @@ bool ExpectWordEquals(const Word &actual, const Word &expected, const std::strin
     return ok;
 }
 
-bool TestLoadInitialTrainingDataShardReadsFirstFiveActionSpaceWords() {
+bool ExpectTrainingShardMatchesExpectedWords(const TrainingDataShard &shard, const std::string_view label_prefix) {
+    bool ok = true;
+
+    ok &= ExpectTrue(shard.entry_count == kExpectedTrainingWords.size(),
+                     std::string(label_prefix) + " should contain the expected number of entries");
+
+    const std::size_t comparison_count =
+        (shard.entry_count < kExpectedTrainingWords.size()) ? shard.entry_count : kExpectedTrainingWords.size();
+
+    for (std::size_t entry_index = 0; entry_index < comparison_count; ++entry_index) {
+        ok &= ExpectWordEquals(shard.entries[entry_index].word, MakeWord(kExpectedTrainingWords[entry_index]),
+                               std::string(label_prefix) + " word " + std::to_string(entry_index));
+    }
+
+    return ok;
+}
+
+bool TestLoadInitialTrainingDataShardReadsTopTwentyRandomisedActionSpaceWords() {
     const std::filesystem::path action_space_path = DefaultActionSpacePath();
     const TrainingDataShard shard = LoadInitialTrainingDataShardFromActionSpace(action_space_path);
 
     bool ok = true;
-    ok &= ExpectTrue(std::filesystem::exists(action_space_path), "Expected action-space file to exist");
-    ok &= ExpectTrue(shard.entry_count == 5, "Expected initial training-data shard to contain five entries");
+    ok &= ExpectTrue(std::filesystem::exists(action_space_path), "Expected randomized action-space file to exist");
     ok &= ExpectTrue(IsValidTrainingDataShard(shard), "Expected loaded training-data shard to be valid");
-    ok &= ExpectWordEquals(shard.entries[0].word, MakeWord("AARGH"), "first training-data word");
-    ok &= ExpectWordEquals(shard.entries[1].word, MakeWord("ABACK"), "second training-data word");
-    ok &= ExpectWordEquals(shard.entries[2].word, MakeWord("ABASE"), "third training-data word");
-    ok &= ExpectWordEquals(shard.entries[3].word, MakeWord("ABATE"), "fourth training-data word");
-    ok &= ExpectWordEquals(shard.entries[4].word, MakeWord("ABBAS"), "fifth training-data word");
+    ok &= ExpectTrainingShardMatchesExpectedWords(shard, "initial training-data shard");
     return ok;
 }
 
 } // namespace
 
 int main() {
-    if (!TestLoadInitialTrainingDataShardReadsFirstFiveActionSpaceWords()) {
+    if (!TestLoadInitialTrainingDataShardReadsTopTwentyRandomisedActionSpaceWords()) {
         return 1;
     }
 

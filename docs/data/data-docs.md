@@ -24,6 +24,10 @@ person verbs with an _-s_ inflection. They are usually words that any English sp
 allowed guesses, made smaller to make training faster. All of these words are in the allowed guesses. Every allowed
 solution is included in this file.
 
+`action-space-randomised.txt` contains the same curated action space in a randomized order. The current GA runtime uses
+the top 20 words from this file as its training shard and uploads that shard to GPU constant memory while the run is in
+progress.
+
 ## More Information on Data
 
 If more information about the data is needed, see the [blog post on curating the
