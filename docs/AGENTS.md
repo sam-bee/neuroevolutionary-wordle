@@ -13,6 +13,10 @@ All there is to be said about this initially is that we are using CUDA. Target N
 For build-and-test feedback, prefer `make rebuild`. That is the project's best end-to-end verification command: it
 reformats the code, performs a clean rebuild, and runs the full test suite, including GPU-backed coverage.
 
+When an agent wants that same full rebuild while explicitly pinning CUDA device-selection vars into the process tree,
+use `make sandbox-rebuild`. That target prepends `CUDA_DEVICE_ORDER` and `CUDA_VISIBLE_DEVICES` to the recursive
+`make rebuild` invocation, using values from `.env` when present and otherwise defaulting to `FASTEST_FIRST` and `0`.
+
 ## Coding Guidelines
 
 Writing unit tests first with Test Driven Development may help the agent, or it may not. A coding agent should think
@@ -57,9 +61,10 @@ agent's job to fix it if, for example:
 Agents MUST NOT attempt to fix such problems. Your job is not to install things. Please escalate any such issues to the
 user, who will do the necessary systems administration for you.
 
-If you need test feedback and your sandbox does not expose the CUDA device correctly, you should request permission to
-run `make rebuild` outside the sandbox by default rather than treating GPU tests as optional. GPU-backed testing is a
-normal and expected part of development on this project, and agents are allowed to use it.
+If you need test feedback and your sandbox does not expose the CUDA device correctly, first try `make sandbox-rebuild`.
+If GPU access is still unavailable, request permission to run `make sandbox-rebuild` outside the sandbox rather than
+treating GPU tests as optional. GPU-backed testing is a normal and expected part of development on this project, and
+agents are allowed to use it.
 
 ## No-Go Areas
 
