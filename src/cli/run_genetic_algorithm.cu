@@ -1,5 +1,6 @@
 #include <cuda_runtime.h>
 
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <exception>
@@ -35,12 +36,12 @@ using neuroevolution::training_folder::LoadInitialTrainingDataShardFromActionSpa
 using neuroevolution::training_folder::UploadTrainingDataShardToDeviceConstantMemory;
 
 constexpr std::size_t kDefaultGenerationCount = 3;
-constexpr std::uint32_t kDefaultSeed = 12345;
 constexpr int kSelectedVisibleDeviceIndex = 0;
 
 struct CliConfig {
     std::size_t generation_count = kDefaultGenerationCount;
-    std::uint32_t seed = kDefaultSeed;
+    std::uint32_t seed = 0;
+    bool seed_was_provided = false;
 };
 
 enum class ArgumentParseResult {
@@ -49,7 +50,10 @@ enum class ArgumentParseResult {
     kFailure,
 };
 
-void PrintUsage() { std::cout << "Usage: run_genetic_algorithm [--seed N] [--generations N]\n"; }
+void PrintUsage() {
+    std::cout << "Usage: run_genetic_algorithm [--seed N] [--generations N]\n"
+              << "If --seed is omitted, the program uses the current time in microseconds.\n";
+}
 
 bool CheckCuda(const cudaError_t error, const std::string_view action) {
     if (error != cudaSuccess) {
@@ -91,6 +95,15 @@ bool TryParseUnsigned(const char *text, std::uint64_t &value) {
     return true;
 }
 
+std::uint32_t MakeSeedFromCurrentTimeMicroseconds() {
+    const auto now = std::chrono::system_clock::now().time_since_epoch();
+    const auto microseconds = std::chrono::duration_cast<std::chrono::microseconds>(now).count();
+    const std::uint64_t microsecond_count = static_cast<std::uint64_t>(microseconds);
+    const std::uint32_t lower_bits = static_cast<std::uint32_t>(microsecond_count);
+    const std::uint32_t upper_bits = static_cast<std::uint32_t>(microsecond_count >> 32U);
+    return lower_bits ^ upper_bits;
+}
+
 ArgumentParseResult TryParseArguments(const int argc, char **argv, CliConfig &config) {
     for (int arg_index = 1; arg_index < argc; ++arg_index) {
         const std::string_view argument = argv[arg_index];
@@ -119,6 +132,7 @@ ArgumentParseResult TryParseArguments(const int argc, char **argv, CliConfig &co
                 }
 
                 config.seed = static_cast<std::uint32_t>(parsed_value);
+                config.seed_was_provided = true;
             } else {
                 if (parsed_value == 0) {
                     std::cerr << "Generation count must be at least 1.\n";
@@ -173,6 +187,10 @@ int main(int argc, char **argv) {
 
         if (parse_result == ArgumentParseResult::kFailure) {
             return 1;
+        }
+
+        if (!cli_config.seed_was_provided) {
+            cli_config.seed = MakeSeedFromCurrentTimeMicroseconds();
         }
 
         if (!SelectVisibleCudaDevice()) {
