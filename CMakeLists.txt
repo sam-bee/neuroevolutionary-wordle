@@ -444,6 +444,26 @@ set_tests_properties(device_runtime_test PROPERTIES
     RESOURCE_LOCK cuda_device
 )
 
+add_executable(output_embedding_injection_test
+    tests/genetic_algorithm/output_embedding_injection_test.cu
+)
+
+target_link_libraries(output_embedding_injection_test PRIVATE
+    genetic_algorithm
+)
+
+enable_project_warnings(output_embedding_injection_test)
+
+set_target_properties(output_embedding_injection_test PROPERTIES
+    CUDA_SEPARABLE_COMPILATION ON
+)
+
+add_test(NAME output_embedding_injection_test COMMAND output_embedding_injection_test)
+set_tests_properties(output_embedding_injection_test PROPERTIES
+    LABELS "gpu;integration"
+    RESOURCE_LOCK cuda_device
+)
+
 add_test(NAME run_genetic_algorithm_smoke_test COMMAND run_genetic_algorithm --seed 7 --generations 2 --population-size 6)
 set_tests_properties(run_genetic_algorithm_smoke_test PROPERTIES
     LABELS "gpu;integration"
