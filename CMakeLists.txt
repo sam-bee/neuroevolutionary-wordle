@@ -234,6 +234,21 @@ set_tests_properties(wordle_grid_test PROPERTIES
     LABELS "cpu;unit"
 )
 
+add_executable(hint_grid_test
+    tests/wordle/hint_grid_test.cpp
+)
+
+target_link_libraries(hint_grid_test PRIVATE
+    model_input
+)
+
+enable_project_warnings(hint_grid_test)
+
+add_test(NAME hint_grid_test COMMAND hint_grid_test)
+set_tests_properties(hint_grid_test PROPERTIES
+    LABELS "cpu;unit"
+)
+
 add_executable(dense_trunk_test
     tests/model/dense_trunk/dense_trunk_test.cpp
 )
