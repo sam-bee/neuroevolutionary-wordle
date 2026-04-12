@@ -38,8 +38,11 @@ using neuroevolution::genetic_algorithm::dynamic_device::TryReadDeviceRuntimeSta
 using neuroevolution::genetic_algorithm::dynamic_device::TryReadPopulationFitnessSummaryFromDevice;
 using neuroevolution::genetic_algorithm::dynamic_device::TryUploadCurrentPopulationToDevice;
 using neuroevolution::training_folder::DefaultActionSpacePath;
+using neuroevolution::training_folder::IsValidWordCountSchedule;
 using neuroevolution::training_folder::LoadTrainingWordCatalogFromActionSpace;
+using neuroevolution::training_folder::ScheduledWordCountForGeneration;
 using neuroevolution::training_folder::UploadTrainingWordCatalogToDeviceConstantMemory;
+using neuroevolution::training_folder::WordCountSchedule;
 
 constexpr std::size_t kDefaultGenerationCount = 3;
 constexpr int kSelectedVisibleDeviceIndex = 0;
@@ -49,6 +52,9 @@ struct CliConfig {
     std::size_t generation_count = kDefaultGenerationCount;
     std::size_t population_size_ceiling = 0;
     bool population_size_was_provided = false;
+    std::size_t initial_word_count = neuroevolution::training_folder::kTrainingDataCurriculumEntryCount;
+    std::size_t word_count_step = 1;
+    std::size_t word_count_step_period_generations = 1;
     double genotype_vram_gb = 0.0;
     bool genotype_vram_gb_was_provided = false;
     std::uint32_t seed = 0;
@@ -63,11 +69,15 @@ enum class ArgumentParseResult {
 
 void PrintUsage() {
     std::cout << "Usage: run_genetic_algorithm [--seed N] [--generations N] [--population-size N] "
-                 "[--genotype-vram-gb F]\n"
+                 "[--genotype-vram-gb F] [--initial-word-count N] [--word-count-step N] "
+                 "[--word-count-step-period N]\n"
               << "If --population-size is omitted, the program does not apply an extra population ceiling.\n"
               << "If both --population-size and --genotype-vram-gb are omitted, the program uses "
               << neuroevolution::genetic_algorithm::dynamic_device::kDefaultPopulationSizeCeiling
               << " as the default starting-population target when deriving the initial genotype byte budget.\n"
+              << "The shared training/action schedule defaults to initial_word_count="
+              << neuroevolution::training_folder::kTrainingDataCurriculumEntryCount
+              << ", word_count_step=1, word_count_step_period_generations=1.\n"
               << "If --genotype-vram-gb is omitted, the program uses exactly enough genotype bytes to fit the "
                  "requested initial population at the starting action count.\n"
               << "The VRAM budget flag is interpreted in binary GiB-style units (" << kBytesPerVramGiB
@@ -144,7 +154,8 @@ ArgumentParseResult TryParseArguments(const int argc, char **argv, CliConfig &co
         }
 
         if ((argument == "--seed") || (argument == "--generations") || (argument == "--population-size") ||
-            (argument == "--genotype-vram-gb")) {
+            (argument == "--genotype-vram-gb") || (argument == "--initial-word-count") ||
+            (argument == "--word-count-step") || (argument == "--word-count-step-period")) {
             if ((arg_index + 1) >= argc) {
                 std::cerr << "Missing value for " << argument << '\n';
                 return ArgumentParseResult::kFailure;
@@ -181,7 +192,7 @@ ArgumentParseResult TryParseArguments(const int argc, char **argv, CliConfig &co
                     }
 
                     config.generation_count = static_cast<std::size_t>(parsed_value);
-                } else {
+                } else if (argument == "--population-size") {
                     if (parsed_value == 0) {
                         std::cerr << "Population size must be at least 1.\n";
                         return ArgumentParseResult::kFailure;
@@ -189,6 +200,27 @@ ArgumentParseResult TryParseArguments(const int argc, char **argv, CliConfig &co
 
                     config.population_size_ceiling = static_cast<std::size_t>(parsed_value);
                     config.population_size_was_provided = true;
+                } else if (argument == "--initial-word-count") {
+                    if (parsed_value == 0) {
+                        std::cerr << "Initial word count must be at least 1.\n";
+                        return ArgumentParseResult::kFailure;
+                    }
+
+                    config.initial_word_count = static_cast<std::size_t>(parsed_value);
+                } else if (argument == "--word-count-step") {
+                    if (parsed_value == 0) {
+                        std::cerr << "Word-count step must be at least 1.\n";
+                        return ArgumentParseResult::kFailure;
+                    }
+
+                    config.word_count_step = static_cast<std::size_t>(parsed_value);
+                } else {
+                    if (parsed_value == 0) {
+                        std::cerr << "Word-count step period must be at least 1.\n";
+                        return ArgumentParseResult::kFailure;
+                    }
+
+                    config.word_count_step_period_generations = static_cast<std::size_t>(parsed_value);
                 }
             }
 
@@ -226,11 +258,13 @@ GenerationAssemblyConfig MakeAssemblyConfig() {
 }
 
 PendingOutputEmbeddingInjection MakePendingOutputEmbeddingInjection(const RuntimeWordCounts &runtime_word_counts,
-                                                                   const std::size_t word_catalog_count) {
+                                                                   const std::size_t next_scheduled_word_count) {
     PendingOutputEmbeddingInjection pending_output_embedding_injection{};
-    if (runtime_word_counts.action_space_word_count < word_catalog_count) {
+    if (runtime_word_counts.action_space_word_count < next_scheduled_word_count) {
         pending_output_embedding_injection.enabled = true;
-        pending_output_embedding_injection.catalog_word_index = runtime_word_counts.action_space_word_count;
+        pending_output_embedding_injection.first_catalog_word_index = runtime_word_counts.action_space_word_count;
+        pending_output_embedding_injection.injection_count =
+            next_scheduled_word_count - runtime_word_counts.action_space_word_count;
     }
 
     return pending_output_embedding_injection;
@@ -299,15 +333,26 @@ int main(int argc, char **argv) {
             return 1;
         }
 
+        const WordCountSchedule word_count_schedule{
+            .initial_word_count = cli_config.initial_word_count,
+            .word_count_step = cli_config.word_count_step,
+            .word_count_step_period_generations = cli_config.word_count_step_period_generations,
+        };
+        if (!IsValidWordCountSchedule(word_count_schedule)) {
+            std::cerr << "The configured word-count schedule is invalid.\n";
+            return 1;
+        }
+
+        const std::size_t initial_active_word_count =
+            ScheduledWordCountForGeneration(word_count_schedule, training_word_catalog.word_count, 0);
+        if (initial_active_word_count == 0) {
+            std::cerr << "The configured word-count schedule does not activate any catalog words.\n";
+            return 1;
+        }
+
         RuntimeWordCounts runtime_word_counts{};
-        runtime_word_counts.training_word_count =
-            (runtime_word_counts.training_word_count < training_word_catalog.word_count)
-                ? runtime_word_counts.training_word_count
-                : training_word_catalog.word_count;
-        runtime_word_counts.action_space_word_count =
-            (runtime_word_counts.action_space_word_count < training_word_catalog.word_count)
-                ? runtime_word_counts.action_space_word_count
-                : training_word_catalog.word_count;
+        runtime_word_counts.training_word_count = initial_active_word_count;
+        runtime_word_counts.action_space_word_count = initial_active_word_count;
 
         std::size_t genotype_memory_budget_bytes = 0;
         if (!TryComputeGenotypeBudgetBytes(cli_config, runtime_word_counts.action_space_word_count,
@@ -360,10 +405,10 @@ int main(int argc, char **argv) {
                   << ", training_word_catalog_entries=" << training_word_catalog.word_count
                   << ", configured_training_word_count=" << runtime_word_counts.training_word_count
                   << ", configured_action_space_word_count=" << runtime_word_counts.action_space_word_count
-                  << ", initial_training_shard_entries="
-                  << neuroevolution::training_folder::kTrainingDataEntriesPerShard
-                  << ", phased_curriculum_second_shard_generation="
-                  << neuroevolution::training_folder::kPhasedCurriculumSecondShardGeneration
+                  << ", schedule_initial_word_count=" << word_count_schedule.initial_word_count
+                  << ", schedule_word_count_step=" << word_count_schedule.word_count_step
+                  << ", schedule_word_count_step_period_generations="
+                  << word_count_schedule.word_count_step_period_generations
                   << ", training_source=" << training_data_path.filename().string()
                   << ", training_storage=constant_memory\n";
         std::cout << std::fixed << std::setprecision(4);
@@ -392,8 +437,10 @@ int main(int argc, char **argv) {
             }
 
             const std::uint32_t generation_seed = cli_config.seed + 2U + static_cast<std::uint32_t>(generation_step);
+            const std::size_t next_scheduled_word_count = ScheduledWordCountForGeneration(
+                word_count_schedule, training_word_catalog.word_count, summary.generation_index + 1);
             const PendingOutputEmbeddingInjection pending_output_embedding_injection =
-                MakePendingOutputEmbeddingInjection(runtime_word_counts, training_word_catalog.word_count);
+                MakePendingOutputEmbeddingInjection(runtime_word_counts, next_scheduled_word_count);
 
             if (!TryAssembleNextGenerationOnDevice(buffers, generation_seed, assembly_config,
                                                    pending_output_embedding_injection)) {
@@ -403,8 +450,11 @@ int main(int argc, char **argv) {
             }
 
             if (pending_output_embedding_injection.enabled) {
-                std::cout << "Injecting catalog word index " << pending_output_embedding_injection.catalog_word_index
-                          << " into next generation: population=" << buffers.next_layout.active_individual_count
+                std::cout << "Injecting catalog word range ["
+                          << pending_output_embedding_injection.first_catalog_word_index << ", "
+                          << (pending_output_embedding_injection.first_catalog_word_index +
+                              pending_output_embedding_injection.injection_count - 1)
+                          << "] into next generation: population=" << buffers.next_layout.active_individual_count
                           << ", action_count=" << buffers.next_layout.action_count
                           << ", genome_stride_bytes=" << buffers.next_layout.genome_stride_bytes << '\n';
             }

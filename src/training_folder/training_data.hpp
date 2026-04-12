@@ -15,6 +15,12 @@ constexpr std::size_t kTrainingDataCurriculumEntryCount = kTrainingDataShardCoun
 constexpr std::size_t kPhasedCurriculumSecondShardGeneration = 100;
 constexpr std::size_t kTrainingWordCatalogCapacity = 4739;
 
+struct WordCountSchedule {
+    std::size_t initial_word_count = kTrainingDataCurriculumEntryCount;
+    std::size_t word_count_step = 1;
+    std::size_t word_count_step_period_generations = 1;
+};
+
 struct TrainingWordCatalog {
     common::FixedBuffer<wordle::Word, kTrainingWordCatalogCapacity> words{};
     std::size_t word_count = 0;
@@ -32,6 +38,32 @@ constexpr NEUROEVOLUTION_HOST_DEVICE bool IsValidTrainingWordCatalog(const Train
     }
 
     return true;
+}
+
+constexpr NEUROEVOLUTION_HOST_DEVICE bool IsValidWordCountSchedule(const WordCountSchedule &schedule) noexcept {
+    return (schedule.initial_word_count > 0) && (schedule.word_count_step > 0) &&
+           (schedule.word_count_step_period_generations > 0);
+}
+
+constexpr NEUROEVOLUTION_HOST_DEVICE std::size_t ScheduledWordCountForGeneration(
+    const WordCountSchedule &schedule, const std::size_t catalog_word_count, const std::size_t generation_index) noexcept {
+    if (!IsValidWordCountSchedule(schedule) || (catalog_word_count == 0)) {
+        return 0;
+    }
+
+    const std::size_t initial_word_count =
+        (schedule.initial_word_count < catalog_word_count) ? schedule.initial_word_count : catalog_word_count;
+    const std::size_t completed_schedule_steps = generation_index / schedule.word_count_step_period_generations;
+    if (completed_schedule_steps == 0) {
+        return initial_word_count;
+    }
+
+    if (schedule.word_count_step > ((catalog_word_count - initial_word_count) / completed_schedule_steps)) {
+        return catalog_word_count;
+    }
+
+    const std::size_t scheduled_word_count = initial_word_count + (completed_schedule_steps * schedule.word_count_step);
+    return (scheduled_word_count < catalog_word_count) ? scheduled_word_count : catalog_word_count;
 }
 
 constexpr NEUROEVOLUTION_HOST_DEVICE std::size_t

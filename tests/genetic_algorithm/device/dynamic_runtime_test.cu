@@ -41,7 +41,6 @@ using neuroevolution::genetic_algorithm::dynamic_device::TryInitializeRandomHost
 using neuroevolution::genetic_algorithm::dynamic_device::TryReadDeviceRuntimeStatus;
 using neuroevolution::genetic_algorithm::dynamic_device::TryReadPopulationFitnessSummaryFromDevice;
 using neuroevolution::genetic_algorithm::dynamic_device::TryUploadCurrentPopulationToDevice;
-using neuroevolution::training_folder::ActiveTrainingWordCountForGeneration;
 using neuroevolution::training_folder::LoadTrainingWordCatalogFromActionSpace;
 using neuroevolution::training_folder::TrainingWordCatalog;
 using neuroevolution::training_folder::UploadTrainingWordCatalogToDeviceConstantMemory;
@@ -57,9 +56,9 @@ float MaximumPossibleFitnessForGeneration(const TrainingWordCatalog &training_wo
                                           const RuntimeWordCounts &runtime_word_counts,
                                           const std::size_t generation_index) {
     (void)training_word_catalog;
+    (void)generation_index;
     return kEpisodesPerTrainingEntry * kMaximumEpisodeWinScore *
-           static_cast<float>(ActiveTrainingWordCountForGeneration(runtime_word_counts.training_word_count,
-                                                                   generation_index));
+           static_cast<float>(runtime_word_counts.training_word_count);
 }
 
 bool CheckCuda(const cudaError_t error, const std::string_view action) {
@@ -167,10 +166,12 @@ bool TestDynamicRuntimeInjectsAndResizesWithinFixedBudget() {
 
     RuntimeWordCounts runtime_word_counts{};
     const std::size_t initial_action_count = runtime_word_counts.action_space_word_count;
+    constexpr std::size_t kInjectedWordCount = 3;
     const std::size_t genotype_budget_bytes =
         kInitialPopulationSize * ComputeDynamicGenomeStrideBytes(initial_action_count);
     const std::size_t expected_next_population_size =
-        PopulationSizeForGenotypeBudgetBytes(genotype_budget_bytes, initial_action_count + 1, kInitialPopulationSize);
+        PopulationSizeForGenotypeBudgetBytes(genotype_budget_bytes, initial_action_count + kInjectedWordCount,
+                                             kInitialPopulationSize);
 
     bool ok = true;
     ok &= ExpectTrue(expected_next_population_size > 0,
@@ -192,13 +193,17 @@ bool TestDynamicRuntimeInjectsAndResizesWithinFixedBudget() {
 
     PendingOutputEmbeddingInjection pending_output_embedding_injection{};
     pending_output_embedding_injection.enabled = true;
-    pending_output_embedding_injection.catalog_word_index = initial_action_count;
+    pending_output_embedding_injection.first_catalog_word_index = initial_action_count;
+    pending_output_embedding_injection.injection_count = kInjectedWordCount;
 
-    TrainableActionEmbeddingTail expected_tail{};
-    ok &= TrySeedOutputEmbeddingTailFromHintGrids(GenomePolicyModelParameters(HostGenomeBytesAt(host_population, 0)),
-                                                  training_word_catalog.words[pending_output_embedding_injection.catalog_word_index],
-                                                  expected_tail);
-    ok &= ExpectTrue(ok, "Expected host-side injected tail synthesis to succeed");
+    TrainableActionEmbeddingTail expected_tails[kInjectedWordCount]{};
+    for (std::size_t injection_offset = 0; injection_offset < kInjectedWordCount; ++injection_offset) {
+        ok &= TrySeedOutputEmbeddingTailFromHintGrids(
+            GenomePolicyModelParameters(HostGenomeBytesAt(host_population, 0)),
+            training_word_catalog.words[pending_output_embedding_injection.first_catalog_word_index + injection_offset],
+            expected_tails[injection_offset]);
+    }
+    ok &= ExpectTrue(ok, "Expected host-side injected tail synthesis to succeed for every injected word");
     if (!ok) {
         return false;
     }
@@ -229,8 +234,8 @@ bool TestDynamicRuntimeInjectsAndResizesWithinFixedBudget() {
 
     ok &= ExpectTrue(buffers.next_layout.active_individual_count == expected_next_population_size,
                      "Expected next generation to use the resized population count");
-    ok &= ExpectTrue(buffers.next_layout.action_count == (initial_action_count + 1),
-                     "Expected injection to increase the next generation action count");
+    ok &= ExpectTrue(buffers.next_layout.action_count == (initial_action_count + kInjectedWordCount),
+                     "Expected injection batch to increase the next generation action count");
     ok &= ExpectTrue(buffers.next_layout.genome_stride_bytes > buffers.current_layout.genome_stride_bytes,
                      "Expected injected next generation genomes to have a larger byte stride");
     ok &= ExpectTrue(buffers.next_layout.genotype_bytes <= genotype_budget_bytes,
@@ -262,14 +267,17 @@ bool TestDynamicRuntimeInjectsAndResizesWithinFixedBudget() {
                      "Expected resized injected generation to increment the generation index");
     ok &= ExpectTrue(summary_generation_1.population_size == expected_next_population_size,
                      "Expected injected generation summary to report the resized population");
-    ok &= ExpectTrue(summary_generation_1.action_count == (initial_action_count + 1),
-                     "Expected injected generation summary to report the larger action count");
+    ok &= ExpectTrue(summary_generation_1.action_count == (initial_action_count + kInjectedWordCount),
+                     "Expected injected generation summary to report the batched larger action count");
     ok &= ExpectTrue(assembled_population.layout.active_individual_count == expected_next_population_size,
                      "Expected downloaded population layout to reflect the resized generation");
-    ok &= ExpectTrue(assembled_population.layout.action_count == (initial_action_count + 1),
-                     "Expected downloaded population layout to reflect the injected action count");
-    ok &= ExpectPopulationTailMatchesExpected(assembled_population, initial_action_count, expected_tail,
-                                              "expected injected dynamic population tail");
+    ok &= ExpectTrue(assembled_population.layout.action_count == (initial_action_count + kInjectedWordCount),
+                     "Expected downloaded population layout to reflect the batched injected action count");
+    for (std::size_t injection_offset = 0; injection_offset < kInjectedWordCount; ++injection_offset) {
+        ok &= ExpectPopulationTailMatchesExpected(
+            assembled_population, initial_action_count + injection_offset, expected_tails[injection_offset],
+            std::string("expected injected dynamic population tail ") + std::to_string(injection_offset));
+    }
     ok &= ExpectInRange(summary_generation_0.best_fitness, 0.0f,
                         MaximumPossibleFitnessForGeneration(training_word_catalog, RuntimeWordCounts{},
                                                            summary_generation_0.generation_index),
@@ -323,7 +331,8 @@ bool TestDynamicRuntimeRejectsInjectionWhenNoInjectedEliteFitsBudget() {
 
     PendingOutputEmbeddingInjection pending_output_embedding_injection{};
     pending_output_embedding_injection.enabled = true;
-    pending_output_embedding_injection.catalog_word_index = initial_action_count;
+    pending_output_embedding_injection.first_catalog_word_index = initial_action_count;
+    pending_output_embedding_injection.injection_count = 1;
 
     const GenerationAssemblyConfig assembly_config = MakeAssemblyConfig();
     ok &= ExpectTrue(!TryAssembleNextGenerationOnDevice(buffers, 9U, assembly_config, pending_output_embedding_injection),

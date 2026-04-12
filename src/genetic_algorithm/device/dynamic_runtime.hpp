@@ -27,7 +27,8 @@ struct RuntimeWordCounts {
 
 struct PendingOutputEmbeddingInjection {
     bool enabled = false;
-    std::size_t catalog_word_index = 0;
+    std::size_t first_catalog_word_index = 0;
+    std::size_t injection_count = 0;
 };
 
 enum class DeviceRuntimeStatusCode : int {

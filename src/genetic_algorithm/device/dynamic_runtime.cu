@@ -28,7 +28,6 @@ using neuroevolution::model::output_embedding::ScoreActionEmbedding;
 using neuroevolution::model::output_embedding::SelectedAction;
 using neuroevolution::model::policy_model::PolicyVector;
 using neuroevolution::model::policy_model::TryForwardPolicyModel;
-using neuroevolution::training_folder::ActiveTrainingWordCountForGeneration;
 using neuroevolution::training_folder::DeviceTrainingWordCatalog;
 using neuroevolution::training_folder::IsValidTrainingWordCatalog;
 using neuroevolution::training_folder::TrainingWordCatalog;
@@ -53,7 +52,10 @@ NEUROEVOLUTION_HOST_DEVICE constexpr bool
 IsValidPendingOutputEmbeddingInjection(const TrainingWordCatalog &training_word_catalog,
                                        const PendingOutputEmbeddingInjection &pending_output_embedding_injection) {
     return !pending_output_embedding_injection.enabled ||
-           (pending_output_embedding_injection.catalog_word_index < training_word_catalog.word_count);
+           ((pending_output_embedding_injection.injection_count > 0) &&
+            (pending_output_embedding_injection.first_catalog_word_index < training_word_catalog.word_count) &&
+            (pending_output_embedding_injection.injection_count <=
+             (training_word_catalog.word_count - pending_output_embedding_injection.first_catalog_word_index)));
 }
 
 constexpr bool IsValidDynamicGenerationAssemblyConfig(const GenerationAssemblyConfig &config) {
@@ -366,8 +368,8 @@ __device__ DeviceRuntimeStatusCode TryEvaluateIndividualFitness(const std::uint8
                                                                 const RuntimeWordCounts runtime_word_counts,
                                                                 float &fitness_out) {
     const TrainingWordCatalog &training_word_catalog = DeviceTrainingWordCatalog();
-    const std::size_t active_training_word_count =
-        ActiveTrainingWordCountForGeneration(runtime_word_counts.training_word_count, generation_index);
+    (void)generation_index;
+    const std::size_t active_training_word_count = runtime_word_counts.training_word_count;
     const std::size_t selectable_action_count =
         (population_layout.action_count < runtime_word_counts.action_space_word_count) ? population_layout.action_count
                                                                                        : runtime_word_counts.action_space_word_count;
@@ -509,16 +511,23 @@ __device__ DeviceRuntimeStatusCode TryApplyPendingOutputEmbeddingInjection(
     const TrainingWordCatalog &training_word_catalog = DeviceTrainingWordCatalog();
     if (!IsValidTrainingWordCatalog(training_word_catalog) ||
         !IsValidPendingOutputEmbeddingInjection(training_word_catalog, pending_output_embedding_injection) ||
-        (pending_output_embedding_injection.catalog_word_index != current_action_count)) {
+        (pending_output_embedding_injection.first_catalog_word_index != current_action_count)) {
         return DeviceRuntimeStatusCode::kOutputEmbeddingInjectionFailed;
     }
 
-    return TrySeedOutputEmbeddingTailFromHintGrids(
-               GenomePolicyModelParameters(genome_bytes),
-               training_word_catalog.words[pending_output_embedding_injection.catalog_word_index],
-               GenomeTailRows(genome_bytes)[current_action_count])
-               ? DeviceRuntimeStatusCode::kOk
-               : DeviceRuntimeStatusCode::kOutputEmbeddingInjectionFailed;
+    TrainableActionEmbeddingTail *tail_rows = GenomeTailRows(genome_bytes);
+    for (std::size_t injection_offset = 0; injection_offset < pending_output_embedding_injection.injection_count;
+         ++injection_offset) {
+        if (!TrySeedOutputEmbeddingTailFromHintGrids(
+                GenomePolicyModelParameters(genome_bytes),
+                training_word_catalog.words[pending_output_embedding_injection.first_catalog_word_index +
+                                            injection_offset],
+                tail_rows[current_action_count + injection_offset])) {
+            return DeviceRuntimeStatusCode::kOutputEmbeddingInjectionFailed;
+        }
+    }
+
+    return DeviceRuntimeStatusCode::kOk;
 }
 
 __global__ void EvaluatePopulationFitnessKernel(const std::uint8_t *current_genomes,
@@ -715,7 +724,8 @@ bool TryPlanNextPopulationLayout(const DeviceRuntimeBuffers &buffers,
     next_layout = {};
 
     const std::size_t next_action_count =
-        buffers.current_layout.action_count + (pending_output_embedding_injection.enabled ? 1 : 0);
+        buffers.current_layout.action_count +
+        (pending_output_embedding_injection.enabled ? pending_output_embedding_injection.injection_count : 0);
     const std::size_t next_population_size = PopulationSizeForGenotypeBudgetBytes(
         buffers.genotype_memory_budget_bytes, next_action_count, buffers.population_size_ceiling);
     if (next_population_size == 0) {

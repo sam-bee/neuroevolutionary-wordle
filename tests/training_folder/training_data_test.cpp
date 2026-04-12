@@ -17,7 +17,9 @@ using neuroevolution::training_folder::kTrainingDataCurriculumEntryCount;
 using neuroevolution::training_folder::kTrainingDataEntriesPerShard;
 using neuroevolution::training_folder::kTrainingWordCatalogCapacity;
 using neuroevolution::training_folder::LoadTrainingWordCatalogFromActionSpace;
+using neuroevolution::training_folder::ScheduledWordCountForGeneration;
 using neuroevolution::training_folder::TrainingWordCatalog;
+using neuroevolution::training_folder::WordCountSchedule;
 using neuroevolution::wordle::Word;
 
 constexpr std::array<const char *, kTrainingDataCurriculumEntryCount> kExpectedTrainingWords = {
@@ -111,11 +113,35 @@ bool TestPhasedCurriculumUsesOneShardBeforeGenerationOneHundredAndBothAfterwards
     return ok;
 }
 
+bool TestWordCountScheduleAdvancesByConfiguredStepAndClampsToCatalog() {
+    constexpr WordCountSchedule kSchedule{
+        .initial_word_count = 50,
+        .word_count_step = 50,
+        .word_count_step_period_generations = 20,
+    };
+
+    bool ok = true;
+    ok &= ExpectTrue(ScheduledWordCountForGeneration(kSchedule, kTrainingWordCatalogCapacity, 0) == 50,
+                     "Expected schedule generation zero to use the initial word count");
+    ok &= ExpectTrue(ScheduledWordCountForGeneration(kSchedule, kTrainingWordCatalogCapacity, 19) == 50,
+                     "Expected schedule to hold steady before the first configured period boundary");
+    ok &= ExpectTrue(ScheduledWordCountForGeneration(kSchedule, kTrainingWordCatalogCapacity, 20) == 100,
+                     "Expected schedule to add one configured step at generation 20");
+    ok &= ExpectTrue(ScheduledWordCountForGeneration(kSchedule, kTrainingWordCatalogCapacity, 39) == 100,
+                     "Expected schedule to hold the stepped count until the next boundary");
+    ok &= ExpectTrue(ScheduledWordCountForGeneration(kSchedule, kTrainingWordCatalogCapacity, 40) == 150,
+                     "Expected schedule to add the second configured step at generation 40");
+    ok &= ExpectTrue(ScheduledWordCountForGeneration(kSchedule, 120, 1000) == 120,
+                     "Expected schedule to clamp to the catalog size when repeated steps would exceed it");
+    return ok;
+}
+
 } // namespace
 
 int main() {
     if (!TestLoadTrainingWordCatalogReadsRandomisedActionSpaceWords() ||
-        !TestPhasedCurriculumUsesOneShardBeforeGenerationOneHundredAndBothAfterwards()) {
+        !TestPhasedCurriculumUsesOneShardBeforeGenerationOneHundredAndBothAfterwards() ||
+        !TestWordCountScheduleAdvancesByConfiguredStepAndClampsToCatalog()) {
         return 1;
     }
 
