@@ -82,23 +82,34 @@ inline void BreedPolicyModelParameters(const model::policy_model::PolicyModelPar
                                       random_engine, config);
 }
 
-template <std::size_t ActionCount>
-inline void BreedOutputEmbeddingGenome(const OutputEmbeddingGenome<ActionCount> &first_parent,
-                                       const OutputEmbeddingGenome<ActionCount> &second_parent,
-                                       OutputEmbeddingGenome<ActionCount> &child, BreedingRandomEngine &random_engine,
-                                       const BreedingConfig &config = {}) {
-    for (std::size_t action_index = 0; action_index < ActionCount; ++action_index) {
+template <std::size_t ActionCapacity>
+inline void BreedOutputEmbeddingGenome(const OutputEmbeddingGenome<ActionCapacity> &first_parent,
+                                       const OutputEmbeddingGenome<ActionCapacity> &second_parent,
+                                       OutputEmbeddingGenome<ActionCapacity> &child,
+                                       BreedingRandomEngine &random_engine, const BreedingConfig &config = {}) {
+    const std::size_t shared_active_count =
+        (ActiveOutputEmbeddingCount(first_parent) < ActiveOutputEmbeddingCount(second_parent))
+            ? ActiveOutputEmbeddingCount(first_parent)
+            : ActiveOutputEmbeddingCount(second_parent);
+
+    child.active_count = shared_active_count;
+
+    for (std::size_t action_index = 0; action_index < shared_active_count; ++action_index) {
         detail::BreedFixedBuffer(first_parent.trainable_tails[action_index],
                                  second_parent.trainable_tails[action_index], child.trainable_tails[action_index],
                                  random_engine, config);
     }
+
+    for (std::size_t action_index = shared_active_count; action_index < ActionCapacity; ++action_index) {
+        child.trainable_tails[action_index] = {};
+    }
 }
 
-template <std::size_t ActionCount>
-inline bool TryBreedChildGenome(const ModelGenome<ActionCount> &first_parent,
-                                const ModelGenome<ActionCount> &second_parent, ModelGenome<ActionCount> &child,
+template <std::size_t ActionCapacity>
+inline bool TryBreedChildGenome(const ModelGenome<ActionCapacity> &first_parent,
+                                const ModelGenome<ActionCapacity> &second_parent, ModelGenome<ActionCapacity> &child,
                                 BreedingRandomEngine &random_engine, const BreedingConfig &config = {}) {
-    if (!IsValidBreedingConfig(config)) {
+    if (!IsValidBreedingConfig(config) || !IsValidModelGenome(first_parent) || !IsValidModelGenome(second_parent)) {
         return false;
     }
 
@@ -109,10 +120,10 @@ inline bool TryBreedChildGenome(const ModelGenome<ActionCount> &first_parent,
     return true;
 }
 
-template <std::size_t ActionCount, std::size_t PopulationSize>
-inline bool TryBreedChildGenomeFromPopulation(const Population<ModelGenome<ActionCount>, PopulationSize> &population,
-                                              const ParentPair &parent_pair, ModelGenome<ActionCount> &child,
-                                              BreedingRandomEngine &random_engine, const BreedingConfig &config = {}) {
+template <std::size_t ActionCapacity, std::size_t PopulationSize>
+inline bool TryBreedChildGenomeFromPopulation(
+    const Population<ModelGenome<ActionCapacity>, PopulationSize> &population, const ParentPair &parent_pair,
+    ModelGenome<ActionCapacity> &child, BreedingRandomEngine &random_engine, const BreedingConfig &config = {}) {
     if ((parent_pair.first_parent_index >= PopulationSize) || (parent_pair.second_parent_index >= PopulationSize)) {
         return false;
     }
@@ -122,11 +133,11 @@ inline bool TryBreedChildGenomeFromPopulation(const Population<ModelGenome<Actio
                                config);
 }
 
-template <std::size_t ActionCount>
-inline ModelGenome<ActionCount>
-BreedChildGenome(const ModelGenome<ActionCount> &first_parent, const ModelGenome<ActionCount> &second_parent,
+template <std::size_t ActionCapacity>
+inline ModelGenome<ActionCapacity>
+BreedChildGenome(const ModelGenome<ActionCapacity> &first_parent, const ModelGenome<ActionCapacity> &second_parent,
                  BreedingRandomEngine &random_engine, const BreedingConfig &config = {}) {
-    ModelGenome<ActionCount> child{};
+    ModelGenome<ActionCapacity> child{};
     const bool breed_ok = TryBreedChildGenome(first_parent, second_parent, child, random_engine, config);
     if (!breed_ok) {
         throw std::invalid_argument("Breeding requires a valid recombination config.");

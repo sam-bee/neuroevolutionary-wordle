@@ -9,21 +9,55 @@
 
 namespace neuroevolution::genetic_algorithm {
 
-template <std::size_t ActionCount> struct OutputEmbeddingGenome {
-    common::FixedBuffer<model::output_embedding::TrainableActionEmbeddingTail, ActionCount> trainable_tails{};
+template <std::size_t ActionCapacity> struct OutputEmbeddingGenome {
+    std::size_t active_count = ActionCapacity;
+    common::FixedBuffer<model::output_embedding::TrainableActionEmbeddingTail, ActionCapacity> trainable_tails{};
 };
 
-template <std::size_t ActionCount> struct ModelGenome {
+template <std::size_t ActionCapacity>
+constexpr NEUROEVOLUTION_HOST_DEVICE bool
+IsValidOutputEmbeddingGenome(const OutputEmbeddingGenome<ActionCapacity> &genome) noexcept {
+    return genome.active_count <= ActionCapacity;
+}
+
+template <std::size_t ActionCapacity>
+constexpr NEUROEVOLUTION_HOST_DEVICE std::size_t
+ActiveOutputEmbeddingCount(const OutputEmbeddingGenome<ActionCapacity> &genome) noexcept {
+    return IsValidOutputEmbeddingGenome(genome) ? genome.active_count : 0;
+}
+
+template <std::size_t ActionCapacity>
+inline NEUROEVOLUTION_HOST_DEVICE bool TryResizeOutputEmbeddingGenome(OutputEmbeddingGenome<ActionCapacity> &genome,
+                                                                     const std::size_t active_count) noexcept {
+    if (active_count > ActionCapacity) {
+        return false;
+    }
+
+    genome.active_count = active_count;
+    return true;
+}
+
+template <std::size_t ActionCapacity> struct ModelGenome {
     model::policy_model::PolicyModelParameters policy_model{};
-    OutputEmbeddingGenome<ActionCount> output_embedding{};
+    OutputEmbeddingGenome<ActionCapacity> output_embedding{};
 };
 
-template <std::size_t ActionCount>
+template <std::size_t ActionCapacity>
+constexpr NEUROEVOLUTION_HOST_DEVICE bool IsValidModelGenome(const ModelGenome<ActionCapacity> &genome) noexcept {
+    return IsValidOutputEmbeddingGenome(genome.output_embedding);
+}
+
+template <std::size_t ActionCapacity>
 inline NEUROEVOLUTION_HOST_DEVICE bool TryMaterializeActionEmbeddings(
-    const OutputEmbeddingGenome<ActionCount> &genome,
-    const common::FixedBuffer<wordle::Word, ActionCount> &action_words,
-    common::FixedBuffer<model::output_embedding::ActionEmbedding, ActionCount> &action_embeddings) noexcept {
-    for (std::size_t action_index = 0; action_index < ActionCount; ++action_index) {
+    const OutputEmbeddingGenome<ActionCapacity> &genome,
+    const common::FixedBuffer<wordle::Word, ActionCapacity> &action_words,
+    common::FixedBuffer<model::output_embedding::ActionEmbedding, ActionCapacity> &action_embeddings,
+    const std::size_t action_count) noexcept {
+    if (!IsValidOutputEmbeddingGenome(genome) || (action_count > ActionCapacity) || (action_count > genome.active_count)) {
+        return false;
+    }
+
+    for (std::size_t action_index = 0; action_index < action_count; ++action_index) {
         if (!wordle::IsValidWord(action_words[action_index])) {
             return false;
         }
@@ -38,6 +72,14 @@ inline NEUROEVOLUTION_HOST_DEVICE bool TryMaterializeActionEmbeddings(
     }
 
     return true;
+}
+
+template <std::size_t ActionCapacity>
+inline NEUROEVOLUTION_HOST_DEVICE bool TryMaterializeActionEmbeddings(
+    const OutputEmbeddingGenome<ActionCapacity> &genome,
+    const common::FixedBuffer<wordle::Word, ActionCapacity> &action_words,
+    common::FixedBuffer<model::output_embedding::ActionEmbedding, ActionCapacity> &action_embeddings) noexcept {
+    return TryMaterializeActionEmbeddings(genome, action_words, action_embeddings, ActiveOutputEmbeddingCount(genome));
 }
 
 } // namespace neuroevolution::genetic_algorithm

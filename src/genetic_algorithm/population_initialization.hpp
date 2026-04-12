@@ -19,8 +19,8 @@ constexpr bool IsValidPopulationInitializationConfig(const PopulationInitializat
     return model::initialization::IsValidParameterInitializationConfig(config.parameter_initialization);
 }
 
-template <std::size_t ActionCount>
-inline bool TryInitializeRandomGenome(ModelGenome<ActionCount> &genome,
+template <std::size_t ActionCapacity>
+inline bool TryInitializeRandomGenome(ModelGenome<ActionCapacity> &genome,
                                       PopulationInitializationRandomEngine &random_engine,
                                       const PopulationInitializationConfig &config = {}) {
     if (!IsValidPopulationInitializationConfig(config)) {
@@ -31,11 +31,12 @@ inline bool TryInitializeRandomGenome(ModelGenome<ActionCount> &genome,
                                                                  config.parameter_initialization);
     model::initialization::InitializeRandomOutputEmbeddingTrainableTails(
         genome.output_embedding.trainable_tails, random_engine, config.parameter_initialization);
+    genome.output_embedding.active_count = ActionCapacity;
     return true;
 }
 
-template <std::size_t ActionCount, std::size_t PopulationSize>
-inline bool TryInitializePopulation(Population<ModelGenome<ActionCount>, PopulationSize> &population,
+template <std::size_t ActionCapacity, std::size_t PopulationSize>
+inline bool TryInitializePopulation(Population<ModelGenome<ActionCapacity>, PopulationSize> &population,
                                     PopulationInitializationRandomEngine &random_engine,
                                     const PopulationInitializationConfig &config = {}) {
     if (!IsValidPopulationInitializationConfig(config)) {
@@ -53,11 +54,11 @@ inline bool TryInitializePopulation(Population<ModelGenome<ActionCount>, Populat
     return true;
 }
 
-template <std::size_t ActionCount, std::size_t PopulationSize>
-inline Population<ModelGenome<ActionCount>, PopulationSize>
+template <std::size_t ActionCapacity, std::size_t PopulationSize>
+inline Population<ModelGenome<ActionCapacity>, PopulationSize>
 InitializePopulation(PopulationInitializationRandomEngine &random_engine,
                      const PopulationInitializationConfig &config = {}) {
-    Population<ModelGenome<ActionCount>, PopulationSize> population{};
+    Population<ModelGenome<ActionCapacity>, PopulationSize> population{};
     if (!TryInitializePopulation(population, random_engine, config)) {
         throw std::invalid_argument("Population initialization requires a valid parameter-initialization config.");
     }

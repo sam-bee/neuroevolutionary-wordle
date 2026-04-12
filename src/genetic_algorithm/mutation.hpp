@@ -80,24 +80,24 @@ inline bool TryMutatePolicyModelParameters(model::policy_model::PolicyModelParam
     return true;
 }
 
-template <std::size_t ActionCount>
-inline bool TryMutateOutputEmbeddingGenome(OutputEmbeddingGenome<ActionCount> &genome,
+template <std::size_t ActionCapacity>
+inline bool TryMutateOutputEmbeddingGenome(OutputEmbeddingGenome<ActionCapacity> &genome,
                                            MutationRandomEngine &random_engine, const MutationConfig &config = {}) {
-    if (!IsValidMutationConfig(config)) {
+    if (!IsValidMutationConfig(config) || !IsValidOutputEmbeddingGenome(genome)) {
         return false;
     }
 
-    for (std::size_t action_index = 0; action_index < ActionCount; ++action_index) {
+    for (std::size_t action_index = 0; action_index < genome.active_count; ++action_index) {
         detail::MutateFixedBuffer(genome.trainable_tails[action_index], random_engine, config);
     }
 
     return true;
 }
 
-template <std::size_t ActionCount>
-inline bool TryMutateGenome(ModelGenome<ActionCount> &genome, MutationRandomEngine &random_engine,
+template <std::size_t ActionCapacity>
+inline bool TryMutateGenome(ModelGenome<ActionCapacity> &genome, MutationRandomEngine &random_engine,
                             const MutationConfig &config = {}) {
-    if (!IsValidMutationConfig(config)) {
+    if (!IsValidMutationConfig(config) || !IsValidModelGenome(genome)) {
         return false;
     }
 
@@ -105,8 +105,8 @@ inline bool TryMutateGenome(ModelGenome<ActionCount> &genome, MutationRandomEngi
            TryMutateOutputEmbeddingGenome(genome.output_embedding, random_engine, config);
 }
 
-template <std::size_t ActionCount>
-inline void MutateGenome(ModelGenome<ActionCount> &genome, MutationRandomEngine &random_engine,
+template <std::size_t ActionCapacity>
+inline void MutateGenome(ModelGenome<ActionCapacity> &genome, MutationRandomEngine &random_engine,
                          const MutationConfig &config = {}) {
     if (!TryMutateGenome(genome, random_engine, config)) {
         throw std::invalid_argument("Mutation requires probability in [0,1] and non-negative sigma.");

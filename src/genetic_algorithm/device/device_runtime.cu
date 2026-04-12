@@ -105,8 +105,9 @@ template <std::size_t Size> __device__ void ResetFixedBuffer(FixedBuffer<bool, S
 template <std::size_t ActionCount>
 __device__ void BuildActionEmbeddingsFromTrainingShard(const DeviceGenome &genome,
                                                        const TrainingDataShard &training_shard,
+                                                       const std::size_t action_count,
                                                        FixedBuffer<ActionEmbedding, ActionCount> &action_embeddings) {
-    for (std::size_t action_index = 0; action_index < training_shard.entry_count; ++action_index) {
+    for (std::size_t action_index = 0; action_index < action_count; ++action_index) {
         action_embeddings[action_index].word = training_shard.entries[action_index].word;
         for (std::size_t feature_index = 0;
              feature_index < neuroevolution::model::output_embedding::kTrainableFeatureDimension; ++feature_index) {
@@ -175,16 +176,20 @@ __device__ DeviceRuntimeStatusCode TryEvaluateIndividualFitness(const DeviceGeno
     const TrainingDataShard &training_shard = DeviceTrainingDataShard();
     const std::size_t active_training_entry_count =
         ActiveTrainingDataEntryCountForGeneration(training_shard, generation_index);
-    const std::size_t selectable_action_count = SelectableTrainingActionCount(training_shard);
+    const std::size_t genome_action_count = ActiveOutputEmbeddingCount(genome.output_embedding);
+    const std::size_t training_action_count = SelectableTrainingActionCount(training_shard);
+    const std::size_t selectable_action_count =
+        (genome_action_count < training_action_count) ? genome_action_count : training_action_count;
 
-    if (!IsValidTrainingDataShard(training_shard) || (active_training_entry_count == 0) ||
+    if (!IsValidTrainingDataShard(training_shard) || !IsValidModelGenome(genome) || (active_training_entry_count == 0) ||
         (active_training_entry_count > kDeviceActionCount) || (selectable_action_count == 0) ||
         (selectable_action_count > kDeviceActionCount)) {
         return DeviceRuntimeStatusCode::kInvalidTrainingShard;
     }
 
     FixedBuffer<ActionEmbedding, kDeviceActionCount> action_embeddings{};
-    BuildActionEmbeddingsFromTrainingShard<kDeviceActionCount>(genome, training_shard, action_embeddings);
+    BuildActionEmbeddingsFromTrainingShard<kDeviceActionCount>(genome, training_shard, selectable_action_count,
+                                                               action_embeddings);
 
     float score_sum = 0.0f;
 
@@ -414,11 +419,22 @@ __device__ void BreedAndMutateGenome(const DeviceGenome &first_parent, const Dev
                              child.policy_model.dense_trunk.hidden1_to_output, random_state, breeding_config,
                              mutation_config);
 
-    for (std::size_t action_index = 0; action_index < kDeviceActionCount; ++action_index) {
+    const std::size_t active_action_count =
+        (ActiveOutputEmbeddingCount(first_parent.output_embedding) < ActiveOutputEmbeddingCount(second_parent.output_embedding))
+            ? ActiveOutputEmbeddingCount(first_parent.output_embedding)
+            : ActiveOutputEmbeddingCount(second_parent.output_embedding);
+
+    child.output_embedding.active_count = active_action_count;
+
+    for (std::size_t action_index = 0; action_index < active_action_count; ++action_index) {
         BreedAndMutateFixedBuffer(first_parent.output_embedding.trainable_tails[action_index],
                                   second_parent.output_embedding.trainable_tails[action_index],
                                   child.output_embedding.trainable_tails[action_index], random_state, breeding_config,
                                   mutation_config);
+    }
+
+    for (std::size_t action_index = active_action_count; action_index < kDeviceActionCount; ++action_index) {
+        child.output_embedding.trainable_tails[action_index] = {};
     }
 }
 
@@ -608,6 +624,12 @@ void DestroyDeviceRuntimeBuffers(DeviceRuntimeBuffers &buffers) noexcept {
 bool TryUploadCurrentPopulationToDevice(const DevicePopulation &host_population, DeviceRuntimeBuffers &buffers) {
     if (!IsValidActivePopulationSize(host_population.active_individual_count)) {
         return false;
+    }
+
+    for (std::size_t individual_index = 0; individual_index < host_population.active_individual_count; ++individual_index) {
+        if (!IsValidModelGenome(host_population.individuals[individual_index].genome)) {
+            return false;
+        }
     }
 
     return CheckCuda(cudaMemcpy(buffers.current_population, &host_population, sizeof(DevicePopulation),

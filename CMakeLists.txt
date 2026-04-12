@@ -324,6 +324,21 @@ set_tests_properties(genetic_algorithm_test PROPERTIES
     LABELS "cpu;unit"
 )
 
+add_executable(output_embedding_genome_runtime_test
+    tests/genetic_algorithm/output_embedding_genome_runtime_test.cpp
+)
+
+target_link_libraries(output_embedding_genome_runtime_test PRIVATE
+    genetic_algorithm
+)
+
+enable_project_warnings(output_embedding_genome_runtime_test)
+
+add_test(NAME output_embedding_genome_runtime_test COMMAND output_embedding_genome_runtime_test)
+set_tests_properties(output_embedding_genome_runtime_test PROPERTIES
+    LABELS "cpu;unit"
+)
+
 add_executable(training_data_test
     tests/training_folder/training_data_test.cpp
 )
