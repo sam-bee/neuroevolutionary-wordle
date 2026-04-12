@@ -39,9 +39,9 @@ std::filesystem::path DefaultActionSpacePath() {
     return std::filesystem::path(NEUROEVOLUTION_PROJECT_SOURCE_DIR) / "data" / "action-space-randomised.txt";
 }
 
-bool TryLoadInitialTrainingDataShardFromActionSpace(const std::filesystem::path &action_space_path,
-                                                    TrainingDataShard &shard) {
-    shard = {};
+bool TryLoadTrainingWordCatalogFromActionSpace(const std::filesystem::path &action_space_path,
+                                               TrainingWordCatalog &catalog) {
+    catalog = {};
 
     std::ifstream input_file(action_space_path);
     if (!input_file.is_open()) {
@@ -49,10 +49,14 @@ bool TryLoadInitialTrainingDataShardFromActionSpace(const std::filesystem::path 
     }
 
     std::string line{};
-    while ((shard.entry_count < kInitialTrainingDataShardEntryCount) && std::getline(input_file, line)) {
+    while (std::getline(input_file, line)) {
         const std::string normalized_line = NormalizeLine(line);
         if (normalized_line.empty()) {
             continue;
+        }
+
+        if (catalog.word_count >= kTrainingWordCatalogCapacity) {
+            return false;
         }
 
         wordle::Word word{};
@@ -60,25 +64,24 @@ bool TryLoadInitialTrainingDataShardFromActionSpace(const std::filesystem::path 
             return false;
         }
 
-        shard.entries[shard.entry_count].word = word;
-        ++shard.entry_count;
+        catalog.words[catalog.word_count] = word;
+        ++catalog.word_count;
     }
 
-    return shard.entry_count == kInitialTrainingDataShardEntryCount;
+    return catalog.word_count > 0;
 }
 
-TrainingDataShard LoadInitialTrainingDataShardFromActionSpace(const std::filesystem::path &action_space_path) {
-    TrainingDataShard shard{};
-    if (!TryLoadInitialTrainingDataShardFromActionSpace(action_space_path, shard)) {
-        throw std::runtime_error(
-            "Could not load the training-data curriculum from the configured action-space word list.");
+TrainingWordCatalog LoadTrainingWordCatalogFromActionSpace(const std::filesystem::path &action_space_path) {
+    TrainingWordCatalog catalog{};
+    if (!TryLoadTrainingWordCatalogFromActionSpace(action_space_path, catalog)) {
+        throw std::runtime_error("Could not load the training-word catalog from the configured action-space word list.");
     }
 
-    return shard;
+    return catalog;
 }
 
-TrainingDataShard LoadInitialTrainingDataShardFromActionSpace() {
-    return LoadInitialTrainingDataShardFromActionSpace(DefaultActionSpacePath());
+TrainingWordCatalog LoadTrainingWordCatalogFromActionSpace() {
+    return LoadTrainingWordCatalogFromActionSpace(DefaultActionSpacePath());
 }
 
 } // namespace neuroevolution::training_folder

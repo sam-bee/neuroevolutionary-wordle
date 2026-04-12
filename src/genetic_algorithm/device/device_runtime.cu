@@ -23,11 +23,10 @@ using neuroevolution::model::output_embedding::SelectedAction;
 using neuroevolution::model::output_embedding::TrySelectBestAction;
 using neuroevolution::model::policy_model::PolicyVector;
 using neuroevolution::model::policy_model::TryForwardPolicyModel;
-using neuroevolution::training_folder::ActiveTrainingDataEntryCountForGeneration;
-using neuroevolution::training_folder::DeviceTrainingDataShard;
-using neuroevolution::training_folder::IsValidTrainingDataShard;
-using neuroevolution::training_folder::SelectableTrainingActionCount;
-using neuroevolution::training_folder::TrainingDataShard;
+using neuroevolution::training_folder::ActiveTrainingWordCountForGeneration;
+using neuroevolution::training_folder::DeviceTrainingWordCatalog;
+using neuroevolution::training_folder::IsValidTrainingWordCatalog;
+using neuroevolution::training_folder::TrainingWordCatalog;
 using neuroevolution::wordle::MakeWordleGrid;
 using neuroevolution::wordle::TryAppendGuess;
 using neuroevolution::wordle::Word;
@@ -41,6 +40,13 @@ NEUROEVOLUTION_HOST_DEVICE constexpr int DeviceStatusValue(const DeviceRuntimeSt
 
 NEUROEVOLUTION_HOST_DEVICE constexpr bool IsValidActivePopulationSize(const std::size_t population_size) {
     return (population_size > 0) && (population_size <= kDevicePopulationCapacity);
+}
+
+NEUROEVOLUTION_HOST_DEVICE constexpr bool IsValidRuntimeWordCounts(const TrainingWordCatalog &training_word_catalog,
+                                                                   const RuntimeWordCounts &runtime_word_counts) {
+    return (runtime_word_counts.training_word_count <= training_word_catalog.word_count) &&
+           (runtime_word_counts.action_space_word_count <= training_word_catalog.word_count) &&
+           (runtime_word_counts.action_space_word_count <= kDeviceActionCount);
 }
 
 struct DeviceRandomState {
@@ -103,12 +109,11 @@ template <std::size_t Size> __device__ void ResetFixedBuffer(FixedBuffer<bool, S
 }
 
 template <std::size_t ActionCount>
-__device__ void BuildActionEmbeddingsFromTrainingShard(const DeviceGenome &genome,
-                                                       const TrainingDataShard &training_shard,
-                                                       const std::size_t action_count,
-                                                       FixedBuffer<ActionEmbedding, ActionCount> &action_embeddings) {
+__device__ void BuildActionEmbeddingsFromTrainingWordCatalog(
+    const DeviceGenome &genome, const TrainingWordCatalog &training_word_catalog, const std::size_t action_count,
+    FixedBuffer<ActionEmbedding, ActionCount> &action_embeddings) {
     for (std::size_t action_index = 0; action_index < action_count; ++action_index) {
-        action_embeddings[action_index].word = training_shard.entries[action_index].word;
+        action_embeddings[action_index].word = training_word_catalog.words[action_index];
         for (std::size_t feature_index = 0;
              feature_index < neuroevolution::model::output_embedding::kTrainableFeatureDimension; ++feature_index) {
             action_embeddings[action_index].trainable_tail[feature_index] =
@@ -117,21 +122,20 @@ __device__ void BuildActionEmbeddingsFromTrainingShard(const DeviceGenome &genom
     }
 }
 
-__device__ std::size_t WrapTrainingShardIndex(const std::size_t index, const std::size_t entry_count) {
-    return (entry_count == 0) ? 0 : (index % entry_count);
+__device__ std::size_t WrapTrainingWordIndex(const std::size_t index, const std::size_t word_count) {
+    return (word_count == 0) ? 0 : (index % word_count);
 }
 
-__device__ DeviceRuntimeStatusCode TryInitializePrefilledGrid(const TrainingDataShard &training_shard,
+__device__ DeviceRuntimeStatusCode TryInitializePrefilledGrid(const TrainingWordCatalog &training_word_catalog,
                                                               const Word &solution, const std::size_t first_guess_index,
                                                               const std::size_t second_guess_index,
-                                                              const std::size_t active_training_entry_count,
+                                                              const std::size_t active_training_word_count,
                                                               WordleGrid &grid_out) {
     grid_out = MakeWordleGrid(solution);
 
-    const Word first_guess =
-        training_shard.entries[WrapTrainingShardIndex(first_guess_index, active_training_entry_count)].word;
+    const Word first_guess = training_word_catalog.words[WrapTrainingWordIndex(first_guess_index, active_training_word_count)];
     const Word second_guess =
-        training_shard.entries[WrapTrainingShardIndex(second_guess_index, active_training_entry_count)].word;
+        training_word_catalog.words[WrapTrainingWordIndex(second_guess_index, active_training_word_count)];
 
     if (!TryAppendGuess(grid_out, first_guess) || !TryAppendGuess(grid_out, second_guess)) {
         return DeviceRuntimeStatusCode::kGuessAppendFailed;
@@ -172,29 +176,31 @@ __device__ DeviceRuntimeStatusCode TryPlayWordleToCompletion(const DeviceGenome 
 
 __device__ DeviceRuntimeStatusCode TryEvaluateIndividualFitness(const DeviceGenome &genome,
                                                                 const std::size_t generation_index,
+                                                                const RuntimeWordCounts runtime_word_counts,
                                                                 float &fitness_out) {
-    const TrainingDataShard &training_shard = DeviceTrainingDataShard();
-    const std::size_t active_training_entry_count =
-        ActiveTrainingDataEntryCountForGeneration(training_shard, generation_index);
+    const TrainingWordCatalog &training_word_catalog = DeviceTrainingWordCatalog();
+    const std::size_t active_training_word_count =
+        ActiveTrainingWordCountForGeneration(runtime_word_counts.training_word_count, generation_index);
     const std::size_t genome_action_count = ActiveOutputEmbeddingCount(genome.output_embedding);
-    const std::size_t training_action_count = SelectableTrainingActionCount(training_shard);
     const std::size_t selectable_action_count =
-        (genome_action_count < training_action_count) ? genome_action_count : training_action_count;
+        (genome_action_count < runtime_word_counts.action_space_word_count) ? genome_action_count
+                                                                            : runtime_word_counts.action_space_word_count;
 
-    if (!IsValidTrainingDataShard(training_shard) || !IsValidModelGenome(genome) || (active_training_entry_count == 0) ||
-        (active_training_entry_count > kDeviceActionCount) || (selectable_action_count == 0) ||
+    if (!IsValidTrainingWordCatalog(training_word_catalog) ||
+        !IsValidRuntimeWordCounts(training_word_catalog, runtime_word_counts) || !IsValidModelGenome(genome) ||
+        (active_training_word_count == 0) || (selectable_action_count == 0) ||
         (selectable_action_count > kDeviceActionCount)) {
         return DeviceRuntimeStatusCode::kInvalidTrainingShard;
     }
 
     FixedBuffer<ActionEmbedding, kDeviceActionCount> action_embeddings{};
-    BuildActionEmbeddingsFromTrainingShard<kDeviceActionCount>(genome, training_shard, selectable_action_count,
-                                                               action_embeddings);
+    BuildActionEmbeddingsFromTrainingWordCatalog<kDeviceActionCount>(genome, training_word_catalog,
+                                                                     selectable_action_count, action_embeddings);
 
     float score_sum = 0.0f;
 
-    for (std::size_t entry_index = 0; entry_index < active_training_entry_count; ++entry_index) {
-        const Word solution = training_shard.entries[entry_index].word;
+    for (std::size_t entry_index = 0; entry_index < active_training_word_count; ++entry_index) {
+        const Word solution = training_word_catalog.words[entry_index];
 
         {
             WordleGrid fresh_grid = MakeWordleGrid(solution);
@@ -211,8 +217,8 @@ __device__ DeviceRuntimeStatusCode TryEvaluateIndividualFitness(const DeviceGeno
         {
             WordleGrid prefilled_grid{};
             const DeviceRuntimeStatusCode initialize_status =
-                TryInitializePrefilledGrid(training_shard, solution, entry_index + 1, entry_index + 2,
-                                           active_training_entry_count, prefilled_grid);
+                TryInitializePrefilledGrid(training_word_catalog, solution, entry_index + 1, entry_index + 2,
+                                           active_training_word_count, prefilled_grid);
             if (initialize_status != DeviceRuntimeStatusCode::kOk) {
                 return initialize_status;
             }
@@ -230,8 +236,8 @@ __device__ DeviceRuntimeStatusCode TryEvaluateIndividualFitness(const DeviceGeno
         {
             WordleGrid prefilled_grid{};
             const DeviceRuntimeStatusCode initialize_status =
-                TryInitializePrefilledGrid(training_shard, solution, entry_index + 3, entry_index + 4,
-                                           active_training_entry_count, prefilled_grid);
+                TryInitializePrefilledGrid(training_word_catalog, solution, entry_index + 3, entry_index + 4,
+                                           active_training_word_count, prefilled_grid);
             if (initialize_status != DeviceRuntimeStatusCode::kOk) {
                 return initialize_status;
             }
@@ -449,7 +455,8 @@ __device__ void WriteGenomeToUnevaluatedIndividual(const DeviceGenome &genome, I
     MarkIndividualUnevaluated(individual);
 }
 
-__global__ void EvaluatePopulationFitnessKernel(DevicePopulation *population, int *status) {
+__global__ void EvaluatePopulationFitnessKernel(DevicePopulation *population, const RuntimeWordCounts runtime_word_counts,
+                                                int *status) {
     const std::size_t individual_index = (blockIdx.x * blockDim.x) + threadIdx.x;
     if (!IsValidActivePopulationSize(population->active_individual_count)) {
         if ((blockIdx.x == 0) && (threadIdx.x == 0)) {
@@ -462,15 +469,16 @@ __global__ void EvaluatePopulationFitnessKernel(DevicePopulation *population, in
         return;
     }
 
-    const TrainingDataShard &training_shard = DeviceTrainingDataShard();
-    if (!IsValidTrainingDataShard(training_shard)) {
+    const TrainingWordCatalog &training_word_catalog = DeviceTrainingWordCatalog();
+    if (!IsValidTrainingWordCatalog(training_word_catalog) ||
+        !IsValidRuntimeWordCounts(training_word_catalog, runtime_word_counts)) {
         SetFailureStatus(status, DeviceRuntimeStatusCode::kInvalidTrainingShard);
         return;
     }
 
     float fitness = 0.0f;
     const DeviceRuntimeStatusCode evaluation_status = TryEvaluateIndividualFitness(
-        population->individuals[individual_index].genome, population->generation_index, fitness);
+        population->individuals[individual_index].genome, population->generation_index, runtime_word_counts, fitness);
     if (evaluation_status != DeviceRuntimeStatusCode::kOk) {
         SetFailureStatus(status, evaluation_status);
         return;
@@ -642,12 +650,13 @@ bool TryDownloadCurrentPopulationFromDevice(const DeviceRuntimeBuffers &buffers,
         cudaMemcpy(&host_population, buffers.current_population, sizeof(DevicePopulation), cudaMemcpyDeviceToHost));
 }
 
-bool TryEvaluatePopulationFitnessOnDevice(DeviceRuntimeBuffers &buffers) {
+bool TryEvaluatePopulationFitnessOnDevice(DeviceRuntimeBuffers &buffers, const RuntimeWordCounts &runtime_word_counts) {
     if (!ResetDeviceStatus(buffers)) {
         return false;
     }
 
-    EvaluatePopulationFitnessKernel<<<1, kDevicePopulationCapacity>>>(buffers.current_population, buffers.status);
+    EvaluatePopulationFitnessKernel<<<1, kDevicePopulationCapacity>>>(buffers.current_population, runtime_word_counts,
+                                                                      buffers.status);
     if (!CheckCuda(cudaGetLastError()) || !CheckCuda(cudaDeviceSynchronize())) {
         return false;
     }

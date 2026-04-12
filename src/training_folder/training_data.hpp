@@ -13,28 +13,20 @@ constexpr std::size_t kTrainingDataShardCount = 2;
 constexpr std::size_t kTrainingDataEntriesPerShard = 10;
 constexpr std::size_t kTrainingDataCurriculumEntryCount = kTrainingDataShardCount * kTrainingDataEntriesPerShard;
 constexpr std::size_t kPhasedCurriculumSecondShardGeneration = 100;
-constexpr std::size_t kInitialTrainingDataShardEntryCount = kTrainingDataCurriculumEntryCount;
+constexpr std::size_t kTrainingWordCatalogCapacity = 4739;
 
-struct TrainingDataEntry {
-    wordle::Word word{};
+struct TrainingWordCatalog {
+    common::FixedBuffer<wordle::Word, kTrainingWordCatalogCapacity> words{};
+    std::size_t word_count = 0;
 };
 
-struct TrainingDataShard {
-    common::FixedBuffer<TrainingDataEntry, kInitialTrainingDataShardEntryCount> entries{};
-    std::size_t entry_count = 0;
-};
-
-constexpr NEUROEVOLUTION_HOST_DEVICE bool IsValidTrainingDataEntry(const TrainingDataEntry &entry) noexcept {
-    return wordle::IsValidWord(entry.word);
-}
-
-constexpr NEUROEVOLUTION_HOST_DEVICE bool IsValidTrainingDataShard(const TrainingDataShard &shard) noexcept {
-    if (shard.entry_count > kInitialTrainingDataShardEntryCount) {
+constexpr NEUROEVOLUTION_HOST_DEVICE bool IsValidTrainingWordCatalog(const TrainingWordCatalog &catalog) noexcept {
+    if (catalog.word_count > kTrainingWordCatalogCapacity) {
         return false;
     }
 
-    for (std::size_t entry_index = 0; entry_index < shard.entry_count; ++entry_index) {
-        if (!IsValidTrainingDataEntry(shard.entries[entry_index])) {
+    for (std::size_t word_index = 0; word_index < catalog.word_count; ++word_index) {
+        if (!wordle::IsValidWord(catalog.words[word_index])) {
             return false;
         }
     }
@@ -43,44 +35,35 @@ constexpr NEUROEVOLUTION_HOST_DEVICE bool IsValidTrainingDataShard(const Trainin
 }
 
 constexpr NEUROEVOLUTION_HOST_DEVICE std::size_t
-ActiveTrainingDataEntryCountForGeneration(const TrainingDataShard &shard, const std::size_t generation_index) noexcept {
-    if (!IsValidTrainingDataShard(shard) || (shard.entry_count == 0)) {
+ActiveTrainingWordCountForGeneration(const std::size_t training_word_count, const std::size_t generation_index) noexcept {
+    if (training_word_count == 0) {
         return 0;
     }
 
-    const std::size_t first_shard_entry_count =
-        (shard.entry_count < kTrainingDataEntriesPerShard) ? shard.entry_count : kTrainingDataEntriesPerShard;
+    const std::size_t first_shard_word_count =
+        (training_word_count < kTrainingDataEntriesPerShard) ? training_word_count : kTrainingDataEntriesPerShard;
     if (generation_index < kPhasedCurriculumSecondShardGeneration) {
-        return first_shard_entry_count;
+        return first_shard_word_count;
     }
 
-    return shard.entry_count;
-}
-
-constexpr NEUROEVOLUTION_HOST_DEVICE std::size_t
-SelectableTrainingActionCount(const TrainingDataShard &shard) noexcept {
-    if (!IsValidTrainingDataShard(shard)) {
-        return 0;
-    }
-
-    return shard.entry_count;
+    return training_word_count;
 }
 
 std::filesystem::path DefaultActionSpacePath();
 
-bool TryLoadInitialTrainingDataShardFromActionSpace(const std::filesystem::path &action_space_path,
-                                                    TrainingDataShard &shard);
+bool TryLoadTrainingWordCatalogFromActionSpace(const std::filesystem::path &action_space_path,
+                                               TrainingWordCatalog &catalog);
 
-TrainingDataShard LoadInitialTrainingDataShardFromActionSpace(const std::filesystem::path &action_space_path);
+TrainingWordCatalog LoadTrainingWordCatalogFromActionSpace(const std::filesystem::path &action_space_path);
 
-TrainingDataShard LoadInitialTrainingDataShardFromActionSpace();
+TrainingWordCatalog LoadTrainingWordCatalogFromActionSpace();
 
-bool UploadTrainingDataShardToDeviceConstantMemory(const TrainingDataShard &shard);
+bool UploadTrainingWordCatalogToDeviceConstantMemory(const TrainingWordCatalog &catalog);
 
-void UploadTrainingDataShardToDeviceConstantMemoryOrThrow(const TrainingDataShard &shard);
+void UploadTrainingWordCatalogToDeviceConstantMemoryOrThrow(const TrainingWordCatalog &catalog);
 
 #if defined(__CUDACC__)
-__device__ const TrainingDataShard &DeviceTrainingDataShard() noexcept;
+__device__ const TrainingWordCatalog &DeviceTrainingWordCatalog() noexcept;
 #endif
 
 } // namespace neuroevolution::training_folder

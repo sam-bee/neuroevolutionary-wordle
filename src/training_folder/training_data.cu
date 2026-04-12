@@ -6,25 +6,27 @@
 
 namespace neuroevolution::training_folder {
 
-__constant__ TrainingDataShard kDeviceTrainingDataShard{};
+__constant__ TrainingWordCatalog kDeviceTrainingWordCatalog{};
 
-__device__ const TrainingDataShard &DeviceTrainingDataShard() noexcept { return kDeviceTrainingDataShard; }
+__device__ const TrainingWordCatalog &DeviceTrainingWordCatalog() noexcept { return kDeviceTrainingWordCatalog; }
 
-bool UploadTrainingDataShardToDeviceConstantMemory(const TrainingDataShard &shard) {
-    if (!IsValidTrainingDataShard(shard)) {
+bool UploadTrainingWordCatalogToDeviceConstantMemory(const TrainingWordCatalog &catalog) {
+    if (!IsValidTrainingWordCatalog(catalog)) {
         return false;
     }
 
-    const cudaError_t copy_error = cudaMemcpyToSymbol(kDeviceTrainingDataShard, &shard, sizeof(TrainingDataShard));
+    const cudaError_t copy_error = cudaMemcpyToSymbol(kDeviceTrainingWordCatalog, &catalog, sizeof(TrainingWordCatalog));
     return copy_error == cudaSuccess;
 }
 
-void UploadTrainingDataShardToDeviceConstantMemoryOrThrow(const TrainingDataShard &shard) {
-    if (!IsValidTrainingDataShard(shard)) {
-        throw std::invalid_argument("Training-data shard must be structurally valid before upload to constant memory.");
+void UploadTrainingWordCatalogToDeviceConstantMemoryOrThrow(const TrainingWordCatalog &catalog) {
+    if (!IsValidTrainingWordCatalog(catalog)) {
+        throw std::invalid_argument(
+            "Training-word catalog must be structurally valid before upload to constant memory.");
     }
 
-    const cudaError_t copy_error = cudaMemcpyToSymbol(kDeviceTrainingDataShard, &shard, sizeof(TrainingDataShard));
+    const cudaError_t copy_error =
+        cudaMemcpyToSymbol(kDeviceTrainingWordCatalog, &catalog, sizeof(TrainingWordCatalog));
     if (copy_error != cudaSuccess) {
         throw std::runtime_error(cudaGetErrorString(copy_error));
     }

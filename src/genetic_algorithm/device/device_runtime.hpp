@@ -16,6 +16,11 @@ constexpr std::size_t kDefaultDevicePopulationSize = 100;
 using DeviceGenome = ModelGenome<kDeviceActionCount>;
 using DevicePopulation = Population<DeviceGenome, kDevicePopulationCapacity>;
 
+struct RuntimeWordCounts {
+    std::size_t training_word_count = training_folder::kTrainingDataCurriculumEntryCount;
+    std::size_t action_space_word_count = training_folder::kTrainingDataCurriculumEntryCount;
+};
+
 enum class DeviceRuntimeStatusCode : int {
     kOk = 0,
     kCudaFailure = 1,
@@ -50,7 +55,7 @@ bool TryUploadCurrentPopulationToDevice(const DevicePopulation &host_population,
 
 bool TryDownloadCurrentPopulationFromDevice(const DeviceRuntimeBuffers &buffers, DevicePopulation &host_population);
 
-bool TryEvaluatePopulationFitnessOnDevice(DeviceRuntimeBuffers &buffers);
+bool TryEvaluatePopulationFitnessOnDevice(DeviceRuntimeBuffers &buffers, const RuntimeWordCounts &runtime_word_counts);
 
 bool TryReadPopulationFitnessSummaryFromDevice(const DeviceRuntimeBuffers &buffers, PopulationFitnessSummary &summary);
 

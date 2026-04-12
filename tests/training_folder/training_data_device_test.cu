@@ -11,11 +11,12 @@
 
 namespace {
 
-using neuroevolution::training_folder::DeviceTrainingDataShard;
+using neuroevolution::training_folder::DeviceTrainingWordCatalog;
 using neuroevolution::training_folder::kTrainingDataCurriculumEntryCount;
-using neuroevolution::training_folder::LoadInitialTrainingDataShardFromActionSpace;
-using neuroevolution::training_folder::TrainingDataShard;
-using neuroevolution::training_folder::UploadTrainingDataShardToDeviceConstantMemory;
+using neuroevolution::training_folder::kTrainingWordCatalogCapacity;
+using neuroevolution::training_folder::LoadTrainingWordCatalogFromActionSpace;
+using neuroevolution::training_folder::TrainingWordCatalog;
+using neuroevolution::training_folder::UploadTrainingWordCatalogToDeviceConstantMemory;
 using neuroevolution::wordle::Word;
 
 constexpr int kSelectedVisibleDeviceIndex = 0;
@@ -90,35 +91,33 @@ bool ExpectWordEquals(const Word &actual, const Word &expected, const std::strin
     return ok;
 }
 
-bool ExpectTrainingShardMatchesExpectedWords(const TrainingDataShard &shard, const std::string_view label_prefix) {
+bool ExpectTrainingWordCatalogMatchesExpectedPrefix(const TrainingWordCatalog &catalog,
+                                                    const std::string_view label_prefix) {
     bool ok = true;
 
-    ok &= ExpectTrue(shard.entry_count == kExpectedTrainingWords.size(),
-                     std::string(label_prefix) + " should contain the expected number of entries");
+    ok &= ExpectTrue(catalog.word_count == kTrainingWordCatalogCapacity,
+                     std::string(label_prefix) + " should contain the full training-word catalog");
 
-    const std::size_t comparison_count =
-        (shard.entry_count < kExpectedTrainingWords.size()) ? shard.entry_count : kExpectedTrainingWords.size();
-
-    for (std::size_t entry_index = 0; entry_index < comparison_count; ++entry_index) {
-        ok &= ExpectWordEquals(shard.entries[entry_index].word, MakeWord(kExpectedTrainingWords[entry_index]),
+    for (std::size_t entry_index = 0; entry_index < kExpectedTrainingWords.size(); ++entry_index) {
+        ok &= ExpectWordEquals(catalog.words[entry_index], MakeWord(kExpectedTrainingWords[entry_index]),
                                std::string(label_prefix) + " word " + std::to_string(entry_index));
     }
 
     return ok;
 }
 
-__global__ void CopyTrainingDataShardFromConstantMemoryKernel(TrainingDataShard *shard_out, int *status) {
+__global__ void CopyTrainingWordCatalogFromConstantMemoryKernel(TrainingWordCatalog *catalog_out, int *status) {
     if ((blockIdx.x != 0) || (threadIdx.x != 0)) {
         return;
     }
 
-    const TrainingDataShard &constant_shard = DeviceTrainingDataShard();
-    if (!neuroevolution::training_folder::IsValidTrainingDataShard(constant_shard)) {
+    const TrainingWordCatalog &constant_catalog = DeviceTrainingWordCatalog();
+    if (!neuroevolution::training_folder::IsValidTrainingWordCatalog(constant_catalog)) {
         *status = kStatusInvalidConstantShard;
         return;
     }
 
-    *shard_out = constant_shard;
+    *catalog_out = constant_catalog;
     *status = 0;
 }
 
@@ -129,31 +128,32 @@ int main() {
         return 1;
     }
 
-    const TrainingDataShard shard = LoadInitialTrainingDataShardFromActionSpace();
-    if (!UploadTrainingDataShardToDeviceConstantMemory(shard)) {
-        std::cerr << "FAIL: could not upload training-data shard to device constant memory\n";
+    const TrainingWordCatalog catalog = LoadTrainingWordCatalogFromActionSpace();
+    if (!UploadTrainingWordCatalogToDeviceConstantMemory(catalog)) {
+        std::cerr << "FAIL: could not upload training-word catalog to device constant memory\n";
         return 1;
     }
 
-    TrainingDataShard *device_shard = nullptr;
+    TrainingWordCatalog *device_catalog = nullptr;
     int *device_status = nullptr;
     bool ok = true;
 
-    ok &= CheckCuda(cudaMalloc(&device_shard, sizeof(TrainingDataShard)), "allocating training-data shard output");
+    ok &= CheckCuda(cudaMalloc(&device_catalog, sizeof(TrainingWordCatalog)),
+                    "allocating training-word catalog output");
     ok &= CheckCuda(cudaMalloc(&device_status, sizeof(int)), "allocating training-data status output");
 
     if (ok) {
-        CopyTrainingDataShardFromConstantMemoryKernel<<<1, 1>>>(device_shard, device_status);
+        CopyTrainingWordCatalogFromConstantMemoryKernel<<<1, 1>>>(device_catalog, device_status);
         ok &= CheckCuda(cudaGetLastError(), "launching training-data constant-memory kernel");
         ok &= CheckCuda(cudaDeviceSynchronize(), "waiting for training-data constant-memory kernel");
     }
 
-    TrainingDataShard host_shard{};
+    TrainingWordCatalog host_catalog{};
     int host_status = -1;
 
     if (ok) {
-        ok &= CheckCuda(cudaMemcpy(&host_shard, device_shard, sizeof(TrainingDataShard), cudaMemcpyDeviceToHost),
-                        "copying training-data shard back to host");
+        ok &= CheckCuda(cudaMemcpy(&host_catalog, device_catalog, sizeof(TrainingWordCatalog), cudaMemcpyDeviceToHost),
+                        "copying training-word catalog back to host");
         ok &= CheckCuda(cudaMemcpy(&host_status, device_status, sizeof(int), cudaMemcpyDeviceToHost),
                         "copying training-data status back to host");
     }
@@ -169,10 +169,10 @@ int main() {
     }
 
     if (ok) {
-        ok &= ExpectTrainingShardMatchesExpectedWords(host_shard, "constant-memory training-data shard");
+        ok &= ExpectTrainingWordCatalogMatchesExpectedPrefix(host_catalog, "constant-memory training-word catalog");
     }
 
-    cudaFree(device_shard);
+    cudaFree(device_catalog);
     cudaFree(device_status);
 
     if (!ok) {

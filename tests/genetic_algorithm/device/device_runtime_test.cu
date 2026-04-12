@@ -17,26 +17,31 @@ using neuroevolution::genetic_algorithm::device::DestroyDeviceRuntimeBuffers;
 using neuroevolution::genetic_algorithm::device::DevicePopulation;
 using neuroevolution::genetic_algorithm::device::DeviceRuntimeBuffers;
 using neuroevolution::genetic_algorithm::device::PopulationFitnessSummary;
+using neuroevolution::genetic_algorithm::device::RuntimeWordCounts;
 using neuroevolution::genetic_algorithm::device::SwapDevicePopulationBuffers;
 using neuroevolution::genetic_algorithm::device::TryAssembleNextGenerationOnDevice;
 using neuroevolution::genetic_algorithm::device::TryCreateDeviceRuntimeBuffers;
 using neuroevolution::genetic_algorithm::device::TryEvaluatePopulationFitnessOnDevice;
 using neuroevolution::genetic_algorithm::device::TryReadPopulationFitnessSummaryFromDevice;
 using neuroevolution::genetic_algorithm::device::TryUploadCurrentPopulationToDevice;
-using neuroevolution::training_folder::ActiveTrainingDataEntryCountForGeneration;
+using neuroevolution::training_folder::ActiveTrainingWordCountForGeneration;
 using neuroevolution::training_folder::kPhasedCurriculumSecondShardGeneration;
-using neuroevolution::training_folder::LoadInitialTrainingDataShardFromActionSpace;
-using neuroevolution::training_folder::UploadTrainingDataShardToDeviceConstantMemory;
+using neuroevolution::training_folder::LoadTrainingWordCatalogFromActionSpace;
+using neuroevolution::training_folder::TrainingWordCatalog;
+using neuroevolution::training_folder::UploadTrainingWordCatalogToDeviceConstantMemory;
 
 constexpr int kSelectedVisibleDeviceIndex = 0;
 constexpr std::size_t kTestPopulationSize = 6;
 constexpr float kMaximumEpisodeWinScore = 15.0f;
 constexpr float kEpisodesPerTrainingEntry = 3.0f;
 
-float MaximumPossibleFitnessForGeneration(const neuroevolution::training_folder::TrainingDataShard &training_shard,
+float MaximumPossibleFitnessForGeneration(const TrainingWordCatalog &training_word_catalog,
+                                          const RuntimeWordCounts &runtime_word_counts,
                                           const std::size_t generation_index) {
+    (void)training_word_catalog;
     return kEpisodesPerTrainingEntry * kMaximumEpisodeWinScore *
-           static_cast<float>(ActiveTrainingDataEntryCountForGeneration(training_shard, generation_index));
+           static_cast<float>(ActiveTrainingWordCountForGeneration(runtime_word_counts.training_word_count,
+                                                                   generation_index));
 }
 
 bool CheckCuda(const cudaError_t error, const std::string_view action) {
@@ -83,11 +88,13 @@ bool ExpectInRange(const float value, const float minimum, const float maximum, 
 }
 
 bool TestDeviceRuntimeEvaluatesAndAssemblesPopulationsOnDevice() {
-    const auto training_shard = LoadInitialTrainingDataShardFromActionSpace();
-    if (!UploadTrainingDataShardToDeviceConstantMemory(training_shard)) {
-        std::cerr << "FAIL: could not upload training-data shard to device constant memory\n";
+    const auto training_word_catalog = LoadTrainingWordCatalogFromActionSpace();
+    if (!UploadTrainingWordCatalogToDeviceConstantMemory(training_word_catalog)) {
+        std::cerr << "FAIL: could not upload training-word catalog to device constant memory\n";
         return false;
     }
+
+    RuntimeWordCounts runtime_word_counts{};
 
     PopulationInitializationRandomEngine initialization_random_engine(42);
     auto host_population = std::make_unique<DevicePopulation>();
@@ -103,7 +110,7 @@ bool TestDeviceRuntimeEvaluatesAndAssemblesPopulationsOnDevice() {
     DeviceRuntimeBuffers buffers{};
     bool ok = TryCreateDeviceRuntimeBuffers(buffers);
     ok &= TryUploadCurrentPopulationToDevice(*host_population, buffers);
-    ok &= TryEvaluatePopulationFitnessOnDevice(buffers);
+    ok &= TryEvaluatePopulationFitnessOnDevice(buffers, runtime_word_counts);
 
     PopulationFitnessSummary summary_generation_0{};
     ok &= TryReadPopulationFitnessSummaryFromDevice(buffers, summary_generation_0);
@@ -118,7 +125,7 @@ bool TestDeviceRuntimeEvaluatesAndAssemblesPopulationsOnDevice() {
 
     ok &= TryAssembleNextGenerationOnDevice(buffers, 77U, assembly_config);
     SwapDevicePopulationBuffers(buffers);
-    ok &= TryEvaluatePopulationFitnessOnDevice(buffers);
+    ok &= TryEvaluatePopulationFitnessOnDevice(buffers, runtime_word_counts);
 
     PopulationFitnessSummary summary_generation_1{};
     ok &= TryReadPopulationFitnessSummaryFromDevice(buffers, summary_generation_1);
@@ -133,26 +140,32 @@ bool TestDeviceRuntimeEvaluatesAndAssemblesPopulationsOnDevice() {
     ok &= ExpectTrue(summary_generation_1.best_index < kTestPopulationSize,
                      "Expected valid best index for generation one");
     ok &= ExpectInRange(summary_generation_0.best_fitness, 0.0f,
-                        MaximumPossibleFitnessForGeneration(training_shard, summary_generation_0.generation_index),
+                        MaximumPossibleFitnessForGeneration(training_word_catalog, runtime_word_counts,
+                                                           summary_generation_0.generation_index),
                         "generation zero best fitness");
     ok &= ExpectInRange(summary_generation_0.average_fitness, 0.0f,
-                        MaximumPossibleFitnessForGeneration(training_shard, summary_generation_0.generation_index),
+                        MaximumPossibleFitnessForGeneration(training_word_catalog, runtime_word_counts,
+                                                           summary_generation_0.generation_index),
                         "generation zero average fitness");
     ok &= ExpectInRange(summary_generation_1.best_fitness, 0.0f,
-                        MaximumPossibleFitnessForGeneration(training_shard, summary_generation_1.generation_index),
+                        MaximumPossibleFitnessForGeneration(training_word_catalog, runtime_word_counts,
+                                                           summary_generation_1.generation_index),
                         "generation one best fitness");
     ok &= ExpectInRange(summary_generation_1.average_fitness, 0.0f,
-                        MaximumPossibleFitnessForGeneration(training_shard, summary_generation_1.generation_index),
+                        MaximumPossibleFitnessForGeneration(training_word_catalog, runtime_word_counts,
+                                                           summary_generation_1.generation_index),
                         "generation one average fitness");
     return ok;
 }
 
 bool TestDeviceRuntimeActivatesSecondTrainingShardAtGenerationOneHundred() {
-    const auto training_shard = LoadInitialTrainingDataShardFromActionSpace();
-    if (!UploadTrainingDataShardToDeviceConstantMemory(training_shard)) {
-        std::cerr << "FAIL: could not upload training-data shard to device constant memory\n";
+    const auto training_word_catalog = LoadTrainingWordCatalogFromActionSpace();
+    if (!UploadTrainingWordCatalogToDeviceConstantMemory(training_word_catalog)) {
+        std::cerr << "FAIL: could not upload training-word catalog to device constant memory\n";
         return false;
     }
+
+    RuntimeWordCounts runtime_word_counts{};
 
     PopulationInitializationRandomEngine initialization_random_engine(42);
     auto host_population = std::make_unique<DevicePopulation>();
@@ -169,7 +182,7 @@ bool TestDeviceRuntimeActivatesSecondTrainingShardAtGenerationOneHundred() {
     DeviceRuntimeBuffers buffers{};
     bool ok = TryCreateDeviceRuntimeBuffers(buffers);
     ok &= TryUploadCurrentPopulationToDevice(*host_population, buffers);
-    ok &= TryEvaluatePopulationFitnessOnDevice(buffers);
+    ok &= TryEvaluatePopulationFitnessOnDevice(buffers, runtime_word_counts);
 
     PopulationFitnessSummary summary_generation_99{};
     ok &= TryReadPopulationFitnessSummaryFromDevice(buffers, summary_generation_99);
@@ -184,7 +197,7 @@ bool TestDeviceRuntimeActivatesSecondTrainingShardAtGenerationOneHundred() {
 
     ok &= TryAssembleNextGenerationOnDevice(buffers, 77U, assembly_config);
     SwapDevicePopulationBuffers(buffers);
-    ok &= TryEvaluatePopulationFitnessOnDevice(buffers);
+    ok &= TryEvaluatePopulationFitnessOnDevice(buffers, runtime_word_counts);
 
     PopulationFitnessSummary summary_generation_100{};
     ok &= TryReadPopulationFitnessSummaryFromDevice(buffers, summary_generation_100);
@@ -196,19 +209,25 @@ bool TestDeviceRuntimeActivatesSecondTrainingShardAtGenerationOneHundred() {
     ok &= ExpectTrue(summary_generation_100.generation_index == kPhasedCurriculumSecondShardGeneration,
                      "Expected next generation to cross the phased-curriculum activation threshold");
     ok &= ExpectInRange(summary_generation_99.best_fitness, 0.0f,
-                        MaximumPossibleFitnessForGeneration(training_shard, summary_generation_99.generation_index),
+                        MaximumPossibleFitnessForGeneration(training_word_catalog, runtime_word_counts,
+                                                           summary_generation_99.generation_index),
                         "generation 99 best fitness");
     ok &= ExpectInRange(summary_generation_99.average_fitness, 0.0f,
-                        MaximumPossibleFitnessForGeneration(training_shard, summary_generation_99.generation_index),
+                        MaximumPossibleFitnessForGeneration(training_word_catalog, runtime_word_counts,
+                                                           summary_generation_99.generation_index),
                         "generation 99 average fitness");
     ok &= ExpectInRange(summary_generation_100.best_fitness, 0.0f,
-                        MaximumPossibleFitnessForGeneration(training_shard, summary_generation_100.generation_index),
+                        MaximumPossibleFitnessForGeneration(training_word_catalog, runtime_word_counts,
+                                                           summary_generation_100.generation_index),
                         "generation 100 best fitness");
     ok &= ExpectInRange(summary_generation_100.average_fitness, 0.0f,
-                        MaximumPossibleFitnessForGeneration(training_shard, summary_generation_100.generation_index),
+                        MaximumPossibleFitnessForGeneration(training_word_catalog, runtime_word_counts,
+                                                           summary_generation_100.generation_index),
                         "generation 100 average fitness");
-    ok &= ExpectTrue(MaximumPossibleFitnessForGeneration(training_shard, summary_generation_100.generation_index) >
-                         MaximumPossibleFitnessForGeneration(training_shard, summary_generation_99.generation_index),
+    ok &= ExpectTrue(MaximumPossibleFitnessForGeneration(training_word_catalog, runtime_word_counts,
+                                                         summary_generation_100.generation_index) >
+                         MaximumPossibleFitnessForGeneration(training_word_catalog, runtime_word_counts,
+                                                            summary_generation_99.generation_index),
                      "Expected phased curriculum generation 100 to activate a larger training set");
     return ok;
 }

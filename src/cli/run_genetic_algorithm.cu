@@ -26,6 +26,7 @@ using neuroevolution::genetic_algorithm::device::DeviceRuntimeBuffers;
 using neuroevolution::genetic_algorithm::device::DeviceRuntimeStatusCode;
 using neuroevolution::genetic_algorithm::device::DeviceRuntimeStatusCodeString;
 using neuroevolution::genetic_algorithm::device::PopulationFitnessSummary;
+using neuroevolution::genetic_algorithm::device::RuntimeWordCounts;
 using neuroevolution::genetic_algorithm::device::SwapDevicePopulationBuffers;
 using neuroevolution::genetic_algorithm::device::TryAssembleNextGenerationOnDevice;
 using neuroevolution::genetic_algorithm::device::TryCreateDeviceRuntimeBuffers;
@@ -34,8 +35,8 @@ using neuroevolution::genetic_algorithm::device::TryReadDeviceRuntimeStatus;
 using neuroevolution::genetic_algorithm::device::TryReadPopulationFitnessSummaryFromDevice;
 using neuroevolution::genetic_algorithm::device::TryUploadCurrentPopulationToDevice;
 using neuroevolution::training_folder::DefaultActionSpacePath;
-using neuroevolution::training_folder::LoadInitialTrainingDataShardFromActionSpace;
-using neuroevolution::training_folder::UploadTrainingDataShardToDeviceConstantMemory;
+using neuroevolution::training_folder::LoadTrainingWordCatalogFromActionSpace;
+using neuroevolution::training_folder::UploadTrainingWordCatalogToDeviceConstantMemory;
 
 constexpr std::size_t kDefaultGenerationCount = 3;
 constexpr int kSelectedVisibleDeviceIndex = 0;
@@ -212,11 +213,13 @@ int main(int argc, char **argv) {
         }
 
         const auto training_data_path = DefaultActionSpacePath();
-        const auto training_shard = LoadInitialTrainingDataShardFromActionSpace(training_data_path);
-        if (!UploadTrainingDataShardToDeviceConstantMemory(training_shard)) {
-            std::cerr << "Could not upload the training-data shard to device constant memory.\n";
+        const auto training_word_catalog = LoadTrainingWordCatalogFromActionSpace(training_data_path);
+        if (!UploadTrainingWordCatalogToDeviceConstantMemory(training_word_catalog)) {
+            std::cerr << "Could not upload the training-word catalog to device constant memory.\n";
             return 1;
         }
+
+        RuntimeWordCounts runtime_word_counts{};
 
         PopulationInitializationRandomEngine initialization_random_engine(cli_config.seed);
         auto population = std::make_unique<neuroevolution::genetic_algorithm::device::DevicePopulation>();
@@ -246,7 +249,9 @@ int main(int argc, char **argv) {
         std::cout << "Running device GA demo with population=" << cli_config.population_size
                   << ", action_count=" << neuroevolution::genetic_algorithm::device::kDeviceActionCount
                   << ", generations=" << cli_config.generation_count << ", seed=" << cli_config.seed
-                  << ", training_curriculum_entries=" << training_shard.entry_count
+                  << ", training_word_catalog_entries=" << training_word_catalog.word_count
+                  << ", configured_training_word_count=" << runtime_word_counts.training_word_count
+                  << ", configured_action_space_word_count=" << runtime_word_counts.action_space_word_count
                   << ", initial_training_shard_entries="
                   << neuroevolution::training_folder::kTrainingDataEntriesPerShard
                   << ", phased_curriculum_second_shard_generation="
@@ -256,7 +261,7 @@ int main(int argc, char **argv) {
         std::cout << std::fixed << std::setprecision(4);
 
         for (std::size_t generation_step = 0; generation_step < cli_config.generation_count; ++generation_step) {
-            if (!TryEvaluatePopulationFitnessOnDevice(buffers)) {
+            if (!TryEvaluatePopulationFitnessOnDevice(buffers, runtime_word_counts)) {
                 (void)ReportDeviceRuntimeFailure(buffers, "Population fitness evaluation");
                 DestroyDeviceRuntimeBuffers(buffers);
                 return 1;
