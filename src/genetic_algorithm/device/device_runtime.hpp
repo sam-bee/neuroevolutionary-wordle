@@ -21,6 +21,11 @@ struct RuntimeWordCounts {
     std::size_t action_space_word_count = training_folder::kTrainingDataCurriculumEntryCount;
 };
 
+struct PendingOutputEmbeddingInjection {
+    bool enabled = false;
+    std::size_t catalog_word_index = 0;
+};
+
 enum class DeviceRuntimeStatusCode : int {
     kOk = 0,
     kCudaFailure = 1,
@@ -31,6 +36,7 @@ enum class DeviceRuntimeStatusCode : int {
     kPopulationNotEvaluated = 6,
     kInvalidAssemblyConfig = 7,
     kParentSelectionFailed = 8,
+    kOutputEmbeddingInjectionFailed = 9,
 };
 
 struct PopulationFitnessSummary {
@@ -62,7 +68,8 @@ bool TryReadPopulationFitnessSummaryFromDevice(const DeviceRuntimeBuffers &buffe
 bool TryReadDeviceRuntimeStatus(const DeviceRuntimeBuffers &buffers, DeviceRuntimeStatusCode &status_code);
 
 bool TryAssembleNextGenerationOnDevice(DeviceRuntimeBuffers &buffers, std::uint32_t generation_seed,
-                                       const GenerationAssemblyConfig &config = {});
+                                       const GenerationAssemblyConfig &config = {},
+                                       const PendingOutputEmbeddingInjection &pending_output_embedding_injection = {});
 
 void SwapDevicePopulationBuffers(DeviceRuntimeBuffers &buffers) noexcept;
 

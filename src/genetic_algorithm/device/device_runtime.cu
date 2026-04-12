@@ -8,6 +8,7 @@
 #include <utility>
 
 #include "common/float16.hpp"
+#include "genetic_algorithm/output_embedding_injection.hpp"
 #include "model/output_embedding/output_embedding.hpp"
 #include "model/policy_model/policy_model.hpp"
 #include "training_folder/training_data.hpp"
@@ -18,6 +19,7 @@ namespace neuroevolution::genetic_algorithm::device {
 namespace {
 
 using neuroevolution::common::FixedBuffer;
+using neuroevolution::genetic_algorithm::TryInjectNewOutputEmbedding;
 using neuroevolution::model::output_embedding::ActionEmbedding;
 using neuroevolution::model::output_embedding::SelectedAction;
 using neuroevolution::model::output_embedding::TrySelectBestAction;
@@ -47,6 +49,13 @@ NEUROEVOLUTION_HOST_DEVICE constexpr bool IsValidRuntimeWordCounts(const Trainin
     return (runtime_word_counts.training_word_count <= training_word_catalog.word_count) &&
            (runtime_word_counts.action_space_word_count <= training_word_catalog.word_count) &&
            (runtime_word_counts.action_space_word_count <= kDeviceActionCount);
+}
+
+NEUROEVOLUTION_HOST_DEVICE constexpr bool
+IsValidPendingOutputEmbeddingInjection(const TrainingWordCatalog &training_word_catalog,
+                                       const PendingOutputEmbeddingInjection &pending_output_embedding_injection) {
+    return !pending_output_embedding_injection.enabled ||
+           (pending_output_embedding_injection.catalog_word_index < training_word_catalog.word_count);
 }
 
 struct DeviceRandomState {
@@ -455,6 +464,28 @@ __device__ void WriteGenomeToUnevaluatedIndividual(const DeviceGenome &genome, I
     MarkIndividualUnevaluated(individual);
 }
 
+__device__ DeviceRuntimeStatusCode TryApplyPendingOutputEmbeddingInjection(
+    DeviceGenome &genome, const PendingOutputEmbeddingInjection pending_output_embedding_injection) {
+    if (!pending_output_embedding_injection.enabled) {
+        return DeviceRuntimeStatusCode::kOk;
+    }
+
+    const TrainingWordCatalog &training_word_catalog = DeviceTrainingWordCatalog();
+    if (!IsValidTrainingWordCatalog(training_word_catalog) ||
+        !IsValidPendingOutputEmbeddingInjection(training_word_catalog, pending_output_embedding_injection)) {
+        return DeviceRuntimeStatusCode::kInvalidAssemblyConfig;
+    }
+
+    if (pending_output_embedding_injection.catalog_word_index != ActiveOutputEmbeddingCount(genome.output_embedding)) {
+        return DeviceRuntimeStatusCode::kOutputEmbeddingInjectionFailed;
+    }
+
+    return TryInjectNewOutputEmbedding(genome,
+                                       training_word_catalog.words[pending_output_embedding_injection.catalog_word_index])
+               ? DeviceRuntimeStatusCode::kOk
+               : DeviceRuntimeStatusCode::kOutputEmbeddingInjectionFailed;
+}
+
 __global__ void EvaluatePopulationFitnessKernel(DevicePopulation *population, const RuntimeWordCounts runtime_word_counts,
                                                 int *status) {
     const std::size_t individual_index = (blockIdx.x * blockDim.x) + threadIdx.x;
@@ -529,7 +560,9 @@ __global__ void SummarizePopulationKernel(const DevicePopulation *population, Po
 
 __global__ void AssembleNextGenerationKernel(const DevicePopulation *current_population,
                                              DevicePopulation *next_population, const std::uint32_t generation_seed,
-                                             const GenerationAssemblyConfig config, int *status) {
+                                             const GenerationAssemblyConfig config,
+                                             const PendingOutputEmbeddingInjection pending_output_embedding_injection,
+                                             int *status) {
     const std::size_t slot_index = (blockIdx.x * blockDim.x) + threadIdx.x;
     if (!IsValidActivePopulationSize(current_population->active_individual_count)) {
         if ((blockIdx.x == 0) && (threadIdx.x == 0)) {
@@ -557,6 +590,12 @@ __global__ void AssembleNextGenerationKernel(const DevicePopulation *current_pop
 
         WriteGenomeToUnevaluatedIndividual(current_population->individuals[elite_index].genome,
                                            next_population->individuals[slot_index]);
+
+        const DeviceRuntimeStatusCode injection_status = TryApplyPendingOutputEmbeddingInjection(
+            next_population->individuals[slot_index].genome, pending_output_embedding_injection);
+        if (injection_status != DeviceRuntimeStatusCode::kOk) {
+            SetFailureStatus(status, injection_status);
+        }
         return;
     }
 
@@ -575,6 +614,14 @@ __global__ void AssembleNextGenerationKernel(const DevicePopulation *current_pop
     BreedAndMutateGenome(current_population->individuals[parent_pair.first_parent_index].genome,
                          current_population->individuals[parent_pair.second_parent_index].genome,
                          child_individual.genome, random_state, config.breeding, config.mutation);
+
+    const DeviceRuntimeStatusCode injection_status =
+        TryApplyPendingOutputEmbeddingInjection(child_individual.genome, pending_output_embedding_injection);
+    if (injection_status != DeviceRuntimeStatusCode::kOk) {
+        SetFailureStatus(status, injection_status);
+        return;
+    }
+
     MarkIndividualUnevaluated(child_individual);
 }
 
@@ -692,7 +739,8 @@ bool TryReadDeviceRuntimeStatus(const DeviceRuntimeBuffers &buffers, DeviceRunti
 }
 
 bool TryAssembleNextGenerationOnDevice(DeviceRuntimeBuffers &buffers, const std::uint32_t generation_seed,
-                                       const GenerationAssemblyConfig &config) {
+                                       const GenerationAssemblyConfig &config,
+                                       const PendingOutputEmbeddingInjection &pending_output_embedding_injection) {
     if (!IsValidGenerationAssemblyConfig<kDevicePopulationCapacity>(config)) {
         (void)WriteDeviceStatus(buffers, DeviceRuntimeStatusCode::kInvalidAssemblyConfig);
         return false;
@@ -703,7 +751,8 @@ bool TryAssembleNextGenerationOnDevice(DeviceRuntimeBuffers &buffers, const std:
     }
 
     AssembleNextGenerationKernel<<<1, kDevicePopulationCapacity>>>(buffers.current_population, buffers.next_population,
-                                                                   generation_seed, config, buffers.status);
+                                                                   generation_seed, config,
+                                                                   pending_output_embedding_injection, buffers.status);
     if (!CheckCuda(cudaGetLastError()) || !CheckCuda(cudaDeviceSynchronize())) {
         return false;
     }
@@ -735,6 +784,8 @@ const char *DeviceRuntimeStatusCodeString(const DeviceRuntimeStatusCode status_c
         return "invalid next-generation assembly config";
     case DeviceRuntimeStatusCode::kParentSelectionFailed:
         return "device parent selection failed";
+    case DeviceRuntimeStatusCode::kOutputEmbeddingInjectionFailed:
+        return "device output-embedding injection failed";
     }
 
     return "unknown device-runtime status";

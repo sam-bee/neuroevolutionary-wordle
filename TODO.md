@@ -77,6 +77,21 @@ Local work in the current tree:
   - it appends exactly one new active embedding when spare capacity exists
   - it is not yet wired into generation assembly or runtime count updates
 
+Local work in the current tree:
+
+- wired output-embedding injection into device next-generation assembly
+  Main files:
+  - `src/genetic_algorithm/device/device_runtime.hpp`
+  - `src/genetic_algorithm/device/device_runtime.cu`
+  - `src/cli/run_genetic_algorithm.cu`
+  - `tests/genetic_algorithm/device/device_runtime_test.cu`
+  This means:
+  - `TryAssembleNextGenerationOnDevice(...)` now accepts pending output-embedding injection metadata
+  - the assembly kernel injects the next catalog word into elites and children
+  - failed injections now report `kOutputEmbeddingInjectionFailed`
+  - the CLI now has host-side plumbing to request an injection when runtime word count is below inline capacity, and to bump both runtime counts together after a successful injected assembly
+  - device-runtime coverage now includes both successful assembly-time injection and the no-spare-capacity failure path
+
 ### Revised Design Decision
 The earlier "solutions are a prefix of the selectable action list" idea is superseded.
 
@@ -104,68 +119,52 @@ True runtime growth still requires later externalization of output-embedding-tai
 
 ### Current Planned Sequence
 The agreed next implementation order is now:
-1. Keep the isolated injection primitive as the low-level building block.
-2. Add pending injection metadata describing which next catalog word to activate.
-3. During next-generation assembly, apply the injection primitive to every child genome, including elites.
-4. After a successful injection generation, have the host bump `runtime_word_counts.action_space_word_count`.
+1. Keep the isolated injection primitive and assembly integration as the low-level building blocks.
+2. Add a clearer host-side policy for when injections are requested across generations.
+3. Keep `training_word_count` and `action_space_word_count` equal for now.
+4. Later, make that split configurable.
 5. Only then externalize embedding-tail storage for true runtime growth.
 
 ### What Was Being Worked On When We Stopped
-The isolated injection primitive now exists and passes focused tests.
+Assembly-time injection is now wired in and covered.
 
-The next slice is to wire that primitive into generation assembly and runtime count management.
+The next slice is higher-level host bookkeeping: deciding when to request injections across generations while keeping the two runtime counts equal for now.
 
 ### Next Concrete Slice
-Integrate the existing injection primitive into the device GA assembly path.
+Add explicit host-side injection scheduling and word-count policy.
 
 ### Exact Behavioral Rules For This Slice
-- Add explicit pending injection metadata on the host side.
-- The metadata should identify the next catalog word to activate.
-- During next-generation assembly:
-  - elites must receive the injected tail too
-  - newly bred children must receive the injected tail too
-  - every resulting genome should end the generation with `active_count + 1`
-- Do not yet make the device runtime mutate persistent global counts on its own.
-- After the assembly step succeeds, the host may increase `runtime_word_counts.action_space_word_count` for the next evaluation pass.
-- Continue to require the active action count to stay within current inline genome capacity.
+- Keep device-side injection itself unchanged.
+- Decide an explicit host rule for when pending injection metadata is enabled.
+- Keep `training_word_count == action_space_word_count` for now.
+- Keep requiring active action count to stay within current inline genome capacity.
 
 ### Exact Function And Kernel Changes
 Primary files to change next:
-- `src/genetic_algorithm/device/device_runtime.hpp`
-- `src/genetic_algorithm/device/device_runtime.cu`
 - `src/cli/run_genetic_algorithm.cu`
 - tests under `tests/genetic_algorithm/device`
 
 More concrete API direction:
 
-- In `src/genetic_algorithm/device/device_runtime.hpp`:
-  - add a small pending-injection metadata struct
-  - extend `TryAssembleNextGenerationOnDevice(...)` to accept that metadata
-
-- In `src/genetic_algorithm/device/device_runtime.cu`:
-  - apply `TryInjectNewOutputEmbedding(...)` inside `AssembleNextGenerationKernel(...)`
-  - use the next catalog word from constant memory
-  - inject after elite copy and after child breeding/mutation
-  - fail the kernel cleanly if injection is requested but cannot be applied
-
 - In `src/cli/run_genetic_algorithm.cu`:
-  - decide when to request an injection
-  - pass that request into next-generation assembly
-  - if the injection generation succeeds, raise `runtime_word_counts.action_space_word_count` before the next evaluation
+  - replace the current minimal "inject whenever spare capacity exists" placeholder with an explicit policy
+  - make that policy easy to inspect in logs
+  - keep `training_word_count` and `action_space_word_count` equal until configurability is added
+  - keep host-side bookkeeping for the next catalog word index explicit
 
 ### Follow-On Injection Slice
-After generation-assembly integration lands, the next slice should:
-- add pending injection metadata describing which next catalog word to activate
-- support repeated injections across generations
+After host-side injection scheduling lands, the next slice should:
+- support repeated injections across generations under a deliberate policy
 - introduce clearer host bookkeeping for which catalog words are already active
 - keep using the preloaded constant-memory catalog as the immutable source of words
+- then start planning external output-tail storage for action counts beyond the current inline cap
 
 ### Verification
-After integrating injection into generation assembly:
+After implementing host-side injection scheduling:
 1. Run the relevant CPU tests.
 2. Run the focused GPU injection test.
 3. Run the GPU-backed device-runtime and smoke tests.
-4. Verify that action-space count increases only after a successful requested injection generation.
+4. Verify that runtime word-count changes match the intended host scheduling rule.
 
 ### Tool Status
 `apply_patch` was re-tested in this session and is currently working.

@@ -25,6 +25,7 @@ using neuroevolution::genetic_algorithm::device::DestroyDeviceRuntimeBuffers;
 using neuroevolution::genetic_algorithm::device::DeviceRuntimeBuffers;
 using neuroevolution::genetic_algorithm::device::DeviceRuntimeStatusCode;
 using neuroevolution::genetic_algorithm::device::DeviceRuntimeStatusCodeString;
+using neuroevolution::genetic_algorithm::device::PendingOutputEmbeddingInjection;
 using neuroevolution::genetic_algorithm::device::PopulationFitnessSummary;
 using neuroevolution::genetic_algorithm::device::RuntimeWordCounts;
 using neuroevolution::genetic_algorithm::device::SwapDevicePopulationBuffers;
@@ -190,6 +191,29 @@ GenerationAssemblyConfig MakeAssemblyConfig() {
     return config;
 }
 
+PendingOutputEmbeddingInjection MakePendingOutputEmbeddingInjection(const RuntimeWordCounts &runtime_word_counts,
+                                                                   const std::size_t word_catalog_count) {
+    PendingOutputEmbeddingInjection pending_output_embedding_injection{};
+    if ((runtime_word_counts.action_space_word_count < neuroevolution::genetic_algorithm::device::kDeviceActionCount) &&
+        (runtime_word_counts.action_space_word_count < word_catalog_count)) {
+        pending_output_embedding_injection.enabled = true;
+        pending_output_embedding_injection.catalog_word_index = runtime_word_counts.action_space_word_count;
+    }
+
+    return pending_output_embedding_injection;
+}
+
+void ApplySuccessfulInjectionToRuntimeWordCounts(const PendingOutputEmbeddingInjection &pending_output_embedding_injection,
+                                                 RuntimeWordCounts &runtime_word_counts) {
+    if (!pending_output_embedding_injection.enabled) {
+        return;
+    }
+
+    const std::size_t next_active_word_count = pending_output_embedding_injection.catalog_word_index + 1;
+    runtime_word_counts.training_word_count = next_active_word_count;
+    runtime_word_counts.action_space_word_count = next_active_word_count;
+}
+
 } // namespace
 
 int main(int argc, char **argv) {
@@ -228,6 +252,11 @@ int main(int argc, char **argv) {
                 *population, initialization_random_engine)) {
             std::cerr << "Could not initialize the starting population.\n";
             return 1;
+        }
+
+        for (std::size_t individual_index = 0; individual_index < population->active_individual_count; ++individual_index) {
+            population->individuals[individual_index].genome.output_embedding.active_count =
+                runtime_word_counts.action_space_word_count;
         }
 
         population->active_individual_count = cli_config.population_size;
@@ -282,13 +311,19 @@ int main(int argc, char **argv) {
             }
 
             const std::uint32_t generation_seed = cli_config.seed + 2U + static_cast<std::uint32_t>(generation_step);
-            if (!TryAssembleNextGenerationOnDevice(buffers, generation_seed, assembly_config)) {
+            const PendingOutputEmbeddingInjection pending_output_embedding_injection =
+                MakePendingOutputEmbeddingInjection(runtime_word_counts, training_word_catalog.word_count);
+
+            if (!TryAssembleNextGenerationOnDevice(buffers, generation_seed, assembly_config,
+                                                   pending_output_embedding_injection)) {
                 (void)ReportDeviceRuntimeFailure(buffers, "Next-generation assembly");
                 DestroyDeviceRuntimeBuffers(buffers);
                 return 1;
             }
 
             SwapDevicePopulationBuffers(buffers);
+
+            ApplySuccessfulInjectionToRuntimeWordCounts(pending_output_embedding_injection, runtime_word_counts);
         }
 
         DestroyDeviceRuntimeBuffers(buffers);
