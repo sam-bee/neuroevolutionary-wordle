@@ -159,12 +159,32 @@ set_target_properties(genetic_algorithm_device PROPERTIES
     CUDA_SEPARABLE_COMPILATION ON
 )
 
+add_library(genetic_algorithm_dynamic_device STATIC
+    src/genetic_algorithm/device/dynamic_runtime.cu
+)
+
+target_include_directories(genetic_algorithm_dynamic_device PUBLIC
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
+    ${CUDAToolkit_INCLUDE_DIRS}
+)
+
+target_link_libraries(genetic_algorithm_dynamic_device PUBLIC
+    genetic_algorithm
+    training_folder
+)
+
+enable_project_warnings(genetic_algorithm_dynamic_device)
+
+set_target_properties(genetic_algorithm_dynamic_device PROPERTIES
+    CUDA_SEPARABLE_COMPILATION ON
+)
+
 add_executable(run_genetic_algorithm
     src/cli/run_genetic_algorithm.cu
 )
 
 target_link_libraries(run_genetic_algorithm PRIVATE
-    genetic_algorithm_device
+    genetic_algorithm_dynamic_device
     training_folder
 )
 
@@ -440,6 +460,27 @@ set_target_properties(device_runtime_test PROPERTIES
 
 add_test(NAME device_runtime_test COMMAND device_runtime_test)
 set_tests_properties(device_runtime_test PROPERTIES
+    LABELS "gpu;integration"
+    RESOURCE_LOCK cuda_device
+)
+
+add_executable(dynamic_runtime_test
+    tests/genetic_algorithm/device/dynamic_runtime_test.cu
+)
+
+target_link_libraries(dynamic_runtime_test PRIVATE
+    genetic_algorithm_dynamic_device
+    training_folder
+)
+
+enable_project_warnings(dynamic_runtime_test)
+
+set_target_properties(dynamic_runtime_test PROPERTIES
+    CUDA_SEPARABLE_COMPILATION ON
+)
+
+add_test(NAME dynamic_runtime_test COMMAND dynamic_runtime_test)
+set_tests_properties(dynamic_runtime_test PROPERTIES
     LABELS "gpu;integration"
     RESOURCE_LOCK cuda_device
 )
