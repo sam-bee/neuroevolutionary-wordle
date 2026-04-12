@@ -47,7 +47,8 @@ constexpr double kBytesPerVramGiB = 1024.0 * 1024.0 * 1024.0;
 
 struct CliConfig {
     std::size_t generation_count = kDefaultGenerationCount;
-    std::size_t population_size = neuroevolution::genetic_algorithm::dynamic_device::kDefaultPopulationSizeCeiling;
+    std::size_t population_size_ceiling = 0;
+    bool population_size_was_provided = false;
     double genotype_vram_gb = 0.0;
     bool genotype_vram_gb_was_provided = false;
     std::uint32_t seed = 0;
@@ -63,9 +64,10 @@ enum class ArgumentParseResult {
 void PrintUsage() {
     std::cout << "Usage: run_genetic_algorithm [--seed N] [--generations N] [--population-size N] "
                  "[--genotype-vram-gb F]\n"
-              << "If --population-size is omitted, the program uses "
+              << "If --population-size is omitted, the program does not apply an extra population ceiling.\n"
+              << "If both --population-size and --genotype-vram-gb are omitted, the program uses "
               << neuroevolution::genetic_algorithm::dynamic_device::kDefaultPopulationSizeCeiling
-              << " as the initial population ceiling.\n"
+              << " as the default starting-population target when deriving the initial genotype byte budget.\n"
               << "If --genotype-vram-gb is omitted, the program uses exactly enough genotype bytes to fit the "
                  "requested initial population at the starting action count.\n"
               << "The VRAM budget flag is interpreted in binary GiB-style units (" << kBytesPerVramGiB
@@ -185,7 +187,8 @@ ArgumentParseResult TryParseArguments(const int argc, char **argv, CliConfig &co
                         return ArgumentParseResult::kFailure;
                     }
 
-                    config.population_size = static_cast<std::size_t>(parsed_value);
+                    config.population_size_ceiling = static_cast<std::size_t>(parsed_value);
+                    config.population_size_was_provided = true;
                 }
             }
 
@@ -240,13 +243,17 @@ bool TryComputeGenotypeBudgetBytes(const CliConfig &cli_config, const std::size_
     }
 
     if (!cli_config.genotype_vram_gb_was_provided) {
+        const std::size_t starting_population_target =
+            cli_config.population_size_was_provided
+                ? cli_config.population_size_ceiling
+                : neuroevolution::genetic_algorithm::dynamic_device::kDefaultPopulationSizeCeiling;
         const std::size_t genome_stride_bytes = ComputeDynamicGenomeStrideBytes(initial_action_count);
-        if ((genome_stride_bytes == 0) || (cli_config.population_size > (std::numeric_limits<std::size_t>::max() /
+        if ((genome_stride_bytes == 0) || (starting_population_target > (std::numeric_limits<std::size_t>::max() /
                                                                          genome_stride_bytes))) {
             return false;
         }
 
-        budget_bytes_out = cli_config.population_size * genome_stride_bytes;
+        budget_bytes_out = starting_population_target * genome_stride_bytes;
         return true;
     }
 
@@ -257,6 +264,10 @@ bool TryComputeGenotypeBudgetBytes(const CliConfig &cli_config, const std::size_
 
     budget_bytes_out = static_cast<std::size_t>(budget_bytes);
     return budget_bytes_out > 0;
+}
+
+std::string PopulationCeilingLabel(const std::size_t population_size_ceiling) {
+    return (population_size_ceiling == 0) ? "none" : std::to_string(population_size_ceiling);
 }
 
 } // namespace
@@ -306,7 +317,7 @@ int main(int argc, char **argv) {
         }
 
         const std::size_t initial_population_size = PopulationSizeForGenotypeBudgetBytes(
-            genotype_memory_budget_bytes, runtime_word_counts.action_space_word_count, cli_config.population_size);
+            genotype_memory_budget_bytes, runtime_word_counts.action_space_word_count, cli_config.population_size_ceiling);
         if (initial_population_size == 0) {
             std::cerr << "The requested genotype VRAM budget is too small for even one starting genome.\n";
             return 1;
@@ -321,7 +332,7 @@ int main(int argc, char **argv) {
 
         DeviceRuntimeConfig runtime_config{};
         runtime_config.genotype_memory_budget_bytes = genotype_memory_budget_bytes;
-        runtime_config.population_size_ceiling = cli_config.population_size;
+        runtime_config.population_size_ceiling = cli_config.population_size_ceiling;
         runtime_config.initial_action_count = runtime_word_counts.action_space_word_count;
 
         DeviceRuntimeBuffers buffers{};
@@ -339,7 +350,7 @@ int main(int argc, char **argv) {
         }
 
         std::cout << "Running device GA demo with initial_population=" << initial_population_size
-                  << ", population_ceiling=" << cli_config.population_size
+                  << ", population_ceiling=" << PopulationCeilingLabel(runtime_config.population_size_ceiling)
                   << ", action_count=" << runtime_word_counts.action_space_word_count
                   << ", genome_stride_bytes=" << buffers.current_layout.genome_stride_bytes
                   << ", genotype_vram_budget_bytes=" << genotype_memory_budget_bytes
