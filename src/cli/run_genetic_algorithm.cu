@@ -380,6 +380,7 @@ int main(int argc, char **argv) {
         runtime_config.population_size_ceiling = cli_config.population_size_ceiling;
         runtime_config.initial_action_count = runtime_word_counts.action_space_word_count;
         runtime_config.max_action_count = training_word_catalog.word_count;
+        runtime_config.tail_chunk_action_capacity = cli_config.word_count_step;
 
         DeviceRuntimeBuffers buffers{};
         if (!TryCreateDeviceRuntimeBuffers(buffers, runtime_config)) {

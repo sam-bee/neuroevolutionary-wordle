@@ -159,7 +159,7 @@ bool ExpectPopulationTailMatchesExpected(const HostPopulation &population, const
     return ok;
 }
 
-bool TestDynamicRuntimeInjectsAndResizesWithinFixedBudget() {
+bool TestDynamicRuntimeInjectsWithinFixedBudgetWithoutShrinkingPopulation() {
     const auto training_word_catalog = LoadTrainingWordCatalogFromActionSpace();
     if (!UploadTrainingWordCatalogToDeviceConstantMemory(training_word_catalog)) {
         std::cerr << "FAIL: could not upload training-word catalog to device constant memory\n";
@@ -171,15 +171,15 @@ bool TestDynamicRuntimeInjectsAndResizesWithinFixedBudget() {
     constexpr std::size_t kInjectedWordCount = 3;
     const std::size_t genotype_budget_bytes =
         kInitialPopulationSize * ComputeDynamicGenomeStrideBytes(initial_action_count);
-    const std::size_t expected_next_population_size =
+    const std::size_t legacy_next_population_size =
         PopulationSizeForGenotypeBudgetBytes(genotype_budget_bytes, initial_action_count + kInjectedWordCount,
                                              kInitialPopulationSize);
 
     bool ok = true;
-    ok &= ExpectTrue(expected_next_population_size > 0,
+    ok &= ExpectTrue(legacy_next_population_size > 0,
                      "Expected fixed genotype budget to fit at least one injected genome");
-    ok &= ExpectTrue(expected_next_population_size < kInitialPopulationSize,
-                     "Expected injected generation to shrink population under the same genotype byte budget");
+    ok &= ExpectTrue(legacy_next_population_size < kInitialPopulationSize,
+                     "Expected the legacy contiguous-genome budget formula to shrink the injected generation");
     if (!ok) {
         return false;
     }
@@ -216,6 +216,7 @@ bool TestDynamicRuntimeInjectsAndResizesWithinFixedBudget() {
     runtime_config.population_size_ceiling = kInitialPopulationSize;
     runtime_config.initial_action_count = initial_action_count;
     runtime_config.max_action_count = training_word_catalog.word_count;
+    runtime_config.tail_chunk_action_capacity = kInjectedWordCount;
 
     DeviceRuntimeBuffers buffers{};
     ok &= TryCreateDeviceRuntimeBuffers(buffers, runtime_config);
@@ -236,14 +237,17 @@ bool TestDynamicRuntimeInjectsAndResizesWithinFixedBudget() {
         return false;
     }
 
-    ok &= ExpectTrue(buffers.next_layout.active_individual_count == expected_next_population_size,
-                     "Expected next generation to use the resized population count");
+    ok &= ExpectTrue(buffers.next_layout.active_individual_count == kInitialPopulationSize,
+                     "Expected next generation to preserve population size after schema-aware tail growth");
     ok &= ExpectTrue(buffers.next_layout.action_count == (initial_action_count + kInjectedWordCount),
                      "Expected injection batch to increase the next generation action count");
+    ok &= ExpectTrue(buffers.next_layout.tail_chunk_action_capacity == kInjectedWordCount,
+                     "Expected the runtime to preserve the configured tail chunk capacity");
+    ok &= ExpectTrue(buffers.current_layout.schema_epoch == 0, "Expected initial schema epoch to start at zero");
+    ok &= ExpectTrue(buffers.next_layout.schema_epoch == 1,
+                     "Expected output injection to advance the next generation schema epoch");
     ok &= ExpectTrue(buffers.next_layout.genome_stride_bytes > buffers.current_layout.genome_stride_bytes,
-                     "Expected injected next generation genomes to have a larger byte stride");
-    ok &= ExpectTrue(buffers.next_layout.genotype_bytes <= genotype_budget_bytes,
-                     "Expected resized next generation genotypes to stay within the fixed byte budget");
+                     "Expected downloaded host materialization to reflect the larger action count");
     if (!ok) {
         DestroyDeviceRuntimeBuffers(buffers);
         return false;
@@ -268,15 +272,19 @@ bool TestDynamicRuntimeInjectsAndResizesWithinFixedBudget() {
     ok &= ExpectTrue(summary_generation_0.action_count == initial_action_count,
                      "Expected initial summary to report the starting action count");
     ok &= ExpectTrue(summary_generation_1.generation_index == 1,
-                     "Expected resized injected generation to increment the generation index");
-    ok &= ExpectTrue(summary_generation_1.population_size == expected_next_population_size,
-                     "Expected injected generation summary to report the resized population");
+                     "Expected injected generation to increment the generation index");
+    ok &= ExpectTrue(assembled_population.layout.schema_epoch == 1,
+                     "Expected downloaded population layout to preserve the advanced schema epoch");
+    ok &= ExpectTrue(summary_generation_1.population_size == kInitialPopulationSize,
+                     "Expected injected generation summary to report the preserved population");
     ok &= ExpectTrue(summary_generation_1.action_count == (initial_action_count + kInjectedWordCount),
                      "Expected injected generation summary to report the batched larger action count");
-    ok &= ExpectTrue(assembled_population.layout.active_individual_count == expected_next_population_size,
-                     "Expected downloaded population layout to reflect the resized generation");
+    ok &= ExpectTrue(assembled_population.layout.active_individual_count == kInitialPopulationSize,
+                     "Expected downloaded population layout to reflect the preserved population");
     ok &= ExpectTrue(assembled_population.layout.action_count == (initial_action_count + kInjectedWordCount),
                      "Expected downloaded population layout to reflect the batched injected action count");
+    ok &= ExpectTrue(assembled_population.layout.tail_chunk_action_capacity == kInjectedWordCount,
+                     "Expected downloaded population layout to preserve the fixed chunk capacity");
     for (std::size_t injection_offset = 0; injection_offset < kInjectedWordCount; ++injection_offset) {
         ok &= ExpectPopulationTailMatchesExpected(
             assembled_population, initial_action_count + injection_offset, expected_tails[injection_offset],
@@ -301,7 +309,7 @@ bool TestDynamicRuntimeInjectsAndResizesWithinFixedBudget() {
     return ok;
 }
 
-bool TestDynamicRuntimeRejectsInjectionWhenNoInjectedEliteFitsBudget() {
+bool TestDynamicRuntimeKeepsSchemaEpochStableWithoutInjection() {
     const auto training_word_catalog = LoadTrainingWordCatalogFromActionSpace();
     if (!UploadTrainingWordCatalogToDeviceConstantMemory(training_word_catalog)) {
         std::cerr << "FAIL: could not upload training-word catalog to device constant memory\n";
@@ -324,6 +332,7 @@ bool TestDynamicRuntimeRejectsInjectionWhenNoInjectedEliteFitsBudget() {
     runtime_config.population_size_ceiling = 1;
     runtime_config.initial_action_count = initial_action_count;
     runtime_config.max_action_count = training_word_catalog.word_count;
+    runtime_config.tail_chunk_action_capacity = 2;
 
     DeviceRuntimeBuffers buffers{};
     ok &= TryCreateDeviceRuntimeBuffers(buffers, runtime_config);
@@ -334,22 +343,22 @@ bool TestDynamicRuntimeRejectsInjectionWhenNoInjectedEliteFitsBudget() {
         return false;
     }
 
-    PendingOutputEmbeddingInjection pending_output_embedding_injection{};
-    pending_output_embedding_injection.enabled = true;
-    pending_output_embedding_injection.first_catalog_word_index = initial_action_count;
-    pending_output_embedding_injection.injection_count = 1;
-
     const GenerationAssemblyConfig assembly_config = MakeAssemblyConfig();
-    ok &= ExpectTrue(!TryAssembleNextGenerationOnDevice(buffers, 9U, assembly_config, pending_output_embedding_injection),
-                     "Expected injected assembly to fail when the budget cannot fit even one next-generation elite");
+    ok &= TryAssembleNextGenerationOnDevice(buffers, 9U, assembly_config, {});
+    if (!ok) {
+        DestroyDeviceRuntimeBuffers(buffers);
+        return false;
+    }
 
-    DeviceRuntimeStatusCode status_code = DeviceRuntimeStatusCode::kOk;
-    ok &= TryReadDeviceRuntimeStatus(buffers, status_code);
+    ok &= ExpectTrue(buffers.next_layout.schema_epoch == buffers.current_layout.schema_epoch,
+                     "Expected schema epoch to remain stable when no output injection happens");
+    ok &= ExpectTrue(buffers.next_layout.action_count == buffers.current_layout.action_count,
+                     "Expected action count to remain stable when no output injection happens");
+    ok &= ExpectTrue(buffers.next_layout.active_individual_count == buffers.current_layout.active_individual_count,
+                     "Expected population size to remain stable when no output injection happens");
 
     DestroyDeviceRuntimeBuffers(buffers);
 
-    ok &= ExpectTrue(status_code == DeviceRuntimeStatusCode::kInvalidAssemblyConfig,
-                     "Expected insufficient injected budget to report invalid assembly config");
     return ok;
 }
 
@@ -360,8 +369,8 @@ int main() {
         return 1;
     }
 
-    if (!TestDynamicRuntimeInjectsAndResizesWithinFixedBudget() ||
-        !TestDynamicRuntimeRejectsInjectionWhenNoInjectedEliteFitsBudget()) {
+    if (!TestDynamicRuntimeInjectsWithinFixedBudgetWithoutShrinkingPopulation() ||
+        !TestDynamicRuntimeKeepsSchemaEpochStableWithoutInjection()) {
         return 1;
     }
 

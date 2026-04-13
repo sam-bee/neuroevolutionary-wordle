@@ -34,7 +34,6 @@ using neuroevolution::wordle::Word;
 using neuroevolution::wordle::WordleGrid;
 
 constexpr float kWinScoreBase = 10.0f;
-constexpr std::size_t kDeviceTailRowSlotActionCapacity = 1;
 constexpr std::uint32_t kPlanningRandomSeedSalt = 0x9E37'79B9U;
 constexpr std::uint32_t kBreedingRandomSeedSalt = 0x7F4A'7C15U;
 
@@ -938,33 +937,25 @@ bool TryPlanNextPopulationLayout(const DeviceRuntimeBuffers &buffers,
     const std::size_t next_action_count =
         buffers.current_layout.action_count +
         (pending_output_embedding_injection.enabled ? pending_output_embedding_injection.injection_count : 0);
-    const std::size_t next_population_size = PopulationSizeForGenotypeBudgetBytes(
-        buffers.genotype_memory_budget_bytes, next_action_count, buffers.population_size_ceiling);
-    if (next_population_size == 0) {
+    if ((next_action_count == 0) || (next_action_count > buffers.max_action_count) ||
+        (buffers.current_layout.active_individual_count == 0)) {
         return false;
     }
 
-    next_layout = MakeDynamicPopulationLayout(next_population_size, buffers.current_layout.generation_index + 1,
-                                              next_action_count, kDeviceTailRowSlotActionCapacity);
+    const std::size_t next_schema_epoch =
+        buffers.current_layout.schema_epoch + (pending_output_embedding_injection.enabled ? 1U : 0U);
+    next_layout = MakeDynamicPopulationLayout(buffers.current_layout.active_individual_count,
+                                              buffers.current_layout.generation_index + 1, next_action_count,
+                                              buffers.tail_chunk_action_capacity, next_schema_epoch);
     return IsValidDynamicPopulationLayout(next_layout);
 }
 
-std::size_t ComputeMaxTailRowSlotsPerGeneration(const DeviceRuntimeConfig &config) {
-    if ((config.initial_action_count == 0) || (config.max_action_count < config.initial_action_count)) {
+std::size_t ComputeMaxTailRowSlotCapacity(const std::size_t max_population_count, const DeviceRuntimeConfig &config) {
+    if ((max_population_count == 0) || (config.max_action_count == 0) || (config.max_action_count < config.initial_action_count)) {
         return 0;
     }
 
-    std::size_t max_tail_row_slots = 0;
-    for (std::size_t action_count = config.initial_action_count; action_count <= config.max_action_count; ++action_count) {
-        const std::size_t population_size = PopulationSizeForGenotypeBudgetBytes(
-            config.genotype_memory_budget_bytes, action_count, config.population_size_ceiling);
-        const std::size_t tail_row_slots = population_size * action_count;
-        if (tail_row_slots > max_tail_row_slots) {
-            max_tail_row_slots = tail_row_slots;
-        }
-    }
-
-    return max_tail_row_slots;
+    return max_population_count * config.max_action_count;
 }
 
 bool ResetNextGenerationStorage(const DeviceRuntimeBuffers &buffers) {
@@ -1090,10 +1081,11 @@ bool TryCreateDeviceRuntimeBuffers(DeviceRuntimeBuffers &buffers, const DeviceRu
 
     const std::size_t max_population_count = PopulationSizeForGenotypeBudgetBytes(
         config.genotype_memory_budget_bytes, config.initial_action_count, config.population_size_ceiling);
-    const std::size_t max_tail_row_slot_capacity_per_region = ComputeMaxTailRowSlotsPerGeneration(config);
+    const std::size_t max_tail_row_slot_capacity_per_generation =
+        ComputeMaxTailRowSlotCapacity(max_population_count, config);
     if ((config.genotype_memory_budget_bytes == 0) || (config.initial_action_count == 0) ||
-        (config.max_action_count < config.initial_action_count) || (max_population_count == 0) ||
-        (max_tail_row_slot_capacity_per_region == 0)) {
+        (config.max_action_count < config.initial_action_count) || (config.tail_chunk_action_capacity == 0) ||
+        (max_population_count == 0) || (max_tail_row_slot_capacity_per_generation == 0)) {
         return false;
     }
 
@@ -1101,8 +1093,9 @@ bool TryCreateDeviceRuntimeBuffers(DeviceRuntimeBuffers &buffers, const DeviceRu
     buffers.population_size_ceiling = config.population_size_ceiling;
     buffers.max_population_count = max_population_count;
     buffers.max_action_count = config.max_action_count;
+    buffers.tail_chunk_action_capacity = config.tail_chunk_action_capacity;
     buffers.body_slot_capacity = 2 * max_population_count;
-    buffers.tail_row_slot_capacity = 2 * max_tail_row_slot_capacity_per_region;
+    buffers.tail_row_slot_capacity = 2 * max_tail_row_slot_capacity_per_generation;
 
     bool ok = true;
     ok &= CheckCuda(cudaMalloc(&buffers.body_slots, buffers.body_slot_capacity * sizeof(PolicyModelParameters)));
@@ -1202,7 +1195,7 @@ void DestroyDeviceRuntimeBuffers(DeviceRuntimeBuffers &buffers) noexcept {
 bool TryUploadCurrentPopulationToDevice(const HostPopulation &host_population, DeviceRuntimeBuffers &buffers) {
     const DynamicPopulationLayout current_layout = MakeDynamicPopulationLayout(
         host_population.layout.active_individual_count, host_population.layout.generation_index,
-        host_population.layout.action_count, kDeviceTailRowSlotActionCapacity);
+        host_population.layout.action_count, buffers.tail_chunk_action_capacity, host_population.layout.schema_epoch);
     if (!IsValidDynamicPopulationLayout(host_population.layout) || !IsValidDynamicPopulationLayout(current_layout) ||
         (host_population.layout.genotype_bytes > buffers.genotype_memory_budget_bytes) ||
         (host_population.layout.active_individual_count > buffers.max_population_count) ||
@@ -1252,7 +1245,9 @@ bool TryDownloadCurrentPopulationFromDevice(const DeviceRuntimeBuffers &buffers,
     host_population = {};
     host_population.layout = MakeDynamicPopulationLayout(buffers.current_layout.active_individual_count,
                                                          buffers.current_layout.generation_index,
-                                                         buffers.current_layout.action_count);
+                                                         buffers.current_layout.action_count,
+                                                         buffers.current_layout.tail_chunk_action_capacity,
+                                                         buffers.current_layout.schema_epoch);
     if (!TryAllocateHostGenomeStorage(host_population)) {
         return false;
     }

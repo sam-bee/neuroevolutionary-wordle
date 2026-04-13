@@ -71,6 +71,7 @@ struct ConstDynamicGenomeView {
 struct DynamicPopulationLayout {
     std::size_t active_individual_count = 0;
     std::size_t generation_index = 0;
+    std::size_t schema_epoch = 0;
     std::size_t action_count = 0;
     std::size_t tail_chunk_action_capacity = 0;
     std::size_t genome_stride_bytes = 0;
@@ -192,12 +193,13 @@ constexpr NEUROEVOLUTION_HOST_DEVICE std::size_t TailRowStorageIndex(
 
 constexpr NEUROEVOLUTION_HOST_DEVICE DynamicPopulationLayout MakeDynamicPopulationLayout(
     const std::size_t active_individual_count, const std::size_t generation_index, const std::size_t action_count,
-    const std::size_t tail_chunk_action_capacity = 0) noexcept {
+    const std::size_t tail_chunk_action_capacity = 0, const std::size_t schema_epoch = 0) noexcept {
     const DynamicTailSchema tail_schema = MakeDynamicTailSchema(action_count, tail_chunk_action_capacity);
     const std::size_t genome_stride_bytes = ComputeDynamicGenomeStrideBytes(action_count);
     return {
         .active_individual_count = active_individual_count,
         .generation_index = generation_index,
+        .schema_epoch = schema_epoch,
         .action_count = action_count,
         .tail_chunk_action_capacity = tail_schema.chunk_action_capacity,
         .genome_stride_bytes = genome_stride_bytes,

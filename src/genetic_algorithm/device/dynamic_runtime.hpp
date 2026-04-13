@@ -15,6 +15,7 @@ namespace neuroevolution::genetic_algorithm::dynamic_device {
 constexpr std::size_t kInitialDynamicActionCount = training_folder::kDefaultInitialActiveWordCount;
 constexpr std::size_t kDynamicThreadBlockSize = 256;
 constexpr std::size_t kDefaultPopulationSizeCeiling = 100;
+constexpr std::size_t kDefaultTailChunkActionCapacity = 1;
 
 using genome::ComputeDynamicGenomeStrideBytes;
 using genome::ConstDynamicGenomeView;
@@ -91,6 +92,7 @@ struct DeviceRuntimeConfig {
     std::size_t population_size_ceiling = kDefaultPopulationSizeCeiling;
     std::size_t initial_action_count = kInitialDynamicActionCount;
     std::size_t max_action_count = kInitialDynamicActionCount;
+    std::size_t tail_chunk_action_capacity = kDefaultTailChunkActionCapacity;
 };
 
 struct DeviceRuntimeBuffers {
@@ -131,6 +133,7 @@ struct DeviceRuntimeBuffers {
     std::size_t population_size_ceiling = 0;
     std::size_t max_population_count = 0;
     std::size_t max_action_count = 0;
+    std::size_t tail_chunk_action_capacity = 0;
     std::size_t body_slot_capacity = 0;
     std::size_t tail_row_slot_capacity = 0;
 
