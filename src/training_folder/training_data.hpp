@@ -9,14 +9,11 @@
 
 namespace neuroevolution::training_folder {
 
-constexpr std::size_t kTrainingDataShardCount = 2;
-constexpr std::size_t kTrainingDataEntriesPerShard = 10;
-constexpr std::size_t kTrainingDataCurriculumEntryCount = kTrainingDataShardCount * kTrainingDataEntriesPerShard;
-constexpr std::size_t kPhasedCurriculumSecondShardGeneration = 100;
+constexpr std::size_t kDefaultInitialActiveWordCount = 20;
 constexpr std::size_t kTrainingWordCatalogCapacity = 4739;
 
 struct WordCountSchedule {
-    std::size_t initial_word_count = kTrainingDataCurriculumEntryCount;
+    std::size_t initial_word_count = kDefaultInitialActiveWordCount;
     std::size_t word_count_step = 1;
     std::size_t word_count_step_period_generations = 1;
 };
@@ -64,21 +61,6 @@ constexpr NEUROEVOLUTION_HOST_DEVICE std::size_t ScheduledWordCountForGeneration
 
     const std::size_t scheduled_word_count = initial_word_count + (completed_schedule_steps * schedule.word_count_step);
     return (scheduled_word_count < catalog_word_count) ? scheduled_word_count : catalog_word_count;
-}
-
-constexpr NEUROEVOLUTION_HOST_DEVICE std::size_t
-ActiveTrainingWordCountForGeneration(const std::size_t training_word_count, const std::size_t generation_index) noexcept {
-    if (training_word_count == 0) {
-        return 0;
-    }
-
-    const std::size_t first_shard_word_count =
-        (training_word_count < kTrainingDataEntriesPerShard) ? training_word_count : kTrainingDataEntriesPerShard;
-    if (generation_index < kPhasedCurriculumSecondShardGeneration) {
-        return first_shard_word_count;
-    }
-
-    return training_word_count;
 }
 
 std::filesystem::path DefaultActionSpacePath();

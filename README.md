@@ -28,11 +28,13 @@ all allowed solutions while biasing the action space toward common words derived
 
 More information on data is available at [`docs/data/data-docs.md`](docs/data/data-docs.md).
 
-The current GA demo does not score against all 4,739 action words yet. During a run it loads the top 20 words from
-`data/action-space-randomised.txt`, treats them as two 10-word training shards, and uploads the full 20-word
-curriculum to GPU constant memory for the life of the process. This now runs as a **phased curriculum**: generations
-`0-99` score only the first shard's training cases, and generation `100` onward evaluates against both shards. The
-policy can still emit any of the 20 curriculum words throughout.
+The current GA demo uploads the full 4,739-word action catalog from `data/action-space-randomised.txt` to GPU
+constant memory once at process start.
+
+During a run, `run_genetic_algorithm` uses a configurable active prefix of that catalog. By default it starts with the
+first 20 words, grows the active prefix by 1 word per generation, and keeps training-word count and selectable
+action-space count equal. Newly activated output-embedding tails are injected on-device during next-generation
+assembly. Under a fixed genotype VRAM budget, the population may shrink as active action count grows.
 
 ## Why this exists
 

@@ -9,12 +9,9 @@
 
 namespace {
 
-using neuroevolution::training_folder::ActiveTrainingWordCountForGeneration;
 using neuroevolution::training_folder::DefaultActionSpacePath;
 using neuroevolution::training_folder::IsValidTrainingWordCatalog;
-using neuroevolution::training_folder::kPhasedCurriculumSecondShardGeneration;
-using neuroevolution::training_folder::kTrainingDataCurriculumEntryCount;
-using neuroevolution::training_folder::kTrainingDataEntriesPerShard;
+using neuroevolution::training_folder::kDefaultInitialActiveWordCount;
 using neuroevolution::training_folder::kTrainingWordCatalogCapacity;
 using neuroevolution::training_folder::LoadTrainingWordCatalogFromActionSpace;
 using neuroevolution::training_folder::ScheduledWordCountForGeneration;
@@ -22,7 +19,7 @@ using neuroevolution::training_folder::TrainingWordCatalog;
 using neuroevolution::training_folder::WordCountSchedule;
 using neuroevolution::wordle::Word;
 
-constexpr std::array<const char *, kTrainingDataCurriculumEntryCount> kExpectedTrainingWords = {
+constexpr std::array<const char *, kDefaultInitialActiveWordCount> kExpectedTrainingWords = {
     "MINOS", "VODKA", "RAZOR", "GRADS", "CURLS", "BILGE", "GREET", "PYLON", "ENTER", "READY",
     "VERDE", "AUGER", "FOOTS", "BRACE", "PURTY", "SPORT", "TIRES", "FRISK", "AFFIX", "CHUMS",
 };
@@ -93,26 +90,6 @@ bool TestLoadTrainingWordCatalogReadsRandomisedActionSpaceWords() {
     return ok;
 }
 
-bool TestPhasedCurriculumUsesOneShardBeforeGenerationOneHundredAndBothAfterwards() {
-    bool ok = true;
-    ok &= ExpectTrue(ActiveTrainingWordCountForGeneration(kTrainingDataCurriculumEntryCount, 0) ==
-                         kTrainingDataEntriesPerShard,
-                     "Expected phased curriculum generation zero to use only the first training-data shard");
-    ok &= ExpectTrue(
-        ActiveTrainingWordCountForGeneration(kTrainingDataCurriculumEntryCount,
-                                             kPhasedCurriculumSecondShardGeneration - 1) == kTrainingDataEntriesPerShard,
-        "Expected phased curriculum to keep using only the first training-data shard before generation 100");
-    ok &= ExpectTrue(ActiveTrainingWordCountForGeneration(kTrainingDataCurriculumEntryCount,
-                                                          kPhasedCurriculumSecondShardGeneration) ==
-                         kTrainingDataCurriculumEntryCount,
-                     "Expected phased curriculum generation 100 to include both training-data shards");
-    ok &= ExpectTrue(ActiveTrainingWordCountForGeneration(kTrainingDataCurriculumEntryCount,
-                                                          kPhasedCurriculumSecondShardGeneration + 1) ==
-                         kTrainingDataCurriculumEntryCount,
-                     "Expected phased curriculum to keep both training-data shards active after generation 100");
-    return ok;
-}
-
 bool TestWordCountScheduleAdvancesByConfiguredStepAndClampsToCatalog() {
     constexpr WordCountSchedule kSchedule{
         .initial_word_count = 50,
@@ -140,7 +117,6 @@ bool TestWordCountScheduleAdvancesByConfiguredStepAndClampsToCatalog() {
 
 int main() {
     if (!TestLoadTrainingWordCatalogReadsRandomisedActionSpaceWords() ||
-        !TestPhasedCurriculumUsesOneShardBeforeGenerationOneHundredAndBothAfterwards() ||
         !TestWordCountScheduleAdvancesByConfiguredStepAndClampsToCatalog()) {
         return 1;
     }

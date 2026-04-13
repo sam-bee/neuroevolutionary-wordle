@@ -52,7 +52,7 @@ struct CliConfig {
     std::size_t generation_count = kDefaultGenerationCount;
     std::size_t population_size_ceiling = 0;
     bool population_size_was_provided = false;
-    std::size_t initial_word_count = neuroevolution::training_folder::kTrainingDataCurriculumEntryCount;
+    std::size_t initial_word_count = neuroevolution::training_folder::kDefaultInitialActiveWordCount;
     std::size_t word_count_step = 1;
     std::size_t word_count_step_period_generations = 1;
     double genotype_vram_gb = 0.0;
@@ -76,7 +76,7 @@ void PrintUsage() {
               << neuroevolution::genetic_algorithm::dynamic_device::kDefaultPopulationSizeCeiling
               << " as the default starting-population target when deriving the initial genotype byte budget.\n"
               << "The shared training/action schedule defaults to initial_word_count="
-              << neuroevolution::training_folder::kTrainingDataCurriculumEntryCount
+              << neuroevolution::training_folder::kDefaultInitialActiveWordCount
               << ", word_count_step=1, word_count_step_period_generations=1.\n"
               << "If --genotype-vram-gb is omitted, the program uses exactly enough genotype bytes to fit the "
                  "requested initial population at the starting action count.\n"

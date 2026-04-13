@@ -12,7 +12,7 @@
 namespace {
 
 using neuroevolution::training_folder::DeviceTrainingWordCatalog;
-using neuroevolution::training_folder::kTrainingDataCurriculumEntryCount;
+using neuroevolution::training_folder::kDefaultInitialActiveWordCount;
 using neuroevolution::training_folder::kTrainingWordCatalogCapacity;
 using neuroevolution::training_folder::LoadTrainingWordCatalogFromActionSpace;
 using neuroevolution::training_folder::TrainingWordCatalog;
@@ -21,7 +21,7 @@ using neuroevolution::wordle::Word;
 
 constexpr int kSelectedVisibleDeviceIndex = 0;
 constexpr int kStatusInvalidConstantShard = 1;
-constexpr std::array<const char *, kTrainingDataCurriculumEntryCount> kExpectedTrainingWords = {
+constexpr std::array<const char *, kDefaultInitialActiveWordCount> kExpectedTrainingWords = {
     "MINOS", "VODKA", "RAZOR", "GRADS", "CURLS", "BILGE", "GREET", "PYLON", "ENTER", "READY",
     "VERDE", "AUGER", "FOOTS", "BRACE", "PURTY", "SPORT", "TIRES", "FRISK", "AFFIX", "CHUMS",
 };

@@ -24,11 +24,13 @@ person verbs with an _-s_ inflection. They are usually words that any English sp
 allowed guesses, made smaller to make training faster. All of these words are in the allowed guesses. Every allowed
 solution is included in this file.
 
-`action-space-randomised.txt` contains the same curated action space in a randomized order. The current GA runtime uses
-the top 20 words from this file as a **phased curriculum** made of two 10-word training shards. All 20 words are
-uploaded to GPU constant memory while the run is in progress. Before generation `100`, only the first shard contributes
-training cases to fitness evaluation; from generation `100` onward, both shards are included. The model can still guess
-any of the 20 curriculum words throughout.
+`action-space-randomised.txt` contains the same curated action space in a randomized order. The current GA runtime
+uploads the full 4,739-word catalog from this file to GPU constant memory once at process start.
+
+`run_genetic_algorithm` then works against a configurable active prefix of that catalog. By default it starts with the
+first 20 words, grows the active prefix by 1 word per generation, and keeps training-word count and selectable
+action-space count equal for now. Newly activated output-embedding tails are injected on-device during next-generation
+assembly.
 
 ## More Information on Data
 
