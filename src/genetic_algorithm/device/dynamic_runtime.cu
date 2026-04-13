@@ -6,6 +6,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <utility>
+#include <vector>
 
 #include "common/float16.hpp"
 #include "genetic_algorithm/output_embedding_injection.hpp"
@@ -33,6 +34,7 @@ using neuroevolution::wordle::Word;
 using neuroevolution::wordle::WordleGrid;
 
 constexpr float kWinScoreBase = 10.0f;
+constexpr std::size_t kDeviceTailRowSlotActionCapacity = 1;
 
 NEUROEVOLUTION_HOST_DEVICE constexpr int DeviceStatusValue(const DeviceRuntimeStatusCode status_code) {
     return static_cast<int>(status_code);
@@ -57,6 +59,16 @@ IsValidPendingOutputEmbeddingInjection(const TrainingWordCatalog &training_word_
 constexpr bool IsValidDynamicGenerationAssemblyConfig(const GenerationAssemblyConfig &config) {
     return (config.genetic_algorithm.elite_count > 0) && IsValidParentSelectionConfig(config.parent_selection) &&
            IsValidBreedingConfig(config.breeding) && IsValidMutationConfig(config.mutation);
+}
+
+NEUROEVOLUTION_HOST_DEVICE constexpr std::size_t TailRowSlotCountForPopulationLayout(
+    const DynamicPopulationLayout &layout) noexcept {
+    return layout.active_individual_count * layout.action_count;
+}
+
+NEUROEVOLUTION_HOST_DEVICE constexpr std::size_t TailRowSlotOffsetForIndividual(
+    const DynamicPopulationLayout &layout, const std::size_t individual_index) noexcept {
+    return individual_index * layout.action_count;
 }
 
 struct DeviceRandomState {
@@ -521,7 +533,39 @@ __device__ DeviceRuntimeStatusCode TryApplyPendingOutputEmbeddingInjection(
     return DeviceRuntimeStatusCode::kOk;
 }
 
-__global__ void EvaluatePopulationFitnessKernel(const std::uint8_t *current_genomes,
+NEUROEVOLUTION_HOST_DEVICE inline ConstDynamicGenomeView CurrentArenaGenomeView(
+    const PolicyModelParameters *body_slots, const TrainableActionEmbeddingTail *tail_row_slots,
+    const DynamicArenaSlotId *body_slot_ids, const DynamicArenaSlotId *tail_row_slot_ids,
+    const std::size_t tail_row_slot_id_stride, const DynamicPopulationLayout &layout,
+    const std::size_t individual_index) noexcept {
+    return ArenaGenomeView(body_slots, tail_row_slots, body_slot_ids, tail_row_slot_ids, tail_row_slot_id_stride, layout,
+                           individual_index);
+}
+
+__device__ DynamicGenomeView BindNextArenaGenomeView(
+    PolicyModelParameters *body_slots, TrainableActionEmbeddingTail *tail_row_slots, DynamicArenaSlotId *body_slot_ids,
+    DynamicArenaSlotId *tail_row_slot_ids, const std::size_t tail_row_slot_id_stride,
+    const std::size_t body_region_first_slot, const std::size_t tail_row_region_first_slot,
+    const DynamicPopulationLayout &layout, const std::size_t individual_index) {
+    const DynamicArenaSlotId body_slot_id = static_cast<DynamicArenaSlotId>(body_region_first_slot + individual_index);
+    body_slot_ids[individual_index] = body_slot_id;
+
+    DynamicArenaSlotId *individual_tail_row_slot_ids = tail_row_slot_ids + (individual_index * tail_row_slot_id_stride);
+    const std::size_t first_tail_row_slot =
+        tail_row_region_first_slot + TailRowSlotOffsetForIndividual(layout, individual_index);
+    for (std::size_t action_index = 0; action_index < layout.action_count; ++action_index) {
+        individual_tail_row_slot_ids[action_index] = static_cast<DynamicArenaSlotId>(first_tail_row_slot + action_index);
+    }
+
+    return ArenaGenomeView(body_slots, tail_row_slots, body_slot_ids, tail_row_slot_ids, tail_row_slot_id_stride, layout,
+                           individual_index);
+}
+
+__global__ void EvaluatePopulationFitnessKernel(const PolicyModelParameters *body_slots,
+                                                const TrainableActionEmbeddingTail *tail_row_slots,
+                                                const DynamicArenaSlotId *current_body_slot_ids,
+                                                const DynamicArenaSlotId *current_tail_row_slot_ids,
+                                                const std::size_t tail_row_slot_id_stride,
                                                 const DynamicPopulationLayout current_layout, float *current_fitness,
                                                 std::uint32_t *current_evaluation_counts,
                                                 std::uint8_t *current_has_fitness,
@@ -538,7 +582,9 @@ __global__ void EvaluatePopulationFitnessKernel(const std::uint8_t *current_geno
         return;
     }
 
-    const ConstDynamicGenomeView genome_view = GenomeViewAt(current_genomes, current_layout, individual_index);
+    const ConstDynamicGenomeView genome_view = CurrentArenaGenomeView(
+        body_slots, tail_row_slots, current_body_slot_ids, current_tail_row_slot_ids, tail_row_slot_id_stride,
+        current_layout, individual_index);
     float fitness = 0.0f;
     const DeviceRuntimeStatusCode evaluation_status =
         TryEvaluateIndividualFitness(genome_view, current_layout, current_layout.generation_index, runtime_word_counts,
@@ -594,8 +640,12 @@ __global__ void SummarizePopulationKernel(const float *current_fitness, const st
 }
 
 __global__ void AssembleNextGenerationKernel(
-    const std::uint8_t *current_genomes, const float *current_fitness, const std::uint8_t *current_has_fitness,
-    const DynamicPopulationLayout current_layout, std::uint8_t *next_genomes, float *next_fitness,
+    PolicyModelParameters *body_slots, TrainableActionEmbeddingTail *tail_row_slots,
+    const DynamicArenaSlotId *current_body_slot_ids, const DynamicArenaSlotId *current_tail_row_slot_ids,
+    DynamicArenaSlotId *next_body_slot_ids, DynamicArenaSlotId *next_tail_row_slot_ids,
+    const std::size_t tail_row_slot_id_stride, const std::size_t next_body_region_first_slot,
+    const std::size_t next_tail_row_region_first_slot, const float *current_fitness,
+    const std::uint8_t *current_has_fitness, const DynamicPopulationLayout current_layout, float *next_fitness,
     std::uint32_t *next_evaluation_counts, std::uint8_t *next_has_fitness, const DynamicPopulationLayout next_layout,
     const std::uint32_t generation_seed, const GenerationAssemblyConfig config,
     const PendingOutputEmbeddingInjection pending_output_embedding_injection, int *status) {
@@ -619,8 +669,12 @@ __global__ void AssembleNextGenerationKernel(
             return;
         }
 
-        const ConstDynamicGenomeView elite_genome_view = GenomeViewAt(current_genomes, current_layout, elite_index);
-        const DynamicGenomeView child_genome_view = GenomeViewAt(next_genomes, next_layout, slot_index);
+        const ConstDynamicGenomeView elite_genome_view = CurrentArenaGenomeView(
+            body_slots, tail_row_slots, current_body_slot_ids, current_tail_row_slot_ids, tail_row_slot_id_stride,
+            current_layout, elite_index);
+        const DynamicGenomeView child_genome_view = BindNextArenaGenomeView(
+            body_slots, tail_row_slots, next_body_slot_ids, next_tail_row_slot_ids, tail_row_slot_id_stride,
+            next_body_region_first_slot, next_tail_row_region_first_slot, next_layout, slot_index);
         CopyGenome(elite_genome_view, current_layout.action_count, child_genome_view, next_layout.action_count);
         const DeviceRuntimeStatusCode injection_status = TryApplyPendingOutputEmbeddingInjection(
             child_genome_view, current_layout.action_count, pending_output_embedding_injection);
@@ -643,11 +697,15 @@ __global__ void AssembleNextGenerationKernel(
         return;
     }
 
-    const ConstDynamicGenomeView first_parent_genome_view =
-        GenomeViewAt(current_genomes, current_layout, parent_pair.first_parent_index);
-    const ConstDynamicGenomeView second_parent_genome_view =
-        GenomeViewAt(current_genomes, current_layout, parent_pair.second_parent_index);
-    const DynamicGenomeView child_genome_view = GenomeViewAt(next_genomes, next_layout, slot_index);
+    const ConstDynamicGenomeView first_parent_genome_view = CurrentArenaGenomeView(
+        body_slots, tail_row_slots, current_body_slot_ids, current_tail_row_slot_ids, tail_row_slot_id_stride,
+        current_layout, parent_pair.first_parent_index);
+    const ConstDynamicGenomeView second_parent_genome_view = CurrentArenaGenomeView(
+        body_slots, tail_row_slots, current_body_slot_ids, current_tail_row_slot_ids, tail_row_slot_id_stride,
+        current_layout, parent_pair.second_parent_index);
+    const DynamicGenomeView child_genome_view = BindNextArenaGenomeView(
+        body_slots, tail_row_slots, next_body_slot_ids, next_tail_row_slot_ids, tail_row_slot_id_stride,
+        next_body_region_first_slot, next_tail_row_region_first_slot, next_layout, slot_index);
     BreedAndMutateGenome(first_parent_genome_view, second_parent_genome_view, current_layout.action_count,
                          child_genome_view, random_state, config.breeding, config.mutation);
 
@@ -696,8 +754,80 @@ bool TryPlanNextPopulationLayout(const DeviceRuntimeBuffers &buffers,
     }
 
     next_layout = MakeDynamicPopulationLayout(next_population_size, buffers.current_layout.generation_index + 1,
-                                              next_action_count);
+                                              next_action_count, kDeviceTailRowSlotActionCapacity);
     return IsValidDynamicPopulationLayout(next_layout);
+}
+
+std::size_t ComputeMaxTailRowSlotsPerGeneration(const DeviceRuntimeConfig &config) {
+    if ((config.initial_action_count == 0) || (config.max_action_count < config.initial_action_count)) {
+        return 0;
+    }
+
+    std::size_t max_tail_row_slots = 0;
+    for (std::size_t action_count = config.initial_action_count; action_count <= config.max_action_count; ++action_count) {
+        const std::size_t population_size = PopulationSizeForGenotypeBudgetBytes(
+            config.genotype_memory_budget_bytes, action_count, config.population_size_ceiling);
+        const std::size_t tail_row_slots = population_size * action_count;
+        if (tail_row_slots > max_tail_row_slots) {
+            max_tail_row_slots = tail_row_slots;
+        }
+    }
+
+    return max_tail_row_slots;
+}
+
+bool ResetNextGenerationStorage(const DeviceRuntimeBuffers &buffers) {
+    bool ok = true;
+    ok &= CheckCuda(cudaMemset(buffers.body_slots + buffers.next_body_region_first_slot, 0,
+                               buffers.body_slot_capacity_per_region * sizeof(PolicyModelParameters)));
+    ok &= CheckCuda(cudaMemset(buffers.tail_row_slots + buffers.next_tail_row_region_first_slot, 0,
+                               buffers.tail_row_slot_capacity_per_region * sizeof(TrainableActionEmbeddingTail)));
+    ok &= CheckCuda(cudaMemset(buffers.next_body_slot_ids, 0xFF, buffers.max_population_count * sizeof(DynamicArenaSlotId)));
+    ok &= CheckCuda(
+        cudaMemset(buffers.next_tail_row_slot_ids, 0xFF,
+                   buffers.max_population_count * buffers.max_action_count * sizeof(DynamicArenaSlotId)));
+    ok &= CheckCuda(cudaMemset(buffers.next_fitness, 0, buffers.max_population_count * sizeof(float)));
+    ok &= CheckCuda(cudaMemset(buffers.next_evaluation_counts, 0, buffers.max_population_count * sizeof(std::uint32_t)));
+    ok &= CheckCuda(cudaMemset(buffers.next_has_fitness, 0, buffers.max_population_count * sizeof(std::uint8_t)));
+    return ok;
+}
+
+bool TryUploadHostPopulationIntoCurrentArena(const HostPopulation &host_population, DeviceRuntimeBuffers &buffers) {
+    const std::size_t population_size = host_population.layout.active_individual_count;
+    const std::size_t action_count = host_population.layout.action_count;
+
+    std::vector<PolicyModelParameters> host_body_slots(population_size);
+    std::vector<TrainableActionEmbeddingTail> host_tail_row_slots(population_size * action_count);
+    std::vector<DynamicArenaSlotId> host_body_slot_ids(buffers.max_population_count, kInvalidDynamicArenaSlotId);
+    std::vector<DynamicArenaSlotId> host_tail_row_slot_ids(buffers.max_population_count * buffers.max_action_count,
+                                                           kInvalidDynamicArenaSlotId);
+
+    for (std::size_t individual_index = 0; individual_index < population_size; ++individual_index) {
+        const ConstDynamicGenomeView genome_view = HostGenomeViewAt(host_population, individual_index);
+        host_body_slots[individual_index] = GenomeBodyParameters(genome_view);
+        host_body_slot_ids[individual_index] =
+            static_cast<DynamicArenaSlotId>(buffers.current_body_region_first_slot + individual_index);
+
+        for (std::size_t action_index = 0; action_index < action_count; ++action_index) {
+            host_tail_row_slots[(individual_index * action_count) + action_index] = GenomeTailRow(genome_view, action_index);
+            host_tail_row_slot_ids[(individual_index * buffers.max_action_count) + action_index] =
+                static_cast<DynamicArenaSlotId>(buffers.current_tail_row_region_first_slot +
+                                                TailRowSlotOffsetForIndividual(buffers.current_layout, individual_index) +
+                                                action_index);
+        }
+    }
+
+    bool ok = true;
+    ok &= CheckCuda(cudaMemcpy(buffers.body_slots + buffers.current_body_region_first_slot, host_body_slots.data(),
+                               host_body_slots.size() * sizeof(PolicyModelParameters), cudaMemcpyHostToDevice));
+    ok &= CheckCuda(cudaMemcpy(buffers.tail_row_slots + buffers.current_tail_row_region_first_slot,
+                               host_tail_row_slots.data(),
+                               host_tail_row_slots.size() * sizeof(TrainableActionEmbeddingTail), cudaMemcpyHostToDevice));
+    ok &= CheckCuda(cudaMemcpy(buffers.current_body_slot_ids, host_body_slot_ids.data(),
+                               host_body_slot_ids.size() * sizeof(DynamicArenaSlotId), cudaMemcpyHostToDevice));
+    ok &= CheckCuda(cudaMemcpy(buffers.current_tail_row_slot_ids, host_tail_row_slot_ids.data(),
+                               host_tail_row_slot_ids.size() * sizeof(DynamicArenaSlotId), cudaMemcpyHostToDevice));
+    return ok;
 }
 
 } // namespace
@@ -707,17 +837,35 @@ bool TryCreateDeviceRuntimeBuffers(DeviceRuntimeBuffers &buffers, const DeviceRu
 
     const std::size_t max_population_count = PopulationSizeForGenotypeBudgetBytes(
         config.genotype_memory_budget_bytes, config.initial_action_count, config.population_size_ceiling);
-    if ((config.genotype_memory_budget_bytes == 0) || (config.initial_action_count == 0) || (max_population_count == 0)) {
+    const std::size_t max_tail_row_slot_capacity_per_region = ComputeMaxTailRowSlotsPerGeneration(config);
+    if ((config.genotype_memory_budget_bytes == 0) || (config.initial_action_count == 0) ||
+        (config.max_action_count < config.initial_action_count) || (max_population_count == 0) ||
+        (max_tail_row_slot_capacity_per_region == 0)) {
         return false;
     }
 
     buffers.genotype_memory_budget_bytes = config.genotype_memory_budget_bytes;
     buffers.population_size_ceiling = config.population_size_ceiling;
     buffers.max_population_count = max_population_count;
+    buffers.max_action_count = config.max_action_count;
+    buffers.body_slot_capacity_per_region = max_population_count;
+    buffers.tail_row_slot_capacity_per_region = max_tail_row_slot_capacity_per_region;
+    buffers.current_body_region_first_slot = 0;
+    buffers.next_body_region_first_slot = buffers.body_slot_capacity_per_region;
+    buffers.current_tail_row_region_first_slot = 0;
+    buffers.next_tail_row_region_first_slot = buffers.tail_row_slot_capacity_per_region;
 
     bool ok = true;
-    ok &= CheckCuda(cudaMalloc(&buffers.current_genomes, buffers.genotype_memory_budget_bytes));
-    ok &= CheckCuda(cudaMalloc(&buffers.next_genomes, buffers.genotype_memory_budget_bytes));
+    ok &= CheckCuda(cudaMalloc(&buffers.body_slots,
+                               2 * buffers.body_slot_capacity_per_region * sizeof(PolicyModelParameters)));
+    ok &= CheckCuda(cudaMalloc(&buffers.tail_row_slots,
+                               2 * buffers.tail_row_slot_capacity_per_region * sizeof(TrainableActionEmbeddingTail)));
+    ok &= CheckCuda(cudaMalloc(&buffers.current_body_slot_ids, buffers.max_population_count * sizeof(DynamicArenaSlotId)));
+    ok &= CheckCuda(cudaMalloc(&buffers.next_body_slot_ids, buffers.max_population_count * sizeof(DynamicArenaSlotId)));
+    ok &= CheckCuda(cudaMalloc(&buffers.current_tail_row_slot_ids,
+                               buffers.max_population_count * buffers.max_action_count * sizeof(DynamicArenaSlotId)));
+    ok &= CheckCuda(cudaMalloc(&buffers.next_tail_row_slot_ids,
+                               buffers.max_population_count * buffers.max_action_count * sizeof(DynamicArenaSlotId)));
     ok &= CheckCuda(cudaMalloc(&buffers.current_fitness, buffers.max_population_count * sizeof(float)));
     ok &= CheckCuda(cudaMalloc(&buffers.next_fitness, buffers.max_population_count * sizeof(float)));
     ok &= CheckCuda(cudaMalloc(&buffers.current_evaluation_counts, buffers.max_population_count * sizeof(std::uint32_t)));
@@ -732,8 +880,18 @@ bool TryCreateDeviceRuntimeBuffers(DeviceRuntimeBuffers &buffers, const DeviceRu
         return false;
     }
 
-    ok &= CheckCuda(cudaMemset(buffers.current_genomes, 0, buffers.genotype_memory_budget_bytes));
-    ok &= CheckCuda(cudaMemset(buffers.next_genomes, 0, buffers.genotype_memory_budget_bytes));
+    ok &= CheckCuda(
+        cudaMemset(buffers.body_slots, 0, 2 * buffers.body_slot_capacity_per_region * sizeof(PolicyModelParameters)));
+    ok &= CheckCuda(cudaMemset(buffers.tail_row_slots, 0,
+                               2 * buffers.tail_row_slot_capacity_per_region * sizeof(TrainableActionEmbeddingTail)));
+    ok &= CheckCuda(cudaMemset(buffers.current_body_slot_ids, 0xFF, buffers.max_population_count * sizeof(DynamicArenaSlotId)));
+    ok &= CheckCuda(cudaMemset(buffers.next_body_slot_ids, 0xFF, buffers.max_population_count * sizeof(DynamicArenaSlotId)));
+    ok &= CheckCuda(
+        cudaMemset(buffers.current_tail_row_slot_ids, 0xFF,
+                   buffers.max_population_count * buffers.max_action_count * sizeof(DynamicArenaSlotId)));
+    ok &= CheckCuda(
+        cudaMemset(buffers.next_tail_row_slot_ids, 0xFF,
+                   buffers.max_population_count * buffers.max_action_count * sizeof(DynamicArenaSlotId)));
     ok &= CheckCuda(cudaMemset(buffers.current_fitness, 0, buffers.max_population_count * sizeof(float)));
     ok &= CheckCuda(cudaMemset(buffers.next_fitness, 0, buffers.max_population_count * sizeof(float)));
     ok &= CheckCuda(
@@ -747,8 +905,12 @@ bool TryCreateDeviceRuntimeBuffers(DeviceRuntimeBuffers &buffers, const DeviceRu
 }
 
 void DestroyDeviceRuntimeBuffers(DeviceRuntimeBuffers &buffers) noexcept {
-    cudaFree(buffers.current_genomes);
-    cudaFree(buffers.next_genomes);
+    cudaFree(buffers.body_slots);
+    cudaFree(buffers.tail_row_slots);
+    cudaFree(buffers.current_body_slot_ids);
+    cudaFree(buffers.next_body_slot_ids);
+    cudaFree(buffers.current_tail_row_slot_ids);
+    cudaFree(buffers.next_tail_row_slot_ids);
     cudaFree(buffers.current_fitness);
     cudaFree(buffers.next_fitness);
     cudaFree(buffers.current_evaluation_counts);
@@ -761,20 +923,30 @@ void DestroyDeviceRuntimeBuffers(DeviceRuntimeBuffers &buffers) noexcept {
 }
 
 bool TryUploadCurrentPopulationToDevice(const HostPopulation &host_population, DeviceRuntimeBuffers &buffers) {
-    if (!IsValidDynamicPopulationLayout(host_population.layout) ||
+    const DynamicPopulationLayout current_layout = MakeDynamicPopulationLayout(
+        host_population.layout.active_individual_count, host_population.layout.generation_index,
+        host_population.layout.action_count, kDeviceTailRowSlotActionCapacity);
+    if (!IsValidDynamicPopulationLayout(host_population.layout) || !IsValidDynamicPopulationLayout(current_layout) ||
         (host_population.layout.genotype_bytes > buffers.genotype_memory_budget_bytes) ||
         (host_population.layout.active_individual_count > buffers.max_population_count) ||
-        (host_population.genomes == nullptr)) {
+        (host_population.layout.action_count > buffers.max_action_count) || (host_population.genomes == nullptr) ||
+        (TailRowSlotCountForPopulationLayout(current_layout) > buffers.tail_row_slot_capacity_per_region)) {
         return false;
     }
 
-    buffers.current_layout = host_population.layout;
+    buffers.current_layout = current_layout;
     buffers.next_layout = {};
 
     bool ok = true;
-    ok &= CheckCuda(cudaMemcpy(buffers.current_genomes, host_population.genomes.get(), host_population.layout.genotype_bytes,
-                               cudaMemcpyHostToDevice));
-    ok &= CheckCuda(cudaMemset(buffers.next_genomes, 0, buffers.genotype_memory_budget_bytes));
+    ok &= CheckCuda(cudaMemset(buffers.body_slots + buffers.current_body_region_first_slot, 0,
+                               buffers.body_slot_capacity_per_region * sizeof(PolicyModelParameters)));
+    ok &= CheckCuda(cudaMemset(buffers.tail_row_slots + buffers.current_tail_row_region_first_slot, 0,
+                               buffers.tail_row_slot_capacity_per_region * sizeof(TrainableActionEmbeddingTail)));
+    ok &= CheckCuda(
+        cudaMemset(buffers.current_body_slot_ids, 0xFF, buffers.max_population_count * sizeof(DynamicArenaSlotId)));
+    ok &= CheckCuda(
+        cudaMemset(buffers.current_tail_row_slot_ids, 0xFF,
+                   buffers.max_population_count * buffers.max_action_count * sizeof(DynamicArenaSlotId)));
     ok &= CheckCuda(cudaMemset(buffers.current_fitness, 0, buffers.max_population_count * sizeof(float)));
     ok &= CheckCuda(cudaMemset(buffers.next_fitness, 0, buffers.max_population_count * sizeof(float)));
     ok &= CheckCuda(
@@ -782,7 +954,12 @@ bool TryUploadCurrentPopulationToDevice(const HostPopulation &host_population, D
     ok &= CheckCuda(cudaMemset(buffers.next_evaluation_counts, 0, buffers.max_population_count * sizeof(std::uint32_t)));
     ok &= CheckCuda(cudaMemset(buffers.current_has_fitness, 0, buffers.max_population_count * sizeof(std::uint8_t)));
     ok &= CheckCuda(cudaMemset(buffers.next_has_fitness, 0, buffers.max_population_count * sizeof(std::uint8_t)));
-    return ok;
+    ok &= ResetNextGenerationStorage(buffers);
+    if (!ok) {
+        return false;
+    }
+
+    return TryUploadHostPopulationIntoCurrentArena(host_population, buffers);
 }
 
 bool TryDownloadCurrentPopulationFromDevice(const DeviceRuntimeBuffers &buffers, HostPopulation &host_population) {
@@ -791,13 +968,38 @@ bool TryDownloadCurrentPopulationFromDevice(const DeviceRuntimeBuffers &buffers,
     }
 
     host_population = {};
-    host_population.layout = buffers.current_layout;
+    host_population.layout = MakeDynamicPopulationLayout(buffers.current_layout.active_individual_count,
+                                                         buffers.current_layout.generation_index,
+                                                         buffers.current_layout.action_count);
     if (!TryAllocateHostGenomeStorage(host_population)) {
         return false;
     }
 
-    return CheckCuda(cudaMemcpy(host_population.genomes.get(), buffers.current_genomes, host_population.layout.genotype_bytes,
-                                cudaMemcpyDeviceToHost));
+    std::vector<PolicyModelParameters> host_body_slots(buffers.current_layout.active_individual_count);
+    std::vector<TrainableActionEmbeddingTail> host_tail_row_slots(TailRowSlotCountForPopulationLayout(buffers.current_layout));
+
+    bool ok = true;
+    ok &= CheckCuda(cudaMemcpy(host_body_slots.data(), buffers.body_slots + buffers.current_body_region_first_slot,
+                               host_body_slots.size() * sizeof(PolicyModelParameters), cudaMemcpyDeviceToHost));
+    ok &= CheckCuda(cudaMemcpy(host_tail_row_slots.data(),
+                               buffers.tail_row_slots + buffers.current_tail_row_region_first_slot,
+                               host_tail_row_slots.size() * sizeof(TrainableActionEmbeddingTail),
+                               cudaMemcpyDeviceToHost));
+    if (!ok) {
+        return false;
+    }
+
+    for (std::size_t individual_index = 0; individual_index < host_population.layout.active_individual_count;
+         ++individual_index) {
+        const DynamicGenomeView genome_view = HostGenomeViewAt(host_population, individual_index);
+        GenomeBodyParameters(genome_view) = host_body_slots[individual_index];
+        for (std::size_t action_index = 0; action_index < host_population.layout.action_count; ++action_index) {
+            GenomeTailRow(genome_view, action_index) =
+                host_tail_row_slots[(individual_index * host_population.layout.action_count) + action_index];
+        }
+    }
+
+    return true;
 }
 
 bool TryEvaluatePopulationFitnessOnDevice(DeviceRuntimeBuffers &buffers, const RuntimeWordCounts &runtime_word_counts) {
@@ -809,7 +1011,8 @@ bool TryEvaluatePopulationFitnessOnDevice(DeviceRuntimeBuffers &buffers, const R
         (buffers.current_layout.active_individual_count + kDynamicThreadBlockSize - 1) / kDynamicThreadBlockSize;
 
     EvaluatePopulationFitnessKernel<<<block_count, kDynamicThreadBlockSize>>>(
-        buffers.current_genomes, buffers.current_layout, buffers.current_fitness, buffers.current_evaluation_counts,
+        buffers.body_slots, buffers.tail_row_slots, buffers.current_body_slot_ids, buffers.current_tail_row_slot_ids,
+        buffers.max_action_count, buffers.current_layout, buffers.current_fitness, buffers.current_evaluation_counts,
         buffers.current_has_fitness, runtime_word_counts, buffers.status);
     if (!CheckCuda(cudaGetLastError()) || !CheckCuda(cudaDeviceSynchronize())) {
         return false;
@@ -865,10 +1068,7 @@ bool TryAssembleNextGenerationOnDevice(DeviceRuntimeBuffers &buffers, const std:
 
     bool ok = true;
     ok &= ResetDeviceStatus(buffers);
-    ok &= CheckCuda(cudaMemset(buffers.next_genomes, 0, buffers.genotype_memory_budget_bytes));
-    ok &= CheckCuda(cudaMemset(buffers.next_fitness, 0, buffers.max_population_count * sizeof(float)));
-    ok &= CheckCuda(cudaMemset(buffers.next_evaluation_counts, 0, buffers.max_population_count * sizeof(std::uint32_t)));
-    ok &= CheckCuda(cudaMemset(buffers.next_has_fitness, 0, buffers.max_population_count * sizeof(std::uint8_t)));
+    ok &= ResetNextGenerationStorage(buffers);
     if (!ok) {
         return false;
     }
@@ -877,8 +1077,11 @@ bool TryAssembleNextGenerationOnDevice(DeviceRuntimeBuffers &buffers, const std:
         (buffers.next_layout.active_individual_count + kDynamicThreadBlockSize - 1) / kDynamicThreadBlockSize;
 
     AssembleNextGenerationKernel<<<block_count, kDynamicThreadBlockSize>>>(
-        buffers.current_genomes, buffers.current_fitness, buffers.current_has_fitness, buffers.current_layout,
-        buffers.next_genomes, buffers.next_fitness, buffers.next_evaluation_counts, buffers.next_has_fitness,
+        buffers.body_slots, buffers.tail_row_slots, buffers.current_body_slot_ids, buffers.current_tail_row_slot_ids,
+        buffers.next_body_slot_ids, buffers.next_tail_row_slot_ids, buffers.max_action_count,
+        buffers.next_body_region_first_slot, buffers.next_tail_row_region_first_slot, buffers.current_fitness,
+        buffers.current_has_fitness, buffers.current_layout, buffers.next_fitness, buffers.next_evaluation_counts,
+        buffers.next_has_fitness,
         buffers.next_layout, generation_seed, config, pending_output_embedding_injection, buffers.status);
     if (!CheckCuda(cudaGetLastError()) || !CheckCuda(cudaDeviceSynchronize())) {
         return false;
@@ -888,11 +1091,14 @@ bool TryAssembleNextGenerationOnDevice(DeviceRuntimeBuffers &buffers, const std:
 }
 
 void SwapDevicePopulationBuffers(DeviceRuntimeBuffers &buffers) noexcept {
-    std::swap(buffers.current_genomes, buffers.next_genomes);
+    std::swap(buffers.current_body_slot_ids, buffers.next_body_slot_ids);
+    std::swap(buffers.current_tail_row_slot_ids, buffers.next_tail_row_slot_ids);
     std::swap(buffers.current_fitness, buffers.next_fitness);
     std::swap(buffers.current_evaluation_counts, buffers.next_evaluation_counts);
     std::swap(buffers.current_has_fitness, buffers.next_has_fitness);
     std::swap(buffers.current_layout, buffers.next_layout);
+    std::swap(buffers.current_body_region_first_slot, buffers.next_body_region_first_slot);
+    std::swap(buffers.current_tail_row_region_first_slot, buffers.next_tail_row_region_first_slot);
 }
 
 const char *DeviceRuntimeStatusCodeString(const DeviceRuntimeStatusCode status_code) noexcept {

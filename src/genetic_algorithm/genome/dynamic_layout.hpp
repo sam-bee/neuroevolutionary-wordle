@@ -13,6 +13,9 @@ namespace neuroevolution::genetic_algorithm::genome {
 
 using TrainableActionEmbeddingTail = model::output_embedding::TrainableActionEmbeddingTail;
 using PolicyModelParameters = model::policy_model::PolicyModelParameters;
+using DynamicArenaSlotId = std::uint32_t;
+
+constexpr DynamicArenaSlotId kInvalidDynamicArenaSlotId = static_cast<DynamicArenaSlotId>(-1);
 
 struct DynamicTailSchema {
     std::size_t action_count = 0;
@@ -52,12 +55,16 @@ struct ConstDynamicTailChunkView {
 struct DynamicGenomeView {
     DynamicBodyView body{};
     TrainableActionEmbeddingTail *tail_row_storage = nullptr;
+    TrainableActionEmbeddingTail *tail_row_arena = nullptr;
+    const DynamicArenaSlotId *tail_row_slot_ids = nullptr;
     DynamicTailSchema tail_schema{};
 };
 
 struct ConstDynamicGenomeView {
     ConstDynamicBodyView body{};
     const TrainableActionEmbeddingTail *tail_row_storage = nullptr;
+    const TrainableActionEmbeddingTail *tail_row_arena = nullptr;
+    const DynamicArenaSlotId *tail_row_slot_ids = nullptr;
     DynamicTailSchema tail_schema{};
 };
 
@@ -249,6 +256,8 @@ inline NEUROEVOLUTION_HOST_DEVICE DynamicGenomeView GenomeView(std::uint8_t *gen
     return {
         .body = GenomeBodyView(genome_bytes),
         .tail_row_storage = GenomeTailRows(genome_bytes),
+        .tail_row_arena = nullptr,
+        .tail_row_slot_ids = nullptr,
         .tail_schema = DynamicTailSchemaForLayout(layout),
     };
 }
@@ -258,6 +267,35 @@ inline NEUROEVOLUTION_HOST_DEVICE ConstDynamicGenomeView GenomeView(const std::u
     return {
         .body = GenomeBodyView(genome_bytes),
         .tail_row_storage = GenomeTailRows(genome_bytes),
+        .tail_row_arena = nullptr,
+        .tail_row_slot_ids = nullptr,
+        .tail_schema = DynamicTailSchemaForLayout(layout),
+    };
+}
+
+inline NEUROEVOLUTION_HOST_DEVICE DynamicGenomeView ArenaGenomeView(
+    PolicyModelParameters *body_slots, TrainableActionEmbeddingTail *tail_row_arena, const DynamicArenaSlotId *body_slot_ids,
+    const DynamicArenaSlotId *tail_row_slot_ids, const std::size_t tail_row_slot_id_stride,
+    const DynamicPopulationLayout &layout, const std::size_t individual_index) noexcept {
+    return {
+        .body = {body_slots + body_slot_ids[individual_index]},
+        .tail_row_storage = nullptr,
+        .tail_row_arena = tail_row_arena,
+        .tail_row_slot_ids = tail_row_slot_ids + (individual_index * tail_row_slot_id_stride),
+        .tail_schema = DynamicTailSchemaForLayout(layout),
+    };
+}
+
+inline NEUROEVOLUTION_HOST_DEVICE ConstDynamicGenomeView ArenaGenomeView(
+    const PolicyModelParameters *body_slots, const TrainableActionEmbeddingTail *tail_row_arena,
+    const DynamicArenaSlotId *body_slot_ids, const DynamicArenaSlotId *tail_row_slot_ids,
+    const std::size_t tail_row_slot_id_stride, const DynamicPopulationLayout &layout,
+    const std::size_t individual_index) noexcept {
+    return {
+        .body = {body_slots + body_slot_ids[individual_index]},
+        .tail_row_storage = nullptr,
+        .tail_row_arena = tail_row_arena,
+        .tail_row_slot_ids = tail_row_slot_ids + (individual_index * tail_row_slot_id_stride),
         .tail_schema = DynamicTailSchemaForLayout(layout),
     };
 }
@@ -287,7 +325,7 @@ inline NEUROEVOLUTION_HOST_DEVICE const PolicyModelParameters &GenomeBodyParamet
 inline NEUROEVOLUTION_HOST_DEVICE DynamicTailChunkView GenomeTailChunk(const DynamicGenomeView &genome_view,
                                                                        const std::size_t chunk_index) noexcept {
     const std::size_t active_action_count = ActiveActionCountInTailChunk(genome_view.tail_schema, chunk_index);
-    if (active_action_count == 0) {
+    if ((active_action_count == 0) || (genome_view.tail_row_storage == nullptr)) {
         return {};
     }
 
@@ -303,7 +341,7 @@ inline NEUROEVOLUTION_HOST_DEVICE DynamicTailChunkView GenomeTailChunk(const Dyn
 inline NEUROEVOLUTION_HOST_DEVICE ConstDynamicTailChunkView GenomeTailChunk(
     const ConstDynamicGenomeView &genome_view, const std::size_t chunk_index) noexcept {
     const std::size_t active_action_count = ActiveActionCountInTailChunk(genome_view.tail_schema, chunk_index);
-    if (active_action_count == 0) {
+    if ((active_action_count == 0) || (genome_view.tail_row_storage == nullptr)) {
         return {};
     }
 
@@ -319,13 +357,23 @@ inline NEUROEVOLUTION_HOST_DEVICE ConstDynamicTailChunkView GenomeTailChunk(
 inline NEUROEVOLUTION_HOST_DEVICE TrainableActionEmbeddingTail &GenomeTailRow(
     const DynamicGenomeView &genome_view, const std::size_t action_index) noexcept {
     const DynamicTailRowLocation location = TailRowLocationForActionIndex(genome_view.tail_schema, action_index);
-    return genome_view.tail_row_storage[TailRowStorageIndex(genome_view.tail_schema, location)];
+    const std::size_t storage_index = TailRowStorageIndex(genome_view.tail_schema, location);
+    if (genome_view.tail_row_storage != nullptr) {
+        return genome_view.tail_row_storage[storage_index];
+    }
+
+    return genome_view.tail_row_arena[genome_view.tail_row_slot_ids[storage_index]];
 }
 
 inline NEUROEVOLUTION_HOST_DEVICE const TrainableActionEmbeddingTail &GenomeTailRow(
     const ConstDynamicGenomeView &genome_view, const std::size_t action_index) noexcept {
     const DynamicTailRowLocation location = TailRowLocationForActionIndex(genome_view.tail_schema, action_index);
-    return genome_view.tail_row_storage[TailRowStorageIndex(genome_view.tail_schema, location)];
+    const std::size_t storage_index = TailRowStorageIndex(genome_view.tail_schema, location);
+    if (genome_view.tail_row_storage != nullptr) {
+        return genome_view.tail_row_storage[storage_index];
+    }
+
+    return genome_view.tail_row_arena[genome_view.tail_row_slot_ids[storage_index]];
 }
 
 inline std::uint8_t *HostGenomeBytesAt(HostPopulation &population, const std::size_t individual_index) noexcept {

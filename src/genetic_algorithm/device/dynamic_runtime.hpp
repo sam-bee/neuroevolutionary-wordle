@@ -16,6 +16,7 @@ constexpr std::size_t kDefaultPopulationSizeCeiling = 100;
 
 using genome::ComputeDynamicGenomeStrideBytes;
 using genome::ConstDynamicGenomeView;
+using genome::DynamicArenaSlotId;
 using genome::DynamicGenomeView;
 using genome::DynamicPopulationLayout;
 using genome::DynamicTailChunkView;
@@ -30,6 +31,7 @@ using genome::GenomeTailRow;
 using genome::GenomeTailRows;
 using genome::GenomeView;
 using genome::GenomeViewAt;
+using genome::ArenaGenomeView;
 using genome::HostGenomeViewAt;
 using genome::HostGenomeBytesAt;
 using genome::HostPopulation;
@@ -41,6 +43,7 @@ using genome::PopulationSizeForGenotypeBudgetBytes;
 using genome::TrainableActionEmbeddingTail;
 using genome::TryAllocateHostGenomeStorage;
 using genome::TryInitializeRandomHostPopulation;
+using genome::kInvalidDynamicArenaSlotId;
 
 struct RuntimeWordCounts {
     std::size_t training_word_count = training_folder::kDefaultInitialActiveWordCount;
@@ -80,11 +83,18 @@ struct DeviceRuntimeConfig {
     std::size_t genotype_memory_budget_bytes = 0;
     std::size_t population_size_ceiling = kDefaultPopulationSizeCeiling;
     std::size_t initial_action_count = kInitialDynamicActionCount;
+    std::size_t max_action_count = kInitialDynamicActionCount;
 };
 
 struct DeviceRuntimeBuffers {
-    std::uint8_t *current_genomes = nullptr;
-    std::uint8_t *next_genomes = nullptr;
+    PolicyModelParameters *body_slots = nullptr;
+    TrainableActionEmbeddingTail *tail_row_slots = nullptr;
+
+    DynamicArenaSlotId *current_body_slot_ids = nullptr;
+    DynamicArenaSlotId *next_body_slot_ids = nullptr;
+
+    DynamicArenaSlotId *current_tail_row_slot_ids = nullptr;
+    DynamicArenaSlotId *next_tail_row_slot_ids = nullptr;
 
     float *current_fitness = nullptr;
     float *next_fitness = nullptr;
@@ -101,6 +111,13 @@ struct DeviceRuntimeBuffers {
     std::size_t genotype_memory_budget_bytes = 0;
     std::size_t population_size_ceiling = 0;
     std::size_t max_population_count = 0;
+    std::size_t max_action_count = 0;
+    std::size_t body_slot_capacity_per_region = 0;
+    std::size_t tail_row_slot_capacity_per_region = 0;
+    std::size_t current_body_region_first_slot = 0;
+    std::size_t next_body_region_first_slot = 0;
+    std::size_t current_tail_row_region_first_slot = 0;
+    std::size_t next_tail_row_region_first_slot = 0;
 
     DynamicPopulationLayout current_layout{};
     DynamicPopulationLayout next_layout{};

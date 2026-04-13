@@ -10,6 +10,8 @@ namespace {
 
 using neuroevolution::common::ToFloat;
 using neuroevolution::common::ToFloat16;
+using neuroevolution::genetic_algorithm::genome::ArenaGenomeView;
+using neuroevolution::genetic_algorithm::genome::DynamicArenaSlotId;
 using neuroevolution::genetic_algorithm::genome::ActiveActionCountInTailChunk;
 using neuroevolution::genetic_algorithm::genome::DynamicTailSchema;
 using neuroevolution::genetic_algorithm::genome::DynamicTailSchemaForLayout;
@@ -25,8 +27,10 @@ using neuroevolution::genetic_algorithm::genome::IsValidDynamicPopulationLayout;
 using neuroevolution::genetic_algorithm::genome::IsValidDynamicTailSchema;
 using neuroevolution::genetic_algorithm::genome::MakeDynamicPopulationLayout;
 using neuroevolution::genetic_algorithm::genome::MakeDynamicTailSchema;
+using neuroevolution::genetic_algorithm::genome::PolicyModelParameters;
 using neuroevolution::genetic_algorithm::genome::TailRowLocationForActionIndex;
 using neuroevolution::genetic_algorithm::genome::TailRowStorageIndex;
+using neuroevolution::genetic_algorithm::genome::TrainableActionEmbeddingTail;
 using neuroevolution::genetic_algorithm::genome::TryAllocateHostGenomeStorage;
 
 constexpr float kTolerance = 1.0e-6f;
@@ -121,6 +125,32 @@ bool TestGenomeViewReadsContiguousStorageThroughChunkedSchema() {
     return ok;
 }
 
+bool TestArenaGenomeViewResolvesSlotIds() {
+    PolicyModelParameters body_slots[2]{};
+    TrainableActionEmbeddingTail tail_row_slots[3]{};
+    const DynamicArenaSlotId body_slot_ids[1]{1};
+    const DynamicArenaSlotId tail_row_slot_ids[3]{2, 0, 1};
+
+    body_slots[1].input_encoder.input_to_hidden.weights[0] = ToFloat16(9.0f);
+    tail_row_slots[0][0] = ToFloat16(1.5f);
+    tail_row_slots[1][0] = ToFloat16(2.5f);
+    tail_row_slots[2][0] = ToFloat16(3.5f);
+
+    const auto genome_view =
+        ArenaGenomeView(body_slots, tail_row_slots, body_slot_ids, tail_row_slot_ids, 3, MakeDynamicPopulationLayout(1, 0, 3, 1), 0);
+
+    bool ok = true;
+    ok &= ExpectNear(ToFloat(GenomeBodyParameters(genome_view).input_encoder.input_to_hidden.weights[0]), 9.0f,
+                     "Expected arena body view to follow the body slot id");
+    ok &= ExpectNear(ToFloat(GenomeTailRow(genome_view, 0)[0]), 3.5f,
+                     "Expected first action row to follow the first tail slot id");
+    ok &= ExpectNear(ToFloat(GenomeTailRow(genome_view, 1)[0]), 1.5f,
+                     "Expected second action row to follow the second tail slot id");
+    ok &= ExpectNear(ToFloat(GenomeTailRow(genome_view, 2)[0]), 2.5f,
+                     "Expected third action row to follow the third tail slot id");
+    return ok;
+}
+
 } // namespace
 
 int main() {
@@ -129,6 +159,10 @@ int main() {
     }
 
     if (!TestGenomeViewReadsContiguousStorageThroughChunkedSchema()) {
+        return 1;
+    }
+
+    if (!TestArenaGenomeViewResolvesSlotIds()) {
         return 1;
     }
 

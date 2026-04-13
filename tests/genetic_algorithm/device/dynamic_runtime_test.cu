@@ -215,6 +215,7 @@ bool TestDynamicRuntimeInjectsAndResizesWithinFixedBudget() {
     runtime_config.genotype_memory_budget_bytes = genotype_budget_bytes;
     runtime_config.population_size_ceiling = kInitialPopulationSize;
     runtime_config.initial_action_count = initial_action_count;
+    runtime_config.max_action_count = training_word_catalog.word_count;
 
     DeviceRuntimeBuffers buffers{};
     ok &= TryCreateDeviceRuntimeBuffers(buffers, runtime_config);
@@ -322,6 +323,7 @@ bool TestDynamicRuntimeRejectsInjectionWhenNoInjectedEliteFitsBudget() {
     runtime_config.genotype_memory_budget_bytes = genotype_budget_bytes;
     runtime_config.population_size_ceiling = 1;
     runtime_config.initial_action_count = initial_action_count;
+    runtime_config.max_action_count = training_word_catalog.word_count;
 
     DeviceRuntimeBuffers buffers{};
     ok &= TryCreateDeviceRuntimeBuffers(buffers, runtime_config);
