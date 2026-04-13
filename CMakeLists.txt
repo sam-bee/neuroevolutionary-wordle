@@ -355,6 +355,21 @@ set_tests_properties(dynamic_layout_test PROPERTIES
     LABELS "cpu;unit"
 )
 
+add_executable(arena_slots_test
+    tests/genetic_algorithm/genome/arena_slots_test.cpp
+)
+
+target_link_libraries(arena_slots_test PRIVATE
+    genetic_algorithm
+)
+
+enable_project_warnings(arena_slots_test)
+
+add_test(NAME arena_slots_test COMMAND arena_slots_test)
+set_tests_properties(arena_slots_test PROPERTIES
+    LABELS "cpu;unit"
+)
+
 add_executable(mating_plan_test
     tests/genetic_algorithm/device/mating_plan_test.cpp
 )

@@ -68,11 +68,6 @@ NEUROEVOLUTION_HOST_DEVICE constexpr std::size_t TailRowSlotCountForPopulationLa
     return layout.active_individual_count * layout.action_count;
 }
 
-NEUROEVOLUTION_HOST_DEVICE constexpr std::size_t TailRowSlotOffsetForIndividual(
-    const DynamicPopulationLayout &layout, const std::size_t individual_index) noexcept {
-    return individual_index * layout.action_count;
-}
-
 struct DeviceRandomState {
     std::uint64_t state = 0;
 };
@@ -558,23 +553,47 @@ NEUROEVOLUTION_HOST_DEVICE inline ConstDynamicGenomeView CurrentArenaGenomeView(
                            individual_index);
 }
 
-__device__ DynamicGenomeView BindNextArenaGenomeView(
-    PolicyModelParameters *body_slots, TrainableActionEmbeddingTail *tail_row_slots, DynamicArenaSlotId *body_slot_ids,
-    DynamicArenaSlotId *tail_row_slot_ids, const std::size_t tail_row_slot_id_stride,
-    const std::size_t body_region_first_slot, const std::size_t tail_row_region_first_slot,
-    const DynamicPopulationLayout &layout, const std::size_t individual_index) {
-    const DynamicArenaSlotId body_slot_id = static_cast<DynamicArenaSlotId>(body_region_first_slot + individual_index);
-    body_slot_ids[individual_index] = body_slot_id;
-
-    DynamicArenaSlotId *individual_tail_row_slot_ids = tail_row_slot_ids + (individual_index * tail_row_slot_id_stride);
-    const std::size_t first_tail_row_slot =
-        tail_row_region_first_slot + TailRowSlotOffsetForIndividual(layout, individual_index);
-    for (std::size_t action_index = 0; action_index < layout.action_count; ++action_index) {
-        individual_tail_row_slot_ids[action_index] = static_cast<DynamicArenaSlotId>(first_tail_row_slot + action_index);
+__device__ bool TryBindArenaGenomeView(PolicyModelParameters *body_slots, TrainableActionEmbeddingTail *tail_row_slots,
+                                       DynamicArenaSlotId *body_slot_ids, DynamicArenaSlotId *tail_row_slot_ids,
+                                       const std::size_t tail_row_slot_id_stride,
+                                       const std::size_t body_slot_capacity,
+                                       const std::size_t tail_row_slot_capacity,
+                                       const DynamicPopulationLayout &layout, const std::size_t individual_index,
+                                       DynamicGenomeView &genome_view_out) {
+    const DynamicArenaSlotId body_slot_id = body_slot_ids[individual_index];
+    if (!IsValidArenaSlotId(body_slot_id, body_slot_capacity)) {
+        return false;
     }
 
-    return ArenaGenomeView(body_slots, tail_row_slots, body_slot_ids, tail_row_slot_ids, tail_row_slot_id_stride, layout,
-                           individual_index);
+    const DynamicArenaSlotId *individual_tail_row_slot_ids =
+        TailRowSlotIdsForIndividual(tail_row_slot_ids, tail_row_slot_id_stride, individual_index);
+    for (std::size_t action_index = 0; action_index < layout.action_count; ++action_index) {
+        if (!IsValidArenaSlotId(individual_tail_row_slot_ids[action_index], tail_row_slot_capacity)) {
+            return false;
+        }
+    }
+
+    genome_view_out =
+        ArenaGenomeView(body_slots, tail_row_slots, body_slot_ids, tail_row_slot_ids, tail_row_slot_id_stride, layout,
+                        individual_index);
+    return true;
+}
+
+__device__ bool TryAllocateNextArenaGenomeView(
+    PolicyModelParameters *body_slots, TrainableActionEmbeddingTail *tail_row_slots, DynamicArenaSlotId *body_slot_ids,
+    DynamicArenaSlotId *tail_row_slot_ids, const std::size_t tail_row_slot_id_stride,
+    const std::size_t body_slot_capacity, const std::size_t tail_row_slot_capacity,
+    const DynamicPopulationLayout &layout, const std::size_t individual_index, DynamicArenaSlotId *body_free_slot_ids,
+    std::uint32_t &body_free_slot_count, DynamicArenaSlotId *tail_row_free_slot_ids,
+    std::uint32_t &tail_row_free_slot_count, DynamicGenomeView &genome_view_out) {
+    if (!TryAssignArenaGenomeSlotIds(body_slot_ids, tail_row_slot_ids, tail_row_slot_id_stride, layout, individual_index,
+                                     body_free_slot_ids, body_free_slot_count, body_slot_capacity, tail_row_free_slot_ids,
+                                     tail_row_free_slot_count, tail_row_slot_capacity)) {
+        return false;
+    }
+
+    return TryBindArenaGenomeView(body_slots, tail_row_slots, body_slot_ids, tail_row_slot_ids, tail_row_slot_id_stride,
+                                  body_slot_capacity, tail_row_slot_capacity, layout, individual_index, genome_view_out);
 }
 
 __global__ void EvaluatePopulationFitnessKernel(const PolicyModelParameters *body_slots,
@@ -718,42 +737,151 @@ __global__ void CountCurrentParentRemainingUsesKernel(const PlannedGenerationMem
     }
 }
 
+__global__ void InitializeArenaFreeSlotStacksKernel(
+    const DynamicArenaSlotId *current_body_slot_ids, const DynamicArenaSlotId *current_tail_row_slot_ids,
+    const std::uint32_t *current_parent_remaining_use_counts, const std::size_t tail_row_slot_id_stride,
+    const DynamicPopulationLayout current_layout, const std::size_t body_slot_capacity,
+    const std::size_t tail_row_slot_capacity, std::uint8_t *body_slot_live_flags, std::uint8_t *tail_row_slot_live_flags,
+    DynamicArenaSlotId *body_free_slot_ids, DynamicArenaSlotId *tail_row_free_slot_ids, std::uint32_t *body_free_slot_count,
+    std::uint32_t *tail_row_free_slot_count, int *status) {
+    if ((blockIdx.x != 0) || (threadIdx.x != 0)) {
+        return;
+    }
+
+    if (!IsValidDynamicPopulationLayout(current_layout)) {
+        SetFailureStatus(status, DeviceRuntimeStatusCode::kInvalidPopulationLayout);
+        return;
+    }
+
+    std::uint32_t body_free_count_local = 0;
+    std::uint32_t tail_row_free_count_local = 0;
+
+    for (std::size_t parent_index = 0; parent_index < current_layout.active_individual_count; ++parent_index) {
+        if (current_parent_remaining_use_counts[parent_index] == 0) {
+            continue;
+        }
+
+        const DynamicArenaSlotId body_slot_id = current_body_slot_ids[parent_index];
+        if (!IsValidArenaSlotId(body_slot_id, body_slot_capacity)) {
+            SetFailureStatus(status, DeviceRuntimeStatusCode::kInvalidPopulationLayout);
+            return;
+        }
+
+        body_slot_live_flags[body_slot_id] = 1;
+
+        const DynamicArenaSlotId *individual_tail_row_slot_ids =
+            TailRowSlotIdsForIndividual(current_tail_row_slot_ids, tail_row_slot_id_stride, parent_index);
+        for (std::size_t action_index = 0; action_index < current_layout.action_count; ++action_index) {
+            const DynamicArenaSlotId tail_row_slot_id = individual_tail_row_slot_ids[action_index];
+            if (!IsValidArenaSlotId(tail_row_slot_id, tail_row_slot_capacity)) {
+                SetFailureStatus(status, DeviceRuntimeStatusCode::kInvalidPopulationLayout);
+                return;
+            }
+
+            tail_row_slot_live_flags[tail_row_slot_id] = 1;
+        }
+    }
+
+    for (std::size_t slot_index = 0; slot_index < body_slot_capacity; ++slot_index) {
+        if (body_slot_live_flags[slot_index] != 0) {
+            continue;
+        }
+
+        body_free_slot_ids[body_free_count_local] = static_cast<DynamicArenaSlotId>(slot_index);
+        ++body_free_count_local;
+    }
+
+    for (std::size_t slot_index = 0; slot_index < tail_row_slot_capacity; ++slot_index) {
+        if (tail_row_slot_live_flags[slot_index] != 0) {
+            continue;
+        }
+
+        tail_row_free_slot_ids[tail_row_free_count_local] = static_cast<DynamicArenaSlotId>(slot_index);
+        ++tail_row_free_count_local;
+    }
+
+    *body_free_slot_count = body_free_count_local;
+    *tail_row_free_slot_count = tail_row_free_count_local;
+}
+
 __global__ void AssembleNextGenerationKernel(
     PolicyModelParameters *body_slots, TrainableActionEmbeddingTail *tail_row_slots,
-    const DynamicArenaSlotId *current_body_slot_ids, const DynamicArenaSlotId *current_tail_row_slot_ids,
+    DynamicArenaSlotId *current_body_slot_ids, DynamicArenaSlotId *current_tail_row_slot_ids,
     DynamicArenaSlotId *next_body_slot_ids, DynamicArenaSlotId *next_tail_row_slot_ids,
-    const std::size_t tail_row_slot_id_stride, const std::size_t next_body_region_first_slot,
-    const std::size_t next_tail_row_region_first_slot, const DynamicPopulationLayout current_layout, float *next_fitness,
-    std::uint32_t *next_evaluation_counts, std::uint8_t *next_has_fitness, const DynamicPopulationLayout next_layout,
+    DynamicArenaSlotId *body_free_slot_ids, DynamicArenaSlotId *tail_row_free_slot_ids,
+    std::uint32_t *body_free_slot_count_device, std::uint32_t *tail_row_free_slot_count_device,
+    std::uint32_t *current_parent_remaining_use_counts, const std::size_t tail_row_slot_id_stride,
+    const std::size_t body_slot_capacity, const std::size_t tail_row_slot_capacity,
+    const DynamicPopulationLayout current_layout, float *next_fitness, std::uint32_t *next_evaluation_counts,
+    std::uint8_t *next_has_fitness, const DynamicPopulationLayout next_layout,
     const PlannedGenerationMember *next_generation_plan, const std::uint32_t generation_seed,
     const GenerationAssemblyConfig config,
     const PendingOutputEmbeddingInjection pending_output_embedding_injection, int *status) {
-    const std::size_t slot_index = (blockIdx.x * blockDim.x) + threadIdx.x;
+    if ((blockIdx.x != 0) || (threadIdx.x != 0)) {
+        return;
+    }
+
     if (!IsValidDynamicPopulationLayout(current_layout) || !IsValidDynamicPopulationLayout(next_layout)) {
-        if ((blockIdx.x == 0) && (threadIdx.x == 0)) {
-            SetFailureStatus(status, DeviceRuntimeStatusCode::kInvalidPopulationLayout);
+        SetFailureStatus(status, DeviceRuntimeStatusCode::kInvalidPopulationLayout);
+        return;
+    }
+
+    std::uint32_t body_free_slot_count = *body_free_slot_count_device;
+    std::uint32_t tail_row_free_slot_count = *tail_row_free_slot_count_device;
+
+    for (std::size_t slot_index = 0; slot_index < next_layout.active_individual_count; ++slot_index) {
+        const PlannedGenerationMember planned_member = next_generation_plan[slot_index];
+        if (!IsValidPlannedGenerationMember(planned_member, current_layout.active_individual_count)) {
+            SetFailureStatus(status, DeviceRuntimeStatusCode::kParentSelectionFailed);
+            return;
         }
-        return;
-    }
 
-    if (slot_index >= next_layout.active_individual_count) {
-        return;
-    }
+        DynamicGenomeView child_genome_view{};
+        if (!TryAllocateNextArenaGenomeView(body_slots, tail_row_slots, next_body_slot_ids, next_tail_row_slot_ids,
+                                            tail_row_slot_id_stride, body_slot_capacity, tail_row_slot_capacity,
+                                            next_layout, slot_index, body_free_slot_ids, body_free_slot_count,
+                                            tail_row_free_slot_ids, tail_row_free_slot_count, child_genome_view)) {
+            SetFailureStatus(status, DeviceRuntimeStatusCode::kArenaExhausted);
+            return;
+        }
 
-    const PlannedGenerationMember planned_member = next_generation_plan[slot_index];
-    if (!IsValidPlannedGenerationMember(planned_member, current_layout.active_individual_count)) {
-        SetFailureStatus(status, DeviceRuntimeStatusCode::kParentSelectionFailed);
-        return;
-    }
+        if (planned_member.operation == PlannedGenerationMemberOperation::kEliteCopy) {
+            const ConstDynamicGenomeView elite_genome_view = CurrentArenaGenomeView(
+                body_slots, tail_row_slots, current_body_slot_ids, current_tail_row_slot_ids, tail_row_slot_id_stride,
+                current_layout, planned_member.parent_pair.first_parent_index);
+            CopyGenome(elite_genome_view, current_layout.action_count, child_genome_view, next_layout.action_count);
+            const DeviceRuntimeStatusCode injection_status = TryApplyPendingOutputEmbeddingInjection(
+                child_genome_view, current_layout.action_count, pending_output_embedding_injection);
+            if (injection_status != DeviceRuntimeStatusCode::kOk) {
+                SetFailureStatus(status, injection_status);
+                return;
+            }
 
-    if (planned_member.operation == PlannedGenerationMemberOperation::kEliteCopy) {
-        const ConstDynamicGenomeView elite_genome_view = CurrentArenaGenomeView(
+            if (!TryConsumeParentUseAndMaybeRecycleArenaGenomeSlotIds(
+                    planned_member.parent_pair.first_parent_index, current_parent_remaining_use_counts,
+                    current_body_slot_ids, current_tail_row_slot_ids, tail_row_slot_id_stride, current_layout,
+                    body_free_slot_ids, body_free_slot_count, body_slot_capacity, tail_row_free_slot_ids,
+                    tail_row_free_slot_count, tail_row_slot_capacity)) {
+                SetFailureStatus(status, DeviceRuntimeStatusCode::kInvalidPopulationLayout);
+                return;
+            }
+
+            MarkIndividualUnevaluated(next_fitness, next_evaluation_counts, next_has_fitness, slot_index);
+            continue;
+        }
+
+        DeviceRandomState random_state =
+            MakeBreedingRandomState(generation_seed, current_layout.generation_index, slot_index);
+
+        const ConstDynamicGenomeView first_parent_genome_view = CurrentArenaGenomeView(
             body_slots, tail_row_slots, current_body_slot_ids, current_tail_row_slot_ids, tail_row_slot_id_stride,
             current_layout, planned_member.parent_pair.first_parent_index);
-        const DynamicGenomeView child_genome_view = BindNextArenaGenomeView(
-            body_slots, tail_row_slots, next_body_slot_ids, next_tail_row_slot_ids, tail_row_slot_id_stride,
-            next_body_region_first_slot, next_tail_row_region_first_slot, next_layout, slot_index);
-        CopyGenome(elite_genome_view, current_layout.action_count, child_genome_view, next_layout.action_count);
+        const ConstDynamicGenomeView second_parent_genome_view = CurrentArenaGenomeView(
+            body_slots, tail_row_slots, current_body_slot_ids, current_tail_row_slot_ids, tail_row_slot_id_stride,
+            current_layout, planned_member.parent_pair.second_parent_index);
+        BreedAndMutateGenome(first_parent_genome_view, second_parent_genome_view, current_layout.action_count,
+                             child_genome_view, random_state, config.breeding, config.mutation);
+
         const DeviceRuntimeStatusCode injection_status = TryApplyPendingOutputEmbeddingInjection(
             child_genome_view, current_layout.action_count, pending_output_embedding_injection);
         if (injection_status != DeviceRuntimeStatusCode::kOk) {
@@ -761,32 +889,25 @@ __global__ void AssembleNextGenerationKernel(
             return;
         }
 
+        if (!TryConsumeParentUseAndMaybeRecycleArenaGenomeSlotIds(
+                planned_member.parent_pair.first_parent_index, current_parent_remaining_use_counts,
+                current_body_slot_ids, current_tail_row_slot_ids, tail_row_slot_id_stride, current_layout,
+                body_free_slot_ids, body_free_slot_count, body_slot_capacity, tail_row_free_slot_ids,
+                tail_row_free_slot_count, tail_row_slot_capacity) ||
+            !TryConsumeParentUseAndMaybeRecycleArenaGenomeSlotIds(
+                planned_member.parent_pair.second_parent_index, current_parent_remaining_use_counts,
+                current_body_slot_ids, current_tail_row_slot_ids, tail_row_slot_id_stride, current_layout,
+                body_free_slot_ids, body_free_slot_count, body_slot_capacity, tail_row_free_slot_ids,
+                tail_row_free_slot_count, tail_row_slot_capacity)) {
+            SetFailureStatus(status, DeviceRuntimeStatusCode::kInvalidPopulationLayout);
+            return;
+        }
+
         MarkIndividualUnevaluated(next_fitness, next_evaluation_counts, next_has_fitness, slot_index);
-        return;
     }
 
-    DeviceRandomState random_state = MakeBreedingRandomState(generation_seed, current_layout.generation_index, slot_index);
-
-    const ConstDynamicGenomeView first_parent_genome_view = CurrentArenaGenomeView(
-        body_slots, tail_row_slots, current_body_slot_ids, current_tail_row_slot_ids, tail_row_slot_id_stride,
-        current_layout, planned_member.parent_pair.first_parent_index);
-    const ConstDynamicGenomeView second_parent_genome_view = CurrentArenaGenomeView(
-        body_slots, tail_row_slots, current_body_slot_ids, current_tail_row_slot_ids, tail_row_slot_id_stride,
-        current_layout, planned_member.parent_pair.second_parent_index);
-    const DynamicGenomeView child_genome_view = BindNextArenaGenomeView(
-        body_slots, tail_row_slots, next_body_slot_ids, next_tail_row_slot_ids, tail_row_slot_id_stride,
-        next_body_region_first_slot, next_tail_row_region_first_slot, next_layout, slot_index);
-    BreedAndMutateGenome(first_parent_genome_view, second_parent_genome_view, current_layout.action_count,
-                         child_genome_view, random_state, config.breeding, config.mutation);
-
-    const DeviceRuntimeStatusCode injection_status = TryApplyPendingOutputEmbeddingInjection(
-        child_genome_view, current_layout.action_count, pending_output_embedding_injection);
-    if (injection_status != DeviceRuntimeStatusCode::kOk) {
-        SetFailureStatus(status, injection_status);
-        return;
-    }
-
-    MarkIndividualUnevaluated(next_fitness, next_evaluation_counts, next_has_fitness, slot_index);
+    *body_free_slot_count_device = body_free_slot_count;
+    *tail_row_free_slot_count_device = tail_row_free_slot_count;
 }
 
 bool CheckCuda(const cudaError_t error) { return error == cudaSuccess; }
@@ -848,10 +969,6 @@ std::size_t ComputeMaxTailRowSlotsPerGeneration(const DeviceRuntimeConfig &confi
 
 bool ResetNextGenerationStorage(const DeviceRuntimeBuffers &buffers) {
     bool ok = true;
-    ok &= CheckCuda(cudaMemset(buffers.body_slots + buffers.next_body_region_first_slot, 0,
-                               buffers.body_slot_capacity_per_region * sizeof(PolicyModelParameters)));
-    ok &= CheckCuda(cudaMemset(buffers.tail_row_slots + buffers.next_tail_row_region_first_slot, 0,
-                               buffers.tail_row_slot_capacity_per_region * sizeof(TrainableActionEmbeddingTail)));
     ok &= CheckCuda(cudaMemset(buffers.next_body_slot_ids, 0xFF, buffers.max_population_count * sizeof(DynamicArenaSlotId)));
     ok &= CheckCuda(
         cudaMemset(buffers.next_tail_row_slot_ids, 0xFF,
@@ -859,6 +976,18 @@ bool ResetNextGenerationStorage(const DeviceRuntimeBuffers &buffers) {
     ok &= CheckCuda(cudaMemset(buffers.next_fitness, 0, buffers.max_population_count * sizeof(float)));
     ok &= CheckCuda(cudaMemset(buffers.next_evaluation_counts, 0, buffers.max_population_count * sizeof(std::uint32_t)));
     ok &= CheckCuda(cudaMemset(buffers.next_has_fitness, 0, buffers.max_population_count * sizeof(std::uint8_t)));
+    return ok;
+}
+
+bool ResetArenaReuseState(const DeviceRuntimeBuffers &buffers) {
+    bool ok = true;
+    ok &= CheckCuda(cudaMemset(buffers.body_free_slot_ids, 0xFF, buffers.body_slot_capacity * sizeof(DynamicArenaSlotId)));
+    ok &= CheckCuda(
+        cudaMemset(buffers.tail_row_free_slot_ids, 0xFF, buffers.tail_row_slot_capacity * sizeof(DynamicArenaSlotId)));
+    ok &= CheckCuda(cudaMemset(buffers.body_slot_live_flags, 0, buffers.body_slot_capacity * sizeof(std::uint8_t)));
+    ok &= CheckCuda(cudaMemset(buffers.tail_row_slot_live_flags, 0, buffers.tail_row_slot_capacity * sizeof(std::uint8_t)));
+    ok &= CheckCuda(cudaMemset(buffers.body_free_slot_count, 0, sizeof(std::uint32_t)));
+    ok &= CheckCuda(cudaMemset(buffers.tail_row_free_slot_count, 0, sizeof(std::uint32_t)));
     return ok;
 }
 
@@ -875,8 +1004,8 @@ bool TryUploadHostPopulationIntoCurrentArena(const HostPopulation &host_populati
     const std::size_t population_size = host_population.layout.active_individual_count;
     const std::size_t action_count = host_population.layout.action_count;
 
-    std::vector<PolicyModelParameters> host_body_slots(population_size);
-    std::vector<TrainableActionEmbeddingTail> host_tail_row_slots(population_size * action_count);
+    std::vector<PolicyModelParameters> host_body_slots(buffers.body_slot_capacity);
+    std::vector<TrainableActionEmbeddingTail> host_tail_row_slots(buffers.tail_row_slot_capacity);
     std::vector<DynamicArenaSlotId> host_body_slot_ids(buffers.max_population_count, kInvalidDynamicArenaSlotId);
     std::vector<DynamicArenaSlotId> host_tail_row_slot_ids(buffers.max_population_count * buffers.max_action_count,
                                                            kInvalidDynamicArenaSlotId);
@@ -884,23 +1013,21 @@ bool TryUploadHostPopulationIntoCurrentArena(const HostPopulation &host_populati
     for (std::size_t individual_index = 0; individual_index < population_size; ++individual_index) {
         const ConstDynamicGenomeView genome_view = HostGenomeViewAt(host_population, individual_index);
         host_body_slots[individual_index] = GenomeBodyParameters(genome_view);
-        host_body_slot_ids[individual_index] =
-            static_cast<DynamicArenaSlotId>(buffers.current_body_region_first_slot + individual_index);
+        host_body_slot_ids[individual_index] = static_cast<DynamicArenaSlotId>(individual_index);
 
+        DynamicArenaSlotId *individual_tail_row_slot_ids =
+            TailRowSlotIdsForIndividual(host_tail_row_slot_ids.data(), buffers.max_action_count, individual_index);
         for (std::size_t action_index = 0; action_index < action_count; ++action_index) {
             host_tail_row_slots[(individual_index * action_count) + action_index] = GenomeTailRow(genome_view, action_index);
-            host_tail_row_slot_ids[(individual_index * buffers.max_action_count) + action_index] =
-                static_cast<DynamicArenaSlotId>(buffers.current_tail_row_region_first_slot +
-                                                TailRowSlotOffsetForIndividual(buffers.current_layout, individual_index) +
-                                                action_index);
+            individual_tail_row_slot_ids[action_index] =
+                static_cast<DynamicArenaSlotId>((individual_index * action_count) + action_index);
         }
     }
 
     bool ok = true;
-    ok &= CheckCuda(cudaMemcpy(buffers.body_slots + buffers.current_body_region_first_slot, host_body_slots.data(),
+    ok &= CheckCuda(cudaMemcpy(buffers.body_slots, host_body_slots.data(),
                                host_body_slots.size() * sizeof(PolicyModelParameters), cudaMemcpyHostToDevice));
-    ok &= CheckCuda(cudaMemcpy(buffers.tail_row_slots + buffers.current_tail_row_region_first_slot,
-                               host_tail_row_slots.data(),
+    ok &= CheckCuda(cudaMemcpy(buffers.tail_row_slots, host_tail_row_slots.data(),
                                host_tail_row_slots.size() * sizeof(TrainableActionEmbeddingTail), cudaMemcpyHostToDevice));
     ok &= CheckCuda(cudaMemcpy(buffers.current_body_slot_ids, host_body_slot_ids.data(),
                                host_body_slot_ids.size() * sizeof(DynamicArenaSlotId), cudaMemcpyHostToDevice));
@@ -939,6 +1066,23 @@ bool TryPlanNextGenerationMatingPlanOnDevice(DeviceRuntimeBuffers &buffers, cons
     return KernelCompletedSuccessfully(buffers);
 }
 
+bool TryInitializeArenaFreeSlotStacksOnDevice(DeviceRuntimeBuffers &buffers) {
+    if (!ResetArenaReuseState(buffers) || !ResetDeviceStatus(buffers)) {
+        return false;
+    }
+
+    InitializeArenaFreeSlotStacksKernel<<<1, 1>>>(
+        buffers.current_body_slot_ids, buffers.current_tail_row_slot_ids, buffers.current_parent_remaining_use_counts,
+        buffers.max_action_count, buffers.current_layout, buffers.body_slot_capacity, buffers.tail_row_slot_capacity,
+        buffers.body_slot_live_flags, buffers.tail_row_slot_live_flags, buffers.body_free_slot_ids,
+        buffers.tail_row_free_slot_ids, buffers.body_free_slot_count, buffers.tail_row_free_slot_count, buffers.status);
+    if (!CheckCuda(cudaGetLastError()) || !CheckCuda(cudaDeviceSynchronize())) {
+        return false;
+    }
+
+    return KernelCompletedSuccessfully(buffers);
+}
+
 } // namespace
 
 bool TryCreateDeviceRuntimeBuffers(DeviceRuntimeBuffers &buffers, const DeviceRuntimeConfig &config) {
@@ -957,24 +1101,26 @@ bool TryCreateDeviceRuntimeBuffers(DeviceRuntimeBuffers &buffers, const DeviceRu
     buffers.population_size_ceiling = config.population_size_ceiling;
     buffers.max_population_count = max_population_count;
     buffers.max_action_count = config.max_action_count;
-    buffers.body_slot_capacity_per_region = max_population_count;
-    buffers.tail_row_slot_capacity_per_region = max_tail_row_slot_capacity_per_region;
-    buffers.current_body_region_first_slot = 0;
-    buffers.next_body_region_first_slot = buffers.body_slot_capacity_per_region;
-    buffers.current_tail_row_region_first_slot = 0;
-    buffers.next_tail_row_region_first_slot = buffers.tail_row_slot_capacity_per_region;
+    buffers.body_slot_capacity = 2 * max_population_count;
+    buffers.tail_row_slot_capacity = 2 * max_tail_row_slot_capacity_per_region;
 
     bool ok = true;
-    ok &= CheckCuda(cudaMalloc(&buffers.body_slots,
-                               2 * buffers.body_slot_capacity_per_region * sizeof(PolicyModelParameters)));
+    ok &= CheckCuda(cudaMalloc(&buffers.body_slots, buffers.body_slot_capacity * sizeof(PolicyModelParameters)));
     ok &= CheckCuda(cudaMalloc(&buffers.tail_row_slots,
-                               2 * buffers.tail_row_slot_capacity_per_region * sizeof(TrainableActionEmbeddingTail)));
+                               buffers.tail_row_slot_capacity * sizeof(TrainableActionEmbeddingTail)));
     ok &= CheckCuda(cudaMalloc(&buffers.current_body_slot_ids, buffers.max_population_count * sizeof(DynamicArenaSlotId)));
     ok &= CheckCuda(cudaMalloc(&buffers.next_body_slot_ids, buffers.max_population_count * sizeof(DynamicArenaSlotId)));
     ok &= CheckCuda(cudaMalloc(&buffers.current_tail_row_slot_ids,
                                buffers.max_population_count * buffers.max_action_count * sizeof(DynamicArenaSlotId)));
     ok &= CheckCuda(cudaMalloc(&buffers.next_tail_row_slot_ids,
                                buffers.max_population_count * buffers.max_action_count * sizeof(DynamicArenaSlotId)));
+    ok &= CheckCuda(cudaMalloc(&buffers.body_free_slot_ids, buffers.body_slot_capacity * sizeof(DynamicArenaSlotId)));
+    ok &= CheckCuda(cudaMalloc(&buffers.tail_row_free_slot_ids,
+                               buffers.tail_row_slot_capacity * sizeof(DynamicArenaSlotId)));
+    ok &= CheckCuda(cudaMalloc(&buffers.body_slot_live_flags, buffers.body_slot_capacity * sizeof(std::uint8_t)));
+    ok &= CheckCuda(cudaMalloc(&buffers.tail_row_slot_live_flags, buffers.tail_row_slot_capacity * sizeof(std::uint8_t)));
+    ok &= CheckCuda(cudaMalloc(&buffers.body_free_slot_count, sizeof(std::uint32_t)));
+    ok &= CheckCuda(cudaMalloc(&buffers.tail_row_free_slot_count, sizeof(std::uint32_t)));
     ok &= CheckCuda(cudaMalloc(&buffers.next_generation_plan,
                                buffers.max_population_count * sizeof(PlannedGenerationMember)));
     ok &= CheckCuda(cudaMalloc(&buffers.current_parent_remaining_use_counts,
@@ -993,10 +1139,9 @@ bool TryCreateDeviceRuntimeBuffers(DeviceRuntimeBuffers &buffers, const DeviceRu
         return false;
     }
 
+    ok &= CheckCuda(cudaMemset(buffers.body_slots, 0, buffers.body_slot_capacity * sizeof(PolicyModelParameters)));
     ok &= CheckCuda(
-        cudaMemset(buffers.body_slots, 0, 2 * buffers.body_slot_capacity_per_region * sizeof(PolicyModelParameters)));
-    ok &= CheckCuda(cudaMemset(buffers.tail_row_slots, 0,
-                               2 * buffers.tail_row_slot_capacity_per_region * sizeof(TrainableActionEmbeddingTail)));
+        cudaMemset(buffers.tail_row_slots, 0, buffers.tail_row_slot_capacity * sizeof(TrainableActionEmbeddingTail)));
     ok &= CheckCuda(cudaMemset(buffers.current_body_slot_ids, 0xFF, buffers.max_population_count * sizeof(DynamicArenaSlotId)));
     ok &= CheckCuda(cudaMemset(buffers.next_body_slot_ids, 0xFF, buffers.max_population_count * sizeof(DynamicArenaSlotId)));
     ok &= CheckCuda(
@@ -1005,6 +1150,13 @@ bool TryCreateDeviceRuntimeBuffers(DeviceRuntimeBuffers &buffers, const DeviceRu
     ok &= CheckCuda(
         cudaMemset(buffers.next_tail_row_slot_ids, 0xFF,
                    buffers.max_population_count * buffers.max_action_count * sizeof(DynamicArenaSlotId)));
+    ok &= CheckCuda(cudaMemset(buffers.body_free_slot_ids, 0xFF, buffers.body_slot_capacity * sizeof(DynamicArenaSlotId)));
+    ok &= CheckCuda(
+        cudaMemset(buffers.tail_row_free_slot_ids, 0xFF, buffers.tail_row_slot_capacity * sizeof(DynamicArenaSlotId)));
+    ok &= CheckCuda(cudaMemset(buffers.body_slot_live_flags, 0, buffers.body_slot_capacity * sizeof(std::uint8_t)));
+    ok &= CheckCuda(cudaMemset(buffers.tail_row_slot_live_flags, 0, buffers.tail_row_slot_capacity * sizeof(std::uint8_t)));
+    ok &= CheckCuda(cudaMemset(buffers.body_free_slot_count, 0, sizeof(std::uint32_t)));
+    ok &= CheckCuda(cudaMemset(buffers.tail_row_free_slot_count, 0, sizeof(std::uint32_t)));
     ok &= CheckCuda(
         cudaMemset(buffers.next_generation_plan, 0xFF, buffers.max_population_count * sizeof(PlannedGenerationMember)));
     ok &= CheckCuda(cudaMemset(buffers.current_parent_remaining_use_counts, 0,
@@ -1028,6 +1180,12 @@ void DestroyDeviceRuntimeBuffers(DeviceRuntimeBuffers &buffers) noexcept {
     cudaFree(buffers.next_body_slot_ids);
     cudaFree(buffers.current_tail_row_slot_ids);
     cudaFree(buffers.next_tail_row_slot_ids);
+    cudaFree(buffers.body_free_slot_ids);
+    cudaFree(buffers.tail_row_free_slot_ids);
+    cudaFree(buffers.body_slot_live_flags);
+    cudaFree(buffers.tail_row_slot_live_flags);
+    cudaFree(buffers.body_free_slot_count);
+    cudaFree(buffers.tail_row_free_slot_count);
     cudaFree(buffers.next_generation_plan);
     cudaFree(buffers.current_parent_remaining_use_counts);
     cudaFree(buffers.current_fitness);
@@ -1049,7 +1207,7 @@ bool TryUploadCurrentPopulationToDevice(const HostPopulation &host_population, D
         (host_population.layout.genotype_bytes > buffers.genotype_memory_budget_bytes) ||
         (host_population.layout.active_individual_count > buffers.max_population_count) ||
         (host_population.layout.action_count > buffers.max_action_count) || (host_population.genomes == nullptr) ||
-        (TailRowSlotCountForPopulationLayout(current_layout) > buffers.tail_row_slot_capacity_per_region)) {
+        (TailRowSlotCountForPopulationLayout(current_layout) > buffers.tail_row_slot_capacity)) {
         return false;
     }
 
@@ -1057,19 +1215,19 @@ bool TryUploadCurrentPopulationToDevice(const HostPopulation &host_population, D
     buffers.next_layout = {};
 
     bool ok = true;
-    ok &= CheckCuda(cudaMemset(buffers.body_slots + buffers.current_body_region_first_slot, 0,
-                               buffers.body_slot_capacity_per_region * sizeof(PolicyModelParameters)));
-    ok &= CheckCuda(cudaMemset(buffers.tail_row_slots + buffers.current_tail_row_region_first_slot, 0,
-                               buffers.tail_row_slot_capacity_per_region * sizeof(TrainableActionEmbeddingTail)));
+    ok &= CheckCuda(cudaMemset(buffers.body_slots, 0, buffers.body_slot_capacity * sizeof(PolicyModelParameters)));
+    ok &= CheckCuda(
+        cudaMemset(buffers.tail_row_slots, 0, buffers.tail_row_slot_capacity * sizeof(TrainableActionEmbeddingTail)));
     ok &= CheckCuda(
         cudaMemset(buffers.current_body_slot_ids, 0xFF, buffers.max_population_count * sizeof(DynamicArenaSlotId)));
     ok &= CheckCuda(
         cudaMemset(buffers.current_tail_row_slot_ids, 0xFF,
                    buffers.max_population_count * buffers.max_action_count * sizeof(DynamicArenaSlotId)));
     ok &= CheckCuda(
-        cudaMemset(buffers.next_generation_plan, 0xFF, buffers.max_population_count * sizeof(PlannedGenerationMember)));
-    ok &= CheckCuda(cudaMemset(buffers.current_parent_remaining_use_counts, 0,
-                               buffers.max_population_count * sizeof(std::uint32_t)));
+        cudaMemset(buffers.next_body_slot_ids, 0xFF, buffers.max_population_count * sizeof(DynamicArenaSlotId)));
+    ok &= CheckCuda(
+        cudaMemset(buffers.next_tail_row_slot_ids, 0xFF,
+                   buffers.max_population_count * buffers.max_action_count * sizeof(DynamicArenaSlotId)));
     ok &= CheckCuda(cudaMemset(buffers.current_fitness, 0, buffers.max_population_count * sizeof(float)));
     ok &= CheckCuda(cudaMemset(buffers.next_fitness, 0, buffers.max_population_count * sizeof(float)));
     ok &= CheckCuda(
@@ -1077,7 +1235,8 @@ bool TryUploadCurrentPopulationToDevice(const HostPopulation &host_population, D
     ok &= CheckCuda(cudaMemset(buffers.next_evaluation_counts, 0, buffers.max_population_count * sizeof(std::uint32_t)));
     ok &= CheckCuda(cudaMemset(buffers.current_has_fitness, 0, buffers.max_population_count * sizeof(std::uint8_t)));
     ok &= CheckCuda(cudaMemset(buffers.next_has_fitness, 0, buffers.max_population_count * sizeof(std::uint8_t)));
-    ok &= ResetNextGenerationStorage(buffers);
+    ok &= ResetMatingPlanStorage(buffers);
+    ok &= ResetArenaReuseState(buffers);
     if (!ok) {
         return false;
     }
@@ -1098,16 +1257,22 @@ bool TryDownloadCurrentPopulationFromDevice(const DeviceRuntimeBuffers &buffers,
         return false;
     }
 
-    std::vector<PolicyModelParameters> host_body_slots(buffers.current_layout.active_individual_count);
-    std::vector<TrainableActionEmbeddingTail> host_tail_row_slots(TailRowSlotCountForPopulationLayout(buffers.current_layout));
+    std::vector<PolicyModelParameters> host_body_slots(buffers.body_slot_capacity);
+    std::vector<TrainableActionEmbeddingTail> host_tail_row_slots(buffers.tail_row_slot_capacity);
+    std::vector<DynamicArenaSlotId> host_body_slot_ids(buffers.max_population_count, kInvalidDynamicArenaSlotId);
+    std::vector<DynamicArenaSlotId> host_tail_row_slot_ids(buffers.max_population_count * buffers.max_action_count,
+                                                           kInvalidDynamicArenaSlotId);
 
     bool ok = true;
-    ok &= CheckCuda(cudaMemcpy(host_body_slots.data(), buffers.body_slots + buffers.current_body_region_first_slot,
+    ok &= CheckCuda(cudaMemcpy(host_body_slots.data(), buffers.body_slots,
                                host_body_slots.size() * sizeof(PolicyModelParameters), cudaMemcpyDeviceToHost));
-    ok &= CheckCuda(cudaMemcpy(host_tail_row_slots.data(),
-                               buffers.tail_row_slots + buffers.current_tail_row_region_first_slot,
+    ok &= CheckCuda(cudaMemcpy(host_tail_row_slots.data(), buffers.tail_row_slots,
                                host_tail_row_slots.size() * sizeof(TrainableActionEmbeddingTail),
                                cudaMemcpyDeviceToHost));
+    ok &= CheckCuda(cudaMemcpy(host_body_slot_ids.data(), buffers.current_body_slot_ids,
+                               host_body_slot_ids.size() * sizeof(DynamicArenaSlotId), cudaMemcpyDeviceToHost));
+    ok &= CheckCuda(cudaMemcpy(host_tail_row_slot_ids.data(), buffers.current_tail_row_slot_ids,
+                               host_tail_row_slot_ids.size() * sizeof(DynamicArenaSlotId), cudaMemcpyDeviceToHost));
     if (!ok) {
         return false;
     }
@@ -1115,10 +1280,21 @@ bool TryDownloadCurrentPopulationFromDevice(const DeviceRuntimeBuffers &buffers,
     for (std::size_t individual_index = 0; individual_index < host_population.layout.active_individual_count;
          ++individual_index) {
         const DynamicGenomeView genome_view = HostGenomeViewAt(host_population, individual_index);
-        GenomeBodyParameters(genome_view) = host_body_slots[individual_index];
+        const DynamicArenaSlotId body_slot_id = host_body_slot_ids[individual_index];
+        if (!IsValidArenaSlotId(body_slot_id, buffers.body_slot_capacity)) {
+            return false;
+        }
+
+        GenomeBodyParameters(genome_view) = host_body_slots[body_slot_id];
+        const DynamicArenaSlotId *individual_tail_row_slot_ids =
+            TailRowSlotIdsForIndividual(host_tail_row_slot_ids.data(), buffers.max_action_count, individual_index);
         for (std::size_t action_index = 0; action_index < host_population.layout.action_count; ++action_index) {
-            GenomeTailRow(genome_view, action_index) =
-                host_tail_row_slots[(individual_index * host_population.layout.action_count) + action_index];
+            const DynamicArenaSlotId tail_row_slot_id = individual_tail_row_slot_ids[action_index];
+            if (!IsValidArenaSlotId(tail_row_slot_id, buffers.tail_row_slot_capacity)) {
+                return false;
+            }
+
+            GenomeTailRow(genome_view, action_index) = host_tail_row_slots[tail_row_slot_id];
         }
     }
 
@@ -1200,15 +1376,18 @@ bool TryAssembleNextGenerationOnDevice(DeviceRuntimeBuffers &buffers, const std:
         return false;
     }
 
-    const std::size_t block_count =
-        (buffers.next_layout.active_individual_count + kDynamicThreadBlockSize - 1) / kDynamicThreadBlockSize;
+    if (!TryInitializeArenaFreeSlotStacksOnDevice(buffers) || !ResetDeviceStatus(buffers)) {
+        return false;
+    }
 
-    AssembleNextGenerationKernel<<<block_count, kDynamicThreadBlockSize>>>(
+    AssembleNextGenerationKernel<<<1, 1>>>(
         buffers.body_slots, buffers.tail_row_slots, buffers.current_body_slot_ids, buffers.current_tail_row_slot_ids,
-        buffers.next_body_slot_ids, buffers.next_tail_row_slot_ids, buffers.max_action_count,
-        buffers.next_body_region_first_slot, buffers.next_tail_row_region_first_slot, buffers.current_layout,
-        buffers.next_fitness, buffers.next_evaluation_counts, buffers.next_has_fitness, buffers.next_layout,
-        buffers.next_generation_plan, generation_seed, config, pending_output_embedding_injection, buffers.status);
+        buffers.next_body_slot_ids, buffers.next_tail_row_slot_ids, buffers.body_free_slot_ids,
+        buffers.tail_row_free_slot_ids, buffers.body_free_slot_count, buffers.tail_row_free_slot_count,
+        buffers.current_parent_remaining_use_counts, buffers.max_action_count, buffers.body_slot_capacity,
+        buffers.tail_row_slot_capacity, buffers.current_layout, buffers.next_fitness,
+        buffers.next_evaluation_counts, buffers.next_has_fitness, buffers.next_layout, buffers.next_generation_plan,
+        generation_seed, config, pending_output_embedding_injection, buffers.status);
     if (!CheckCuda(cudaGetLastError()) || !CheckCuda(cudaDeviceSynchronize())) {
         return false;
     }
@@ -1223,8 +1402,6 @@ void SwapDevicePopulationBuffers(DeviceRuntimeBuffers &buffers) noexcept {
     std::swap(buffers.current_evaluation_counts, buffers.next_evaluation_counts);
     std::swap(buffers.current_has_fitness, buffers.next_has_fitness);
     std::swap(buffers.current_layout, buffers.next_layout);
-    std::swap(buffers.current_body_region_first_slot, buffers.next_body_region_first_slot);
-    std::swap(buffers.current_tail_row_region_first_slot, buffers.next_tail_row_region_first_slot);
 }
 
 const char *DeviceRuntimeStatusCodeString(const DeviceRuntimeStatusCode status_code) noexcept {
@@ -1251,6 +1428,8 @@ const char *DeviceRuntimeStatusCodeString(const DeviceRuntimeStatusCode status_c
         return "device output-embedding injection failed";
     case DeviceRuntimeStatusCode::kInvalidPopulationLayout:
         return "invalid dynamic population layout";
+    case DeviceRuntimeStatusCode::kArenaExhausted:
+        return "dynamic genome arena exhausted during next-generation assembly";
     }
 
     return "unknown device-runtime status";
