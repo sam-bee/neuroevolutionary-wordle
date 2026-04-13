@@ -4,6 +4,7 @@
 #include <cstdint>
 
 #include "common/cuda_compat.hpp"
+#include "genetic_algorithm/device/mating_plan.hpp"
 #include "genetic_algorithm/genome/dynamic_layout.hpp"
 #include "genetic_algorithm/generation_assembly.hpp"
 #include "training_folder/training_data.hpp"
@@ -95,6 +96,9 @@ struct DeviceRuntimeBuffers {
 
     DynamicArenaSlotId *current_tail_row_slot_ids = nullptr;
     DynamicArenaSlotId *next_tail_row_slot_ids = nullptr;
+
+    PlannedGenerationMember *next_generation_plan = nullptr;
+    std::uint32_t *current_parent_remaining_use_counts = nullptr;
 
     float *current_fitness = nullptr;
     float *next_fitness = nullptr;

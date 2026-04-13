@@ -35,6 +35,8 @@ using neuroevolution::wordle::WordleGrid;
 
 constexpr float kWinScoreBase = 10.0f;
 constexpr std::size_t kDeviceTailRowSlotActionCapacity = 1;
+constexpr std::uint32_t kPlanningRandomSeedSalt = 0x9E37'79B9U;
+constexpr std::uint32_t kBreedingRandomSeedSalt = 0x7F4A'7C15U;
 
 NEUROEVOLUTION_HOST_DEVICE constexpr int DeviceStatusValue(const DeviceRuntimeStatusCode status_code) {
     return static_cast<int>(status_code);
@@ -94,6 +96,20 @@ __device__ DeviceRandomState MakeDeviceRandomState(const std::uint32_t seed, con
 
     (void)NextUInt64(state);
     return state;
+}
+
+__device__ DeviceRandomState MakePlanningRandomState(const std::uint32_t generation_seed,
+                                                     const std::size_t generation_index,
+                                                     const std::size_t slot_index) {
+    return MakeDeviceRandomState(generation_seed ^ kPlanningRandomSeedSalt,
+                                 static_cast<std::uint32_t>(slot_index + (generation_index * 4099U)));
+}
+
+__device__ DeviceRandomState MakeBreedingRandomState(const std::uint32_t generation_seed,
+                                                     const std::size_t generation_index,
+                                                     const std::size_t slot_index) {
+    return MakeDeviceRandomState(generation_seed ^ kBreedingRandomSeedSalt,
+                                 static_cast<std::uint32_t>(slot_index + (generation_index * 4099U)));
 }
 
 __device__ float NextUniform01(DeviceRandomState &state) {
@@ -639,16 +655,11 @@ __global__ void SummarizePopulationKernel(const float *current_fitness, const st
     summary->population_size = current_layout.active_individual_count;
 }
 
-__global__ void AssembleNextGenerationKernel(
-    PolicyModelParameters *body_slots, TrainableActionEmbeddingTail *tail_row_slots,
-    const DynamicArenaSlotId *current_body_slot_ids, const DynamicArenaSlotId *current_tail_row_slot_ids,
-    DynamicArenaSlotId *next_body_slot_ids, DynamicArenaSlotId *next_tail_row_slot_ids,
-    const std::size_t tail_row_slot_id_stride, const std::size_t next_body_region_first_slot,
-    const std::size_t next_tail_row_region_first_slot, const float *current_fitness,
-    const std::uint8_t *current_has_fitness, const DynamicPopulationLayout current_layout, float *next_fitness,
-    std::uint32_t *next_evaluation_counts, std::uint8_t *next_has_fitness, const DynamicPopulationLayout next_layout,
-    const std::uint32_t generation_seed, const GenerationAssemblyConfig config,
-    const PendingOutputEmbeddingInjection pending_output_embedding_injection, int *status) {
+__global__ void PlanNextGenerationKernel(const float *current_fitness, const std::uint8_t *current_has_fitness,
+                                         const DynamicPopulationLayout current_layout,
+                                         const DynamicPopulationLayout next_layout, const std::uint32_t generation_seed,
+                                         const GenerationAssemblyConfig config,
+                                         PlannedGenerationMember *next_generation_plan, int *status) {
     const std::size_t slot_index = (blockIdx.x * blockDim.x) + threadIdx.x;
     if (!IsValidDynamicPopulationLayout(current_layout) || !IsValidDynamicPopulationLayout(next_layout)) {
         if ((blockIdx.x == 0) && (threadIdx.x == 0)) {
@@ -669,9 +680,76 @@ __global__ void AssembleNextGenerationKernel(
             return;
         }
 
+        next_generation_plan[slot_index] = MakeEliteCopyPlannedGenerationMember(elite_index);
+        return;
+    }
+
+    DeviceRandomState random_state =
+        MakePlanningRandomState(generation_seed, current_layout.generation_index, slot_index);
+
+    ParentPair parent_pair{};
+    if (!TrySelectParentPairDevice(current_fitness, current_has_fitness, current_layout.active_individual_count,
+                                   random_state, config.parent_selection, parent_pair)) {
+        SetFailureStatus(status, DeviceRuntimeStatusCode::kParentSelectionFailed);
+        return;
+    }
+
+    next_generation_plan[slot_index] = MakeBreedingPlannedGenerationMember(parent_pair);
+}
+
+__global__ void CountCurrentParentRemainingUsesKernel(const PlannedGenerationMember *next_generation_plan,
+                                                      const std::size_t next_generation_member_count,
+                                                      const std::size_t current_population_size,
+                                                      std::uint32_t *current_parent_remaining_use_counts, int *status) {
+    const std::size_t slot_index = (blockIdx.x * blockDim.x) + threadIdx.x;
+    if (slot_index >= next_generation_member_count) {
+        return;
+    }
+
+    const PlannedGenerationMember planned_member = next_generation_plan[slot_index];
+    if (!IsValidPlannedGenerationMember(planned_member, current_population_size)) {
+        SetFailureStatus(status, DeviceRuntimeStatusCode::kParentSelectionFailed);
+        return;
+    }
+
+    atomicAdd(&current_parent_remaining_use_counts[planned_member.parent_pair.first_parent_index], 1U);
+    if (planned_member.operation == PlannedGenerationMemberOperation::kBreedChild) {
+        atomicAdd(&current_parent_remaining_use_counts[planned_member.parent_pair.second_parent_index], 1U);
+    }
+}
+
+__global__ void AssembleNextGenerationKernel(
+    PolicyModelParameters *body_slots, TrainableActionEmbeddingTail *tail_row_slots,
+    const DynamicArenaSlotId *current_body_slot_ids, const DynamicArenaSlotId *current_tail_row_slot_ids,
+    DynamicArenaSlotId *next_body_slot_ids, DynamicArenaSlotId *next_tail_row_slot_ids,
+    const std::size_t tail_row_slot_id_stride, const std::size_t next_body_region_first_slot,
+    const std::size_t next_tail_row_region_first_slot, const DynamicPopulationLayout current_layout, float *next_fitness,
+    std::uint32_t *next_evaluation_counts, std::uint8_t *next_has_fitness, const DynamicPopulationLayout next_layout,
+    const PlannedGenerationMember *next_generation_plan, const std::uint32_t generation_seed,
+    const GenerationAssemblyConfig config,
+    const PendingOutputEmbeddingInjection pending_output_embedding_injection, int *status) {
+    const std::size_t slot_index = (blockIdx.x * blockDim.x) + threadIdx.x;
+    if (!IsValidDynamicPopulationLayout(current_layout) || !IsValidDynamicPopulationLayout(next_layout)) {
+        if ((blockIdx.x == 0) && (threadIdx.x == 0)) {
+            SetFailureStatus(status, DeviceRuntimeStatusCode::kInvalidPopulationLayout);
+        }
+        return;
+    }
+
+    if (slot_index >= next_layout.active_individual_count) {
+        return;
+    }
+
+    const PlannedGenerationMember planned_member = next_generation_plan[slot_index];
+    if (!IsValidPlannedGenerationMember(planned_member, current_layout.active_individual_count)) {
+        SetFailureStatus(status, DeviceRuntimeStatusCode::kParentSelectionFailed);
+        return;
+    }
+
+    if (planned_member.operation == PlannedGenerationMemberOperation::kEliteCopy) {
         const ConstDynamicGenomeView elite_genome_view = CurrentArenaGenomeView(
             body_slots, tail_row_slots, current_body_slot_ids, current_tail_row_slot_ids, tail_row_slot_id_stride,
-            current_layout, elite_index);
+            current_layout, planned_member.parent_pair.first_parent_index);
         const DynamicGenomeView child_genome_view = BindNextArenaGenomeView(
             body_slots, tail_row_slots, next_body_slot_ids, next_tail_row_slot_ids, tail_row_slot_id_stride,
             next_body_region_first_slot, next_tail_row_region_first_slot, next_layout, slot_index);
@@ -687,22 +765,14 @@ __global__ void AssembleNextGenerationKernel(
         return;
     }
 
-    DeviceRandomState random_state = MakeDeviceRandomState(
-        generation_seed, static_cast<std::uint32_t>(slot_index + (current_layout.generation_index * 4099U)));
-
-    ParentPair parent_pair{};
-    if (!TrySelectParentPairDevice(current_fitness, current_has_fitness, current_layout.active_individual_count,
-                                   random_state, config.parent_selection, parent_pair)) {
-        SetFailureStatus(status, DeviceRuntimeStatusCode::kParentSelectionFailed);
-        return;
-    }
+    DeviceRandomState random_state = MakeBreedingRandomState(generation_seed, current_layout.generation_index, slot_index);
 
     const ConstDynamicGenomeView first_parent_genome_view = CurrentArenaGenomeView(
         body_slots, tail_row_slots, current_body_slot_ids, current_tail_row_slot_ids, tail_row_slot_id_stride,
-        current_layout, parent_pair.first_parent_index);
+        current_layout, planned_member.parent_pair.first_parent_index);
     const ConstDynamicGenomeView second_parent_genome_view = CurrentArenaGenomeView(
         body_slots, tail_row_slots, current_body_slot_ids, current_tail_row_slot_ids, tail_row_slot_id_stride,
-        current_layout, parent_pair.second_parent_index);
+        current_layout, planned_member.parent_pair.second_parent_index);
     const DynamicGenomeView child_genome_view = BindNextArenaGenomeView(
         body_slots, tail_row_slots, next_body_slot_ids, next_tail_row_slot_ids, tail_row_slot_id_stride,
         next_body_region_first_slot, next_tail_row_region_first_slot, next_layout, slot_index);
@@ -792,6 +862,15 @@ bool ResetNextGenerationStorage(const DeviceRuntimeBuffers &buffers) {
     return ok;
 }
 
+bool ResetMatingPlanStorage(const DeviceRuntimeBuffers &buffers) {
+    bool ok = true;
+    ok &= CheckCuda(
+        cudaMemset(buffers.next_generation_plan, 0xFF, buffers.max_population_count * sizeof(PlannedGenerationMember)));
+    ok &= CheckCuda(cudaMemset(buffers.current_parent_remaining_use_counts, 0,
+                               buffers.max_population_count * sizeof(std::uint32_t)));
+    return ok;
+}
+
 bool TryUploadHostPopulationIntoCurrentArena(const HostPopulation &host_population, DeviceRuntimeBuffers &buffers) {
     const std::size_t population_size = host_population.layout.active_individual_count;
     const std::size_t action_count = host_population.layout.action_count;
@@ -830,6 +909,36 @@ bool TryUploadHostPopulationIntoCurrentArena(const HostPopulation &host_populati
     return ok;
 }
 
+bool TryPlanNextGenerationMatingPlanOnDevice(DeviceRuntimeBuffers &buffers, const std::uint32_t generation_seed,
+                                             const GenerationAssemblyConfig &config) {
+    if (!ResetMatingPlanStorage(buffers)) {
+        return false;
+    }
+
+    const std::size_t block_count =
+        (buffers.next_layout.active_individual_count + kDynamicThreadBlockSize - 1) / kDynamicThreadBlockSize;
+
+    PlanNextGenerationKernel<<<block_count, kDynamicThreadBlockSize>>>(
+        buffers.current_fitness, buffers.current_has_fitness, buffers.current_layout, buffers.next_layout, generation_seed,
+        config, buffers.next_generation_plan, buffers.status);
+    if (!CheckCuda(cudaGetLastError()) || !CheckCuda(cudaDeviceSynchronize())) {
+        return false;
+    }
+
+    if (!KernelCompletedSuccessfully(buffers) || !ResetDeviceStatus(buffers)) {
+        return false;
+    }
+
+    CountCurrentParentRemainingUsesKernel<<<block_count, kDynamicThreadBlockSize>>>(
+        buffers.next_generation_plan, buffers.next_layout.active_individual_count,
+        buffers.current_layout.active_individual_count, buffers.current_parent_remaining_use_counts, buffers.status);
+    if (!CheckCuda(cudaGetLastError()) || !CheckCuda(cudaDeviceSynchronize())) {
+        return false;
+    }
+
+    return KernelCompletedSuccessfully(buffers);
+}
+
 } // namespace
 
 bool TryCreateDeviceRuntimeBuffers(DeviceRuntimeBuffers &buffers, const DeviceRuntimeConfig &config) {
@@ -866,6 +975,10 @@ bool TryCreateDeviceRuntimeBuffers(DeviceRuntimeBuffers &buffers, const DeviceRu
                                buffers.max_population_count * buffers.max_action_count * sizeof(DynamicArenaSlotId)));
     ok &= CheckCuda(cudaMalloc(&buffers.next_tail_row_slot_ids,
                                buffers.max_population_count * buffers.max_action_count * sizeof(DynamicArenaSlotId)));
+    ok &= CheckCuda(cudaMalloc(&buffers.next_generation_plan,
+                               buffers.max_population_count * sizeof(PlannedGenerationMember)));
+    ok &= CheckCuda(cudaMalloc(&buffers.current_parent_remaining_use_counts,
+                               buffers.max_population_count * sizeof(std::uint32_t)));
     ok &= CheckCuda(cudaMalloc(&buffers.current_fitness, buffers.max_population_count * sizeof(float)));
     ok &= CheckCuda(cudaMalloc(&buffers.next_fitness, buffers.max_population_count * sizeof(float)));
     ok &= CheckCuda(cudaMalloc(&buffers.current_evaluation_counts, buffers.max_population_count * sizeof(std::uint32_t)));
@@ -892,6 +1005,10 @@ bool TryCreateDeviceRuntimeBuffers(DeviceRuntimeBuffers &buffers, const DeviceRu
     ok &= CheckCuda(
         cudaMemset(buffers.next_tail_row_slot_ids, 0xFF,
                    buffers.max_population_count * buffers.max_action_count * sizeof(DynamicArenaSlotId)));
+    ok &= CheckCuda(
+        cudaMemset(buffers.next_generation_plan, 0xFF, buffers.max_population_count * sizeof(PlannedGenerationMember)));
+    ok &= CheckCuda(cudaMemset(buffers.current_parent_remaining_use_counts, 0,
+                               buffers.max_population_count * sizeof(std::uint32_t)));
     ok &= CheckCuda(cudaMemset(buffers.current_fitness, 0, buffers.max_population_count * sizeof(float)));
     ok &= CheckCuda(cudaMemset(buffers.next_fitness, 0, buffers.max_population_count * sizeof(float)));
     ok &= CheckCuda(
@@ -911,6 +1028,8 @@ void DestroyDeviceRuntimeBuffers(DeviceRuntimeBuffers &buffers) noexcept {
     cudaFree(buffers.next_body_slot_ids);
     cudaFree(buffers.current_tail_row_slot_ids);
     cudaFree(buffers.next_tail_row_slot_ids);
+    cudaFree(buffers.next_generation_plan);
+    cudaFree(buffers.current_parent_remaining_use_counts);
     cudaFree(buffers.current_fitness);
     cudaFree(buffers.next_fitness);
     cudaFree(buffers.current_evaluation_counts);
@@ -947,6 +1066,10 @@ bool TryUploadCurrentPopulationToDevice(const HostPopulation &host_population, D
     ok &= CheckCuda(
         cudaMemset(buffers.current_tail_row_slot_ids, 0xFF,
                    buffers.max_population_count * buffers.max_action_count * sizeof(DynamicArenaSlotId)));
+    ok &= CheckCuda(
+        cudaMemset(buffers.next_generation_plan, 0xFF, buffers.max_population_count * sizeof(PlannedGenerationMember)));
+    ok &= CheckCuda(cudaMemset(buffers.current_parent_remaining_use_counts, 0,
+                               buffers.max_population_count * sizeof(std::uint32_t)));
     ok &= CheckCuda(cudaMemset(buffers.current_fitness, 0, buffers.max_population_count * sizeof(float)));
     ok &= CheckCuda(cudaMemset(buffers.next_fitness, 0, buffers.max_population_count * sizeof(float)));
     ok &= CheckCuda(
@@ -1073,16 +1196,19 @@ bool TryAssembleNextGenerationOnDevice(DeviceRuntimeBuffers &buffers, const std:
         return false;
     }
 
+    if (!TryPlanNextGenerationMatingPlanOnDevice(buffers, generation_seed, config) || !ResetDeviceStatus(buffers)) {
+        return false;
+    }
+
     const std::size_t block_count =
         (buffers.next_layout.active_individual_count + kDynamicThreadBlockSize - 1) / kDynamicThreadBlockSize;
 
     AssembleNextGenerationKernel<<<block_count, kDynamicThreadBlockSize>>>(
         buffers.body_slots, buffers.tail_row_slots, buffers.current_body_slot_ids, buffers.current_tail_row_slot_ids,
         buffers.next_body_slot_ids, buffers.next_tail_row_slot_ids, buffers.max_action_count,
-        buffers.next_body_region_first_slot, buffers.next_tail_row_region_first_slot, buffers.current_fitness,
-        buffers.current_has_fitness, buffers.current_layout, buffers.next_fitness, buffers.next_evaluation_counts,
-        buffers.next_has_fitness,
-        buffers.next_layout, generation_seed, config, pending_output_embedding_injection, buffers.status);
+        buffers.next_body_region_first_slot, buffers.next_tail_row_region_first_slot, buffers.current_layout,
+        buffers.next_fitness, buffers.next_evaluation_counts, buffers.next_has_fitness, buffers.next_layout,
+        buffers.next_generation_plan, generation_seed, config, pending_output_embedding_injection, buffers.status);
     if (!CheckCuda(cudaGetLastError()) || !CheckCuda(cudaDeviceSynchronize())) {
         return false;
     }

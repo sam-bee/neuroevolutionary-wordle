@@ -355,6 +355,21 @@ set_tests_properties(dynamic_layout_test PROPERTIES
     LABELS "cpu;unit"
 )
 
+add_executable(mating_plan_test
+    tests/genetic_algorithm/device/mating_plan_test.cpp
+)
+
+target_link_libraries(mating_plan_test PRIVATE
+    genetic_algorithm
+)
+
+enable_project_warnings(mating_plan_test)
+
+add_test(NAME mating_plan_test COMMAND mating_plan_test)
+set_tests_properties(mating_plan_test PROPERTIES
+    LABELS "cpu;unit"
+)
+
 add_executable(training_data_test
     tests/training_folder/training_data_test.cpp
 )
