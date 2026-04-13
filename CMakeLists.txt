@@ -340,6 +340,21 @@ set_tests_properties(output_embedding_genome_runtime_test PROPERTIES
     LABELS "cpu;unit"
 )
 
+add_executable(dynamic_layout_test
+    tests/genetic_algorithm/genome/dynamic_layout_test.cpp
+)
+
+target_link_libraries(dynamic_layout_test PRIVATE
+    genetic_algorithm_dynamic_device
+)
+
+enable_project_warnings(dynamic_layout_test)
+
+add_test(NAME dynamic_layout_test COMMAND dynamic_layout_test)
+set_tests_properties(dynamic_layout_test PROPERTIES
+    LABELS "cpu;unit"
+)
+
 add_executable(training_data_test
     tests/training_folder/training_data_test.cpp
 )

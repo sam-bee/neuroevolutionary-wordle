@@ -23,8 +23,9 @@ using neuroevolution::genetic_algorithm::dynamic_device::DestroyDeviceRuntimeBuf
 using neuroevolution::genetic_algorithm::dynamic_device::DeviceRuntimeBuffers;
 using neuroevolution::genetic_algorithm::dynamic_device::DeviceRuntimeConfig;
 using neuroevolution::genetic_algorithm::dynamic_device::DeviceRuntimeStatusCode;
-using neuroevolution::genetic_algorithm::dynamic_device::GenomePolicyModelParameters;
-using neuroevolution::genetic_algorithm::dynamic_device::GenomeTailRows;
+using neuroevolution::genetic_algorithm::dynamic_device::GenomeBodyParameters;
+using neuroevolution::genetic_algorithm::dynamic_device::GenomeTailRow;
+using neuroevolution::genetic_algorithm::dynamic_device::HostGenomeViewAt;
 using neuroevolution::genetic_algorithm::dynamic_device::HostGenomeBytesAt;
 using neuroevolution::genetic_algorithm::dynamic_device::HostPopulation;
 using neuroevolution::genetic_algorithm::dynamic_device::PendingOutputEmbeddingInjection;
@@ -145,7 +146,8 @@ bool ExpectPopulationTailMatchesExpected(const HostPopulation &population, const
 
     for (std::size_t individual_index = 0; individual_index < population.layout.active_individual_count;
          ++individual_index) {
-        const TrainableActionEmbeddingTail &tail = GenomeTailRows(HostGenomeBytesAt(population, individual_index))[tail_index];
+        const auto genome_view = HostGenomeViewAt(population, individual_index);
+        const TrainableActionEmbeddingTail &tail = GenomeTailRow(genome_view, tail_index);
         for (std::size_t feature_index = 0;
              feature_index < neuroevolution::model::output_embedding::kTrainableFeatureDimension; ++feature_index) {
             ok &= ExpectNear(ToFloat(tail[feature_index]), ToFloat(expected_tail[feature_index]),
@@ -198,8 +200,9 @@ bool TestDynamicRuntimeInjectsAndResizesWithinFixedBudget() {
 
     TrainableActionEmbeddingTail expected_tails[kInjectedWordCount]{};
     for (std::size_t injection_offset = 0; injection_offset < kInjectedWordCount; ++injection_offset) {
+        const auto seed_genome_view = HostGenomeViewAt(host_population, 0);
         ok &= TrySeedOutputEmbeddingTailFromHintGrids(
-            GenomePolicyModelParameters(HostGenomeBytesAt(host_population, 0)),
+            GenomeBodyParameters(seed_genome_view),
             training_word_catalog.words[pending_output_embedding_injection.first_catalog_word_index + injection_offset],
             expected_tails[injection_offset]);
     }

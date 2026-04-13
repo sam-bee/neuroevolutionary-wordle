@@ -58,21 +58,17 @@ bool TryInitializeRandomHostPopulation(HostPopulation &population, const std::si
     }
 
     population = {};
-    population.layout.active_individual_count = population_size;
-    population.layout.generation_index = 0;
-    population.layout.action_count = action_count;
-    population.layout.genome_stride_bytes = ComputeDynamicGenomeStrideBytes(action_count);
-    population.layout.genotype_bytes = population_size * population.layout.genome_stride_bytes;
+    population.layout = MakeDynamicPopulationLayout(population_size, 0, action_count);
     if (!IsValidDynamicPopulationLayout(population.layout) || !TryAllocateHostGenomeStorage(population)) {
         return false;
     }
 
     model::initialization::RandomEngine random_engine(seed);
     for (std::size_t individual_index = 0; individual_index < population.layout.active_individual_count; ++individual_index) {
-        std::uint8_t *genome_bytes = HostGenomeBytesAt(population, individual_index);
-        model::initialization::InitializeRandomPolicyModelParameters(GenomePolicyModelParameters(genome_bytes),
-                                                                     random_engine, config.parameter_initialization);
-        FillTailRowsWithNormal(GenomeTailRows(genome_bytes), population.layout.action_count, random_engine,
+        const DynamicGenomeView genome_view = HostGenomeViewAt(population, individual_index);
+        model::initialization::InitializeRandomPolicyModelParameters(GenomeBodyParameters(genome_view), random_engine,
+                                                                     config.parameter_initialization);
+        FillTailRowsWithNormal(genome_view.tail_row_storage, population.layout.action_count, random_engine,
                                config.parameter_initialization);
     }
 
