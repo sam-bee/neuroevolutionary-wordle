@@ -4,6 +4,7 @@
 #include <random>
 #include <stdexcept>
 
+#include "common/cuda_compat.hpp"
 #include "common/fixed_buffer.hpp"
 #include "genetic_algorithm/genome.hpp"
 #include "genetic_algorithm/selection.hpp"
@@ -16,7 +17,7 @@ struct BreedingConfig {
     float first_parent_probability = 0.5f;
 };
 
-constexpr bool IsValidBreedingConfig(const BreedingConfig &config) noexcept {
+constexpr NEUROEVOLUTION_HOST_DEVICE bool IsValidBreedingConfig(const BreedingConfig &config) noexcept {
     return (config.first_parent_probability >= 0.0f) && (config.first_parent_probability <= 1.0f);
 }
 
@@ -121,9 +122,9 @@ inline bool TryBreedChildGenome(const ModelGenome<ActionCapacity> &first_parent,
 }
 
 template <std::size_t ActionCapacity, std::size_t PopulationSize>
-inline bool TryBreedChildGenomeFromPopulation(
-    const Population<ModelGenome<ActionCapacity>, PopulationSize> &population, const ParentPair &parent_pair,
-    ModelGenome<ActionCapacity> &child, BreedingRandomEngine &random_engine, const BreedingConfig &config = {}) {
+inline bool TryBreedChildGenomeFromPopulation(const Population<ModelGenome<ActionCapacity>, PopulationSize> &population,
+                                              const ParentPair &parent_pair, ModelGenome<ActionCapacity> &child,
+                                              BreedingRandomEngine &random_engine, const BreedingConfig &config = {}) {
     if ((parent_pair.first_parent_index >= PopulationSize) || (parent_pair.second_parent_index >= PopulationSize)) {
         return false;
     }

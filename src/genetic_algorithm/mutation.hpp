@@ -4,6 +4,7 @@
 #include <random>
 #include <stdexcept>
 
+#include "common/cuda_compat.hpp"
 #include "common/float16.hpp"
 #include "genetic_algorithm/genome.hpp"
 
@@ -16,7 +17,7 @@ struct MutationConfig {
     float mutation_sigma = 0.05f;
 };
 
-constexpr bool IsValidMutationConfig(const MutationConfig &config) noexcept {
+constexpr NEUROEVOLUTION_HOST_DEVICE bool IsValidMutationConfig(const MutationConfig &config) noexcept {
     return (config.mutation_probability >= 0.0f) && (config.mutation_probability <= 1.0f) &&
            (config.mutation_sigma >= 0.0f);
 }
