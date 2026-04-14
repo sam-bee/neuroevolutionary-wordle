@@ -139,6 +139,20 @@ target_link_libraries(genetic_algorithm INTERFACE
     policy_model
 )
 
+add_library(genotype_arena STATIC
+    src/genetic_algorithm/genotype_arena/arena.cpp
+)
+
+target_include_directories(genotype_arena PUBLIC
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
+)
+
+target_link_libraries(genotype_arena PUBLIC
+    genetic_algorithm
+)
+
+enable_project_warnings(genotype_arena)
+
 add_library(genetic_algorithm_dynamic_device STATIC
     src/genetic_algorithm/genome/dynamic_layout.cpp
     src/genetic_algorithm/device/dynamic_runtime.cu
@@ -337,6 +351,21 @@ enable_project_warnings(output_embedding_genome_runtime_test)
 
 add_test(NAME output_embedding_genome_runtime_test COMMAND output_embedding_genome_runtime_test)
 set_tests_properties(output_embedding_genome_runtime_test PROPERTIES
+    LABELS "cpu;unit"
+)
+
+add_executable(genotype_arena_test
+    tests/genetic_algorithm/genotype_arena_test.cpp
+)
+
+target_link_libraries(genotype_arena_test PRIVATE
+    genotype_arena
+)
+
+enable_project_warnings(genotype_arena_test)
+
+add_test(NAME genotype_arena_test COMMAND genotype_arena_test)
+set_tests_properties(genotype_arena_test PROPERTIES
     LABELS "cpu;unit"
 )
 

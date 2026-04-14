@@ -4,6 +4,8 @@
 #include "genetic_algorithm/fitness_evaluation.hpp"
 #include "genetic_algorithm/generation_assembly.hpp"
 #include "genetic_algorithm/genome.hpp"
+#include "genetic_algorithm/genotype_arena/arena.hpp"
+#include "genetic_algorithm/genotype_arena/generation.hpp"
 #include "genetic_algorithm/mutation.hpp"
 #include "genetic_algorithm/output_embedding_injection.hpp"
 #include "genetic_algorithm/population.hpp"
