@@ -23,7 +23,7 @@ struct ParentPair {
     std::size_t second_parent_index = 0;
 };
 
-constexpr bool IsValidParentSelectionConfig(const ParentSelectionConfig &config) noexcept {
+constexpr NEUROEVOLUTION_HOST_DEVICE bool IsValidParentSelectionConfig(const ParentSelectionConfig &config) noexcept {
     return config.tournament_size > 0;
 }
 

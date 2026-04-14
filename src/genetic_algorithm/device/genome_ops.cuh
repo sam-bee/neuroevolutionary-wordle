@@ -45,6 +45,14 @@ __device__ inline bool SampleBernoulli(DeviceRandomState &state, const float pro
     return NextUniform01(state) < probability;
 }
 
+__device__ inline std::size_t SampleIndex(DeviceRandomState &state, const std::size_t upper_bound_exclusive) {
+    if (upper_bound_exclusive <= 1) {
+        return 0;
+    }
+
+    return static_cast<std::size_t>(NextUInt64(state) % upper_bound_exclusive);
+}
+
 __device__ inline float SampleStandardNormal(DeviceRandomState &state) {
     constexpr float kTwoPi = 6.28318530717958647692f;
     const float u1 = NextUniform01(state);

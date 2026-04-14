@@ -1,6 +1,7 @@
 #pragma once
 
 #include "genetic_algorithm/breeding.hpp"
+#include "genetic_algorithm/device/arena_runtime.hpp"
 #include "genetic_algorithm/fitness_evaluation.hpp"
 #include "genetic_algorithm/generation_assembly.hpp"
 #include "genetic_algorithm/genome.hpp"

@@ -4,8 +4,9 @@
 #include <cstdint>
 
 #include "common/cuda_compat.hpp"
-#include "genetic_algorithm/genome/dynamic_layout.hpp"
+#include "genetic_algorithm/device/runtime_common.hpp"
 #include "genetic_algorithm/generation_assembly.hpp"
+#include "genetic_algorithm/genome/dynamic_layout.hpp"
 #include "training_folder/training_data.hpp"
 
 namespace neuroevolution::genetic_algorithm::dynamic_device {
@@ -14,6 +15,8 @@ constexpr std::size_t kInitialDynamicActionCount = training_folder::kDefaultInit
 constexpr std::size_t kDynamicThreadBlockSize = 256;
 constexpr std::size_t kDefaultPopulationSizeCeiling = 100;
 
+using device_common::PopulationFitnessSummary;
+using device_common::RuntimeWordCounts;
 using genome::ComputeDynamicGenomeStrideBytes;
 using genome::DynamicPopulationLayout;
 using genome::GenomeBytesAt;
@@ -27,11 +30,6 @@ using genome::PopulationSizeForGenotypeBudgetBytes;
 using genome::TrainableActionEmbeddingTail;
 using genome::TryAllocateHostGenomeStorage;
 using genome::TryInitializeRandomHostPopulation;
-
-struct RuntimeWordCounts {
-    std::size_t training_word_count = training_folder::kDefaultInitialActiveWordCount;
-    std::size_t action_space_word_count = training_folder::kDefaultInitialActiveWordCount;
-};
 
 struct PendingOutputEmbeddingInjection {
     bool enabled = false;
@@ -51,15 +49,6 @@ enum class DeviceRuntimeStatusCode : int {
     kParentSelectionFailed = 8,
     kOutputEmbeddingInjectionFailed = 9,
     kInvalidPopulationLayout = 10,
-};
-
-struct PopulationFitnessSummary {
-    float best_fitness = 0.0f;
-    float average_fitness = 0.0f;
-    std::size_t best_index = 0;
-    std::size_t generation_index = 0;
-    std::size_t action_count = 0;
-    std::size_t population_size = 0;
 };
 
 struct DeviceRuntimeConfig {
@@ -106,9 +95,9 @@ bool TryReadPopulationFitnessSummaryFromDevice(const DeviceRuntimeBuffers &buffe
 
 bool TryReadDeviceRuntimeStatus(const DeviceRuntimeBuffers &buffers, DeviceRuntimeStatusCode &status_code);
 
-bool TryAssembleNextGenerationOnDevice(
-    DeviceRuntimeBuffers &buffers, std::uint32_t generation_seed, const GenerationAssemblyConfig &config = {},
-    const PendingOutputEmbeddingInjection &pending_output_embedding_injection = {});
+bool TryAssembleNextGenerationOnDevice(DeviceRuntimeBuffers &buffers, std::uint32_t generation_seed,
+                                       const GenerationAssemblyConfig &config = {},
+                                       const PendingOutputEmbeddingInjection &pending_output_embedding_injection = {});
 
 void SwapDevicePopulationBuffers(DeviceRuntimeBuffers &buffers) noexcept;
 
