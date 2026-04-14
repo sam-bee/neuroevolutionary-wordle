@@ -115,7 +115,6 @@ bool ExpectNear(const float actual, const float expected, const std::string_view
 
 GenerationAssemblyConfig MakeAssemblyConfig() {
     GenerationAssemblyConfig config{};
-    config.genetic_algorithm.elite_count = 1;
     config.parent_selection.tournament_size = 3;
     config.parent_selection.allow_self_parenting = false;
     config.breeding.first_parent_probability = 0.5f;
@@ -145,7 +144,8 @@ bool ExpectPopulationTailMatchesExpected(const HostPopulation &population, const
 
     for (std::size_t individual_index = 0; individual_index < population.layout.active_individual_count;
          ++individual_index) {
-        const TrainableActionEmbeddingTail &tail = GenomeTailRows(HostGenomeBytesAt(population, individual_index))[tail_index];
+        const TrainableActionEmbeddingTail &tail =
+            GenomeTailRows(HostGenomeBytesAt(population, individual_index))[tail_index];
         for (std::size_t feature_index = 0;
              feature_index < neuroevolution::model::output_embedding::kTrainableFeatureDimension; ++feature_index) {
             ok &= ExpectNear(ToFloat(tail[feature_index]), ToFloat(expected_tail[feature_index]),
@@ -169,9 +169,8 @@ bool TestDynamicRuntimeInjectsAndResizesWithinFixedBudget() {
     constexpr std::size_t kInjectedWordCount = 3;
     const std::size_t genotype_budget_bytes =
         kInitialPopulationSize * ComputeDynamicGenomeStrideBytes(initial_action_count);
-    const std::size_t expected_next_population_size =
-        PopulationSizeForGenotypeBudgetBytes(genotype_budget_bytes, initial_action_count + kInjectedWordCount,
-                                             kInitialPopulationSize);
+    const std::size_t expected_next_population_size = PopulationSizeForGenotypeBudgetBytes(
+        genotype_budget_bytes, initial_action_count + kInjectedWordCount, kInitialPopulationSize);
 
     bool ok = true;
     ok &= ExpectTrue(expected_next_population_size > 0,
@@ -280,24 +279,24 @@ bool TestDynamicRuntimeInjectsAndResizesWithinFixedBudget() {
     }
     ok &= ExpectInRange(summary_generation_0.best_fitness, 0.0f,
                         MaximumPossibleFitnessForGeneration(training_word_catalog, RuntimeWordCounts{},
-                                                           summary_generation_0.generation_index),
+                                                            summary_generation_0.generation_index),
                         "generation zero best fitness");
     ok &= ExpectInRange(summary_generation_0.average_fitness, 0.0f,
                         MaximumPossibleFitnessForGeneration(training_word_catalog, RuntimeWordCounts{},
-                                                           summary_generation_0.generation_index),
+                                                            summary_generation_0.generation_index),
                         "generation zero average fitness");
     ok &= ExpectInRange(summary_generation_1.best_fitness, 0.0f,
                         MaximumPossibleFitnessForGeneration(training_word_catalog, runtime_word_counts,
-                                                           summary_generation_1.generation_index),
+                                                            summary_generation_1.generation_index),
                         "generation one best fitness");
     ok &= ExpectInRange(summary_generation_1.average_fitness, 0.0f,
                         MaximumPossibleFitnessForGeneration(training_word_catalog, runtime_word_counts,
-                                                           summary_generation_1.generation_index),
+                                                            summary_generation_1.generation_index),
                         "generation one average fitness");
     return ok;
 }
 
-bool TestDynamicRuntimeRejectsInjectionWhenNoInjectedEliteFitsBudget() {
+bool TestDynamicRuntimeRejectsInjectionWhenNoInjectedGenomeFitsBudget() {
     const auto training_word_catalog = LoadTrainingWordCatalogFromActionSpace();
     if (!UploadTrainingWordCatalogToDeviceConstantMemory(training_word_catalog)) {
         std::cerr << "FAIL: could not upload training-word catalog to device constant memory\n";
@@ -335,8 +334,9 @@ bool TestDynamicRuntimeRejectsInjectionWhenNoInjectedEliteFitsBudget() {
     pending_output_embedding_injection.injection_count = 1;
 
     const GenerationAssemblyConfig assembly_config = MakeAssemblyConfig();
-    ok &= ExpectTrue(!TryAssembleNextGenerationOnDevice(buffers, 9U, assembly_config, pending_output_embedding_injection),
-                     "Expected injected assembly to fail when the budget cannot fit even one next-generation elite");
+    ok &=
+        ExpectTrue(!TryAssembleNextGenerationOnDevice(buffers, 9U, assembly_config, pending_output_embedding_injection),
+                   "Expected injected assembly to fail when the budget cannot fit even one next-generation genome");
 
     DeviceRuntimeStatusCode status_code = DeviceRuntimeStatusCode::kOk;
     ok &= TryReadDeviceRuntimeStatus(buffers, status_code);
@@ -356,7 +356,7 @@ int main() {
     }
 
     if (!TestDynamicRuntimeInjectsAndResizesWithinFixedBudget() ||
-        !TestDynamicRuntimeRejectsInjectionWhenNoInjectedEliteFitsBudget()) {
+        !TestDynamicRuntimeRejectsInjectionWhenNoInjectedGenomeFitsBudget()) {
         return 1;
     }
 

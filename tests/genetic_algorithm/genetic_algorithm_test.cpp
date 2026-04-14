@@ -22,12 +22,10 @@ using neuroevolution::genetic_algorithm::FitnessEvaluationConfig;
 using neuroevolution::genetic_algorithm::FitnessRandomEngine;
 using neuroevolution::genetic_algorithm::GenerationAssemblyConfig;
 using neuroevolution::genetic_algorithm::GenerationAssemblyRandomEngine;
-using neuroevolution::genetic_algorithm::GeneticAlgorithmConfig;
 using neuroevolution::genetic_algorithm::Individual;
 using neuroevolution::genetic_algorithm::IsValidBreedingConfig;
 using neuroevolution::genetic_algorithm::IsValidFitnessEvaluationConfig;
 using neuroevolution::genetic_algorithm::IsValidGenerationAssemblyConfig;
-using neuroevolution::genetic_algorithm::IsValidGeneticAlgorithmConfig;
 using neuroevolution::genetic_algorithm::IsValidMutationConfig;
 using neuroevolution::genetic_algorithm::IsValidParentSelectionConfig;
 using neuroevolution::genetic_algorithm::IsValidPopulationInitializationConfig;
@@ -97,16 +95,8 @@ bool ExpectWordEquals(const Word &actual, const Word &expected, const std::strin
     return ok;
 }
 
-bool TestConfigValidationAndPopulationBookkeeping() {
-    constexpr std::size_t kPopulationSize = 3;
-
-    GeneticAlgorithmConfig valid_config{};
-    valid_config.elite_count = 1;
-
-    GeneticAlgorithmConfig invalid_config = valid_config;
-    invalid_config.elite_count = 4;
-
-    Population<ModelGenome<2>, kPopulationSize> population{};
+bool TestPopulationBookkeeping() {
+    Population<ModelGenome<2>, 3> population{};
     population.individuals[0].fitness = 2.0f;
     population.individuals[0].evaluation_count = 8;
     population.individuals[0].has_fitness = true;
@@ -129,9 +119,6 @@ bool TestConfigValidationAndPopulationBookkeeping() {
     BeginNextGeneration(population);
 
     bool ok = true;
-    ok &= ExpectTrue(IsValidGeneticAlgorithmConfig<kPopulationSize>(valid_config), "Expected valid GA config");
-    ok &= ExpectTrue(!IsValidGeneticAlgorithmConfig<kPopulationSize>(invalid_config),
-                     "Expected elite count above population size to be rejected");
     ok &= ExpectTrue(found_best_before_reset, "Expected a best individual before clearing fitness");
     ok &= ExpectTrue(best_index == 1, "Expected highest-fitness individual to be selected");
     ok &= ExpectTrue(!found_best_after_reset, "Expected cleared population to have no best individual");
@@ -537,7 +524,7 @@ bool TestPopulationInitializationSeedsRandomGenomesAndClearsMetadata() {
     return ok;
 }
 
-bool TestNextGenerationAssemblyCopiesEliteAndBreedsRemainingChildren() {
+bool TestNextGenerationAssemblyBreedsEveryChildWithoutElitism() {
     constexpr std::size_t kPopulationSize = 4;
 
     Population<ModelGenome<2>, kPopulationSize> current_population{};
@@ -558,7 +545,6 @@ bool TestNextGenerationAssemblyCopiesEliteAndBreedsRemainingChildren() {
     }
 
     GenerationAssemblyConfig valid_config{};
-    valid_config.genetic_algorithm.elite_count = 1;
     valid_config.parent_selection.tournament_size = kPopulationSize;
     valid_config.parent_selection.allow_self_parenting = false;
     valid_config.breeding.first_parent_probability = 0.0f;
@@ -577,12 +563,11 @@ bool TestNextGenerationAssemblyCopiesEliteAndBreedsRemainingChildren() {
     }
 
     bool ok = true;
-    ok &= ExpectTrue(IsValidGenerationAssemblyConfig<kPopulationSize>(valid_config),
-                     "Expected valid generation-assembly config");
+    ok &= ExpectTrue(IsValidGenerationAssemblyConfig(valid_config), "Expected valid generation-assembly config");
     ok &= ExpectTrue(assemble_ok, "Expected next-generation assembly to succeed for a fitted population");
     ok &= ExpectTrue(next_population.generation_index == 6, "Expected next population generation index to increment");
     ok &= ExpectSelectedGenomeValuesMatch(next_population.individuals[0].genome,
-                                          current_population.individuals[3].genome, "elite slot");
+                                          current_population.individuals[2].genome, "bred slot 0");
     ok &= ExpectSelectedGenomeValuesMatch(next_population.individuals[1].genome,
                                           current_population.individuals[2].genome, "bred slot 1");
     ok &= ExpectSelectedGenomeValuesMatch(next_population.individuals[2].genome,
@@ -599,7 +584,7 @@ bool TestNextGenerationAssemblyCopiesEliteAndBreedsRemainingChildren() {
 
 bool TestNextGenerationAssemblyRejectsInvalidConfigAndImpossibleBreedingCases() {
     GenerationAssemblyConfig invalid_config{};
-    invalid_config.genetic_algorithm.elite_count = 0;
+    invalid_config.parent_selection.tournament_size = 0;
 
     Population<ModelGenome<2>, 2> one_parent_population{};
     one_parent_population.individuals[0].genome = MakeBreedingParentGenome(10.0f);
@@ -607,7 +592,6 @@ bool TestNextGenerationAssemblyRejectsInvalidConfigAndImpossibleBreedingCases() 
     one_parent_population.individuals[0].has_fitness = true;
 
     GenerationAssemblyConfig valid_but_impossible_config{};
-    valid_but_impossible_config.genetic_algorithm.elite_count = 1;
     valid_but_impossible_config.parent_selection.allow_self_parenting = false;
 
     GenerationAssemblyRandomEngine random_engine_a(1);
@@ -621,15 +605,15 @@ bool TestNextGenerationAssemblyRejectsInvalidConfigAndImpossibleBreedingCases() 
                                                                   random_engine_b, valid_but_impossible_config);
 
     bool ok = true;
-    ok &= ExpectTrue(!IsValidGenerationAssemblyConfig<2>(invalid_config),
-                     "Expected elite_count zero to invalidate generation assembly");
+    ok &= ExpectTrue(!IsValidGenerationAssemblyConfig(invalid_config),
+                     "Expected zero tournament size to invalidate generation assembly");
     ok &= ExpectTrue(!invalid_config_ok, "Expected next-generation assembly to reject invalid config");
     ok &= ExpectTrue(!impossible_breeding_ok,
                      "Expected next-generation assembly to fail when no distinct parent pair can be selected");
     return ok;
 }
 
-bool TestNextGenerationAssemblyAppliesMutationToBredChildrenButNotElites() {
+bool TestNextGenerationAssemblyAppliesMutationToEveryChild() {
     constexpr std::size_t kPopulationSize = 3;
 
     Population<ModelGenome<2>, kPopulationSize> current_population{};
@@ -647,7 +631,6 @@ bool TestNextGenerationAssemblyAppliesMutationToBredChildrenButNotElites() {
     }
 
     GenerationAssemblyConfig config{};
-    config.genetic_algorithm.elite_count = 1;
     config.parent_selection.tournament_size = kPopulationSize;
     config.parent_selection.allow_self_parenting = false;
     config.breeding.first_parent_probability = 0.0f;
@@ -660,21 +643,22 @@ bool TestNextGenerationAssemblyAppliesMutationToBredChildrenButNotElites() {
 
     bool ok = true;
     ok &= ExpectTrue(assemble_ok, "Expected next-generation assembly with mutation to succeed");
-    ok &= ExpectSelectedGenomeValuesMatch(next_population.individuals[0].genome,
-                                          current_population.individuals[2].genome, "mutating assembly elite slot");
+    ok &= ExpectTrue(
+        !TrackedGenomeValuesEqual(next_population.individuals[0].genome, current_population.individuals[1].genome),
+        "Expected first child to differ from its pre-mutation source parent");
     ok &= ExpectTrue(
         !TrackedGenomeValuesEqual(next_population.individuals[1].genome, current_population.individuals[1].genome),
-        "Expected first bred child to differ from its pre-mutation source parent");
+        "Expected second child to differ from its pre-mutation source parent");
     ok &= ExpectTrue(
         !TrackedGenomeValuesEqual(next_population.individuals[2].genome, current_population.individuals[1].genome),
-        "Expected second bred child to differ from its pre-mutation source parent");
+        "Expected third child to differ from its pre-mutation source parent");
     return ok;
 }
 
 } // namespace
 
 int main() {
-    if (!TestConfigValidationAndPopulationBookkeeping()) {
+    if (!TestPopulationBookkeeping()) {
         return 1;
     }
 
@@ -702,7 +686,7 @@ int main() {
         return 1;
     }
 
-    if (!TestNextGenerationAssemblyCopiesEliteAndBreedsRemainingChildren()) {
+    if (!TestNextGenerationAssemblyBreedsEveryChildWithoutElitism()) {
         return 1;
     }
 
@@ -710,7 +694,7 @@ int main() {
         return 1;
     }
 
-    if (!TestNextGenerationAssemblyAppliesMutationToBredChildrenButNotElites()) {
+    if (!TestNextGenerationAssemblyAppliesMutationToEveryChild()) {
         return 1;
     }
 

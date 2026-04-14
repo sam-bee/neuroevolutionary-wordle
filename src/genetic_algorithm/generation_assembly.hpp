@@ -4,7 +4,6 @@
 #include <random>
 #include <stdexcept>
 
-#include "common/fixed_buffer.hpp"
 #include "genetic_algorithm/breeding.hpp"
 #include "genetic_algorithm/mutation.hpp"
 #include "genetic_algorithm/selection.hpp"
@@ -14,16 +13,13 @@ namespace neuroevolution::genetic_algorithm {
 using GenerationAssemblyRandomEngine = std::mt19937;
 
 struct GenerationAssemblyConfig {
-    GeneticAlgorithmConfig genetic_algorithm{};
     ParentSelectionConfig parent_selection{};
     BreedingConfig breeding{};
     MutationConfig mutation{};
 };
 
-template <std::size_t PopulationSize>
 constexpr bool IsValidGenerationAssemblyConfig(const GenerationAssemblyConfig &config) noexcept {
-    return IsValidGeneticAlgorithmConfig<PopulationSize>(config.genetic_algorithm) &&
-           IsValidParentSelectionConfig(config.parent_selection) && IsValidBreedingConfig(config.breeding) &&
+    return IsValidParentSelectionConfig(config.parent_selection) && IsValidBreedingConfig(config.breeding) &&
            IsValidMutationConfig(config.mutation);
 }
 
@@ -37,41 +33,6 @@ inline void WriteGenomeToUnevaluatedIndividual(const Genome &genome, Individual<
     individual.has_fitness = false;
 }
 
-template <typename Genome, std::size_t PopulationSize>
-inline bool TryCollectTopIndividualIndices(const Population<Genome, PopulationSize> &population,
-                                           const std::size_t top_count,
-                                           common::FixedBuffer<std::size_t, PopulationSize> &top_indices) {
-    common::FixedBuffer<bool, PopulationSize> selected_flags{};
-
-    for (std::size_t top_index = 0; top_index < top_count; ++top_index) {
-        bool found_candidate = false;
-        std::size_t best_individual_index = 0;
-        float best_fitness = 0.0f;
-
-        for (std::size_t individual_index = 0; individual_index < PopulationSize; ++individual_index) {
-            const Individual<Genome> &individual = population.individuals[individual_index];
-            if (!individual.has_fitness || selected_flags[individual_index]) {
-                continue;
-            }
-
-            if (!found_candidate || (individual.fitness > best_fitness)) {
-                found_candidate = true;
-                best_individual_index = individual_index;
-                best_fitness = individual.fitness;
-            }
-        }
-
-        if (!found_candidate) {
-            return false;
-        }
-
-        selected_flags[best_individual_index] = true;
-        top_indices[top_index] = best_individual_index;
-    }
-
-    return true;
-}
-
 } // namespace detail
 
 template <std::size_t ActionCount, std::size_t PopulationSize>
@@ -79,26 +40,14 @@ inline bool TryAssembleNextGeneration(const Population<ModelGenome<ActionCount>,
                                       Population<ModelGenome<ActionCount>, PopulationSize> &next_population,
                                       GenerationAssemblyRandomEngine &random_engine,
                                       const GenerationAssemblyConfig &config = {}) {
-    if (!IsValidGenerationAssemblyConfig<PopulationSize>(config)) {
-        return false;
-    }
-
-    common::FixedBuffer<std::size_t, PopulationSize> elite_indices{};
-    if (!detail::TryCollectTopIndividualIndices(current_population, config.genetic_algorithm.elite_count,
-                                                elite_indices)) {
+    if (!IsValidGenerationAssemblyConfig(config)) {
         return false;
     }
 
     next_population = {};
     next_population.generation_index = current_population.generation_index + 1;
 
-    for (std::size_t elite_slot = 0; elite_slot < config.genetic_algorithm.elite_count; ++elite_slot) {
-        const std::size_t elite_index = elite_indices[elite_slot];
-        detail::WriteGenomeToUnevaluatedIndividual(current_population.individuals[elite_index].genome,
-                                                   next_population.individuals[elite_slot]);
-    }
-
-    for (std::size_t slot_index = config.genetic_algorithm.elite_count; slot_index < PopulationSize; ++slot_index) {
+    for (std::size_t slot_index = 0; slot_index < PopulationSize; ++slot_index) {
         ParentPair parent_pair{};
         if (!TrySelectParentPair(current_population, random_engine, parent_pair, config.parent_selection)) {
             return false;

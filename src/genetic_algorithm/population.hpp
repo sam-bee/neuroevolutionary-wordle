@@ -8,10 +8,6 @@
 
 namespace neuroevolution::genetic_algorithm {
 
-struct GeneticAlgorithmConfig {
-    std::size_t elite_count = 1;
-};
-
 template <typename Genome> struct Individual {
     Genome genome{};
     float fitness = 0.0f;
@@ -26,11 +22,6 @@ template <typename Genome, std::size_t PopulationSize> struct Population {
     std::size_t active_individual_count = PopulationSize;
     std::size_t generation_index = 0;
 };
-
-template <std::size_t PopulationSize>
-constexpr NEUROEVOLUTION_HOST_DEVICE bool IsValidGeneticAlgorithmConfig(const GeneticAlgorithmConfig &config) noexcept {
-    return (config.elite_count > 0) && (config.elite_count <= PopulationSize);
-}
 
 template <typename Genome, std::size_t PopulationSize>
 inline NEUROEVOLUTION_HOST_DEVICE void ClearPopulationFitness(Population<Genome, PopulationSize> &population) noexcept {

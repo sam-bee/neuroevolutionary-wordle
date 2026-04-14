@@ -54,11 +54,6 @@ IsValidPendingOutputEmbeddingInjection(const TrainingWordCatalog &training_word_
              (training_word_catalog.word_count - pending_output_embedding_injection.first_catalog_word_index)));
 }
 
-constexpr bool IsValidDynamicGenerationAssemblyConfig(const GenerationAssemblyConfig &config) {
-    return (config.genetic_algorithm.elite_count > 0) && IsValidParentSelectionConfig(config.parent_selection) &&
-           IsValidBreedingConfig(config.breeding) && IsValidMutationConfig(config.mutation);
-}
-
 struct DeviceRandomState {
     std::uint64_t state = 0;
 };
@@ -165,35 +160,6 @@ __device__ bool IsBetterFitness(const float candidate_fitness, const std::size_t
            ((candidate_fitness == reference_fitness) && (candidate_index < reference_index));
 }
 
-__device__ bool TryFindEliteIndexByRank(const float *fitness_values, const std::uint8_t *has_fitness_flags,
-                                        const std::size_t active_population_size, const std::size_t elite_rank,
-                                        std::size_t &elite_index) {
-    for (std::size_t candidate_index = 0; candidate_index < active_population_size; ++candidate_index) {
-        if (has_fitness_flags[candidate_index] == 0) {
-            continue;
-        }
-
-        std::size_t better_count = 0;
-        for (std::size_t other_index = 0; other_index < active_population_size; ++other_index) {
-            if ((other_index == candidate_index) || (has_fitness_flags[other_index] == 0)) {
-                continue;
-            }
-
-            if (IsBetterFitness(fitness_values[other_index], other_index, fitness_values[candidate_index],
-                                candidate_index)) {
-                ++better_count;
-            }
-        }
-
-        if (better_count == elite_rank) {
-            elite_index = candidate_index;
-            return true;
-        }
-    }
-
-    return false;
-}
-
 __device__ bool TrySampleSelectableIndex(const std::uint8_t *has_fitness_flags,
                                          const std::size_t active_population_size, DeviceRandomState &random_state,
                                          const std::size_t excluded_index, std::size_t &selected_index) {
@@ -281,7 +247,8 @@ __device__ float ScoreDynamicActionEmbedding(const PolicyVector &policy_vector, 
     return ScoreActionEmbedding(policy_vector, action_embedding);
 }
 
-__device__ bool TrySelectBestDynamicAction(const PolicyVector &policy_vector, const TrainingWordCatalog &training_word_catalog,
+__device__ bool TrySelectBestDynamicAction(const PolicyVector &policy_vector,
+                                           const TrainingWordCatalog &training_word_catalog,
                                            const std::uint8_t *genome_bytes, const std::size_t action_count,
                                            SelectedAction &selected_action) {
     if ((action_count == 0) || (action_count > training_word_catalog.word_count)) {
@@ -295,8 +262,8 @@ __device__ bool TrySelectBestDynamicAction(const PolicyVector &policy_vector, co
     selected_action.score = ScoreDynamicActionEmbedding(policy_vector, selected_action.word, tail_rows[0]);
 
     for (std::size_t action_index = 1; action_index < action_count; ++action_index) {
-        const float score =
-            ScoreDynamicActionEmbedding(policy_vector, training_word_catalog.words[action_index], tail_rows[action_index]);
+        const float score = ScoreDynamicActionEmbedding(policy_vector, training_word_catalog.words[action_index],
+                                                        tail_rows[action_index]);
         if (score > selected_action.score) {
             selected_action.action_index = action_index;
             selected_action.word = training_word_catalog.words[action_index];
@@ -318,7 +285,8 @@ __device__ DeviceRuntimeStatusCode TryInitializePrefilledGrid(const TrainingWord
                                                               WordleGrid &grid_out) {
     grid_out = MakeWordleGrid(solution);
 
-    const Word first_guess = training_word_catalog.words[WrapTrainingWordIndex(first_guess_index, active_training_word_count)];
+    const Word first_guess =
+        training_word_catalog.words[WrapTrainingWordIndex(first_guess_index, active_training_word_count)];
     const Word second_guess =
         training_word_catalog.words[WrapTrainingWordIndex(second_guess_index, active_training_word_count)];
 
@@ -340,7 +308,8 @@ __device__ DeviceRuntimeStatusCode TryPlayWordleToCompletion(const std::uint8_t 
         }
 
         SelectedAction selected_action{};
-        if (!TrySelectBestDynamicAction(policy_vector, training_word_catalog, genome_bytes, action_count, selected_action)) {
+        if (!TrySelectBestDynamicAction(policy_vector, training_word_catalog, genome_bytes, action_count,
+                                        selected_action)) {
             return DeviceRuntimeStatusCode::kActionSelectionFailed;
         }
 
@@ -367,8 +336,9 @@ __device__ DeviceRuntimeStatusCode TryEvaluateIndividualFitness(const std::uint8
     (void)generation_index;
     const std::size_t active_training_word_count = runtime_word_counts.training_word_count;
     const std::size_t selectable_action_count =
-        (population_layout.action_count < runtime_word_counts.action_space_word_count) ? population_layout.action_count
-                                                                                       : runtime_word_counts.action_space_word_count;
+        (population_layout.action_count < runtime_word_counts.action_space_word_count)
+            ? population_layout.action_count
+            : runtime_word_counts.action_space_word_count;
 
     if (!IsValidTrainingWordCatalog(training_word_catalog) ||
         !IsValidRuntimeWordCounts(training_word_catalog, runtime_word_counts) ||
@@ -385,9 +355,8 @@ __device__ DeviceRuntimeStatusCode TryEvaluateIndividualFitness(const std::uint8
         {
             WordleGrid fresh_grid = MakeWordleGrid(solution);
             float episode_score = 0.0f;
-            const DeviceRuntimeStatusCode episode_status =
-                TryPlayWordleToCompletion(genome_bytes, training_word_catalog, selectable_action_count, fresh_grid,
-                                          episode_score);
+            const DeviceRuntimeStatusCode episode_status = TryPlayWordleToCompletion(
+                genome_bytes, training_word_catalog, selectable_action_count, fresh_grid, episode_score);
             if (episode_status != DeviceRuntimeStatusCode::kOk) {
                 return episode_status;
             }
@@ -405,9 +374,8 @@ __device__ DeviceRuntimeStatusCode TryEvaluateIndividualFitness(const std::uint8
             }
 
             float episode_score = 0.0f;
-            const DeviceRuntimeStatusCode episode_status =
-                TryPlayWordleToCompletion(genome_bytes, training_word_catalog, selectable_action_count, prefilled_grid,
-                                          episode_score);
+            const DeviceRuntimeStatusCode episode_status = TryPlayWordleToCompletion(
+                genome_bytes, training_word_catalog, selectable_action_count, prefilled_grid, episode_score);
             if (episode_status != DeviceRuntimeStatusCode::kOk) {
                 return episode_status;
             }
@@ -425,9 +393,8 @@ __device__ DeviceRuntimeStatusCode TryEvaluateIndividualFitness(const std::uint8
             }
 
             float episode_score = 0.0f;
-            const DeviceRuntimeStatusCode episode_status =
-                TryPlayWordleToCompletion(genome_bytes, training_word_catalog, selectable_action_count, prefilled_grid,
-                                          episode_score);
+            const DeviceRuntimeStatusCode episode_status = TryPlayWordleToCompletion(
+                genome_bytes, training_word_catalog, selectable_action_count, prefilled_grid, episode_score);
             if (episode_status != DeviceRuntimeStatusCode::kOk) {
                 return episode_status;
             }
@@ -440,45 +407,30 @@ __device__ DeviceRuntimeStatusCode TryEvaluateIndividualFitness(const std::uint8
     return DeviceRuntimeStatusCode::kOk;
 }
 
-__device__ void CopyGenome(const std::uint8_t *source_genome_bytes, const std::size_t source_action_count,
-                           std::uint8_t *target_genome_bytes, const std::size_t target_action_count) {
-    GenomePolicyModelParameters(target_genome_bytes) = GenomePolicyModelParameters(source_genome_bytes);
-
-    const TrainableActionEmbeddingTail *source_tail_rows = GenomeTailRows(source_genome_bytes);
-    TrainableActionEmbeddingTail *target_tail_rows = GenomeTailRows(target_genome_bytes);
-
-    const std::size_t copied_action_count =
-        (source_action_count < target_action_count) ? source_action_count : target_action_count;
-    for (std::size_t action_index = 0; action_index < copied_action_count; ++action_index) {
-        target_tail_rows[action_index] = source_tail_rows[action_index];
-    }
-}
-
 __device__ void BreedAndMutateGenome(const std::uint8_t *first_parent_genome_bytes,
                                      const std::uint8_t *second_parent_genome_bytes, const std::size_t action_count,
                                      std::uint8_t *child_genome_bytes, DeviceRandomState &random_state,
-                                     const BreedingConfig &breeding_config,
-                                     const MutationConfig &mutation_config) {
+                                     const BreedingConfig &breeding_config, const MutationConfig &mutation_config) {
     BreedAndMutateDenseLayer(GenomePolicyModelParameters(first_parent_genome_bytes).input_encoder.input_to_hidden,
                              GenomePolicyModelParameters(second_parent_genome_bytes).input_encoder.input_to_hidden,
-                             GenomePolicyModelParameters(child_genome_bytes).input_encoder.input_to_hidden, random_state,
-                             breeding_config, mutation_config);
+                             GenomePolicyModelParameters(child_genome_bytes).input_encoder.input_to_hidden,
+                             random_state, breeding_config, mutation_config);
     BreedAndMutateDenseLayer(GenomePolicyModelParameters(first_parent_genome_bytes).input_encoder.hidden_to_output,
                              GenomePolicyModelParameters(second_parent_genome_bytes).input_encoder.hidden_to_output,
-                             GenomePolicyModelParameters(child_genome_bytes).input_encoder.hidden_to_output, random_state,
-                             breeding_config, mutation_config);
+                             GenomePolicyModelParameters(child_genome_bytes).input_encoder.hidden_to_output,
+                             random_state, breeding_config, mutation_config);
     BreedAndMutateDenseLayer(GenomePolicyModelParameters(first_parent_genome_bytes).dense_trunk.input_to_hidden0,
                              GenomePolicyModelParameters(second_parent_genome_bytes).dense_trunk.input_to_hidden0,
                              GenomePolicyModelParameters(child_genome_bytes).dense_trunk.input_to_hidden0, random_state,
                              breeding_config, mutation_config);
     BreedAndMutateDenseLayer(GenomePolicyModelParameters(first_parent_genome_bytes).dense_trunk.hidden0_to_hidden1,
                              GenomePolicyModelParameters(second_parent_genome_bytes).dense_trunk.hidden0_to_hidden1,
-                             GenomePolicyModelParameters(child_genome_bytes).dense_trunk.hidden0_to_hidden1, random_state,
-                             breeding_config, mutation_config);
+                             GenomePolicyModelParameters(child_genome_bytes).dense_trunk.hidden0_to_hidden1,
+                             random_state, breeding_config, mutation_config);
     BreedAndMutateDenseLayer(GenomePolicyModelParameters(first_parent_genome_bytes).dense_trunk.hidden1_to_output,
                              GenomePolicyModelParameters(second_parent_genome_bytes).dense_trunk.hidden1_to_output,
-                             GenomePolicyModelParameters(child_genome_bytes).dense_trunk.hidden1_to_output, random_state,
-                             breeding_config, mutation_config);
+                             GenomePolicyModelParameters(child_genome_bytes).dense_trunk.hidden1_to_output,
+                             random_state, breeding_config, mutation_config);
 
     const TrainableActionEmbeddingTail *first_parent_tail_rows = GenomeTailRows(first_parent_genome_bytes);
     const TrainableActionEmbeddingTail *second_parent_tail_rows = GenomeTailRows(second_parent_genome_bytes);
@@ -497,9 +449,9 @@ __device__ void MarkIndividualUnevaluated(float *fitness_values, std::uint32_t *
     has_fitness_flags[individual_index] = 0;
 }
 
-__device__ DeviceRuntimeStatusCode TryApplyPendingOutputEmbeddingInjection(
-    std::uint8_t *genome_bytes, const std::size_t current_action_count,
-    const PendingOutputEmbeddingInjection pending_output_embedding_injection) {
+__device__ DeviceRuntimeStatusCode
+TryApplyPendingOutputEmbeddingInjection(std::uint8_t *genome_bytes, const std::size_t current_action_count,
+                                        const PendingOutputEmbeddingInjection pending_output_embedding_injection) {
     if (!pending_output_embedding_injection.enabled) {
         return DeviceRuntimeStatusCode::kOk;
     }
@@ -516,8 +468,8 @@ __device__ DeviceRuntimeStatusCode TryApplyPendingOutputEmbeddingInjection(
          ++injection_offset) {
         if (!TrySeedOutputEmbeddingTailFromHintGrids(
                 GenomePolicyModelParameters(genome_bytes),
-                training_word_catalog.words[pending_output_embedding_injection.first_catalog_word_index +
-                                            injection_offset],
+                training_word_catalog
+                    .words[pending_output_embedding_injection.first_catalog_word_index + injection_offset],
                 tail_rows[current_action_count + injection_offset])) {
             return DeviceRuntimeStatusCode::kOutputEmbeddingInjectionFailed;
         }
@@ -544,9 +496,9 @@ __global__ void EvaluatePopulationFitnessKernel(const std::uint8_t *current_geno
     }
 
     float fitness = 0.0f;
-    const DeviceRuntimeStatusCode evaluation_status = TryEvaluateIndividualFitness(
-        GenomeBytesAt(current_genomes, current_layout, individual_index), current_layout, current_layout.generation_index,
-        runtime_word_counts, fitness);
+    const DeviceRuntimeStatusCode evaluation_status =
+        TryEvaluateIndividualFitness(GenomeBytesAt(current_genomes, current_layout, individual_index), current_layout,
+                                     current_layout.generation_index, runtime_word_counts, fitness);
     if (evaluation_status != DeviceRuntimeStatusCode::kOk) {
         SetFailureStatus(status, evaluation_status);
         return;
@@ -574,7 +526,8 @@ __global__ void SummarizePopulationKernel(const float *current_fitness, const st
     float fitness_sum = 0.0f;
     std::size_t best_index = 0;
 
-    for (std::size_t individual_index = 0; individual_index < current_layout.active_individual_count; ++individual_index) {
+    for (std::size_t individual_index = 0; individual_index < current_layout.active_individual_count;
+         ++individual_index) {
         if (current_has_fitness[individual_index] == 0) {
             SetFailureStatus(status, DeviceRuntimeStatusCode::kPopulationNotEvaluated);
             return;
@@ -582,7 +535,8 @@ __global__ void SummarizePopulationKernel(const float *current_fitness, const st
 
         fitness_sum += current_fitness[individual_index];
 
-        if (!found_best || IsBetterFitness(current_fitness[individual_index], individual_index, best_fitness, best_index)) {
+        if (!found_best ||
+            IsBetterFitness(current_fitness[individual_index], individual_index, best_fitness, best_index)) {
             found_best = true;
             best_fitness = current_fitness[individual_index];
             best_index = individual_index;
@@ -597,12 +551,14 @@ __global__ void SummarizePopulationKernel(const float *current_fitness, const st
     summary->population_size = current_layout.active_individual_count;
 }
 
-__global__ void AssembleNextGenerationKernel(
-    const std::uint8_t *current_genomes, const float *current_fitness, const std::uint8_t *current_has_fitness,
-    const DynamicPopulationLayout current_layout, std::uint8_t *next_genomes, float *next_fitness,
-    std::uint32_t *next_evaluation_counts, std::uint8_t *next_has_fitness, const DynamicPopulationLayout next_layout,
-    const std::uint32_t generation_seed, const GenerationAssemblyConfig config,
-    const PendingOutputEmbeddingInjection pending_output_embedding_injection, int *status) {
+__global__ void AssembleNextGenerationKernel(const std::uint8_t *current_genomes, const float *current_fitness,
+                                             const std::uint8_t *current_has_fitness,
+                                             const DynamicPopulationLayout current_layout, std::uint8_t *next_genomes,
+                                             float *next_fitness, std::uint32_t *next_evaluation_counts,
+                                             std::uint8_t *next_has_fitness, const DynamicPopulationLayout next_layout,
+                                             const std::uint32_t generation_seed, const GenerationAssemblyConfig config,
+                                             const PendingOutputEmbeddingInjection pending_output_embedding_injection,
+                                             int *status) {
     const std::size_t slot_index = (blockIdx.x * blockDim.x) + threadIdx.x;
     if (!IsValidDynamicPopulationLayout(current_layout) || !IsValidDynamicPopulationLayout(next_layout)) {
         if ((blockIdx.x == 0) && (threadIdx.x == 0)) {
@@ -612,28 +568,6 @@ __global__ void AssembleNextGenerationKernel(
     }
 
     if (slot_index >= next_layout.active_individual_count) {
-        return;
-    }
-
-    if (slot_index < config.genetic_algorithm.elite_count) {
-        std::size_t elite_index = 0;
-        if (!TryFindEliteIndexByRank(current_fitness, current_has_fitness, current_layout.active_individual_count,
-                                     slot_index, elite_index)) {
-            SetFailureStatus(status, DeviceRuntimeStatusCode::kPopulationNotEvaluated);
-            return;
-        }
-
-        CopyGenome(GenomeBytesAt(current_genomes, current_layout, elite_index), current_layout.action_count,
-                   GenomeBytesAt(next_genomes, next_layout, slot_index), next_layout.action_count);
-        const DeviceRuntimeStatusCode injection_status = TryApplyPendingOutputEmbeddingInjection(
-            GenomeBytesAt(next_genomes, next_layout, slot_index), current_layout.action_count,
-            pending_output_embedding_injection);
-        if (injection_status != DeviceRuntimeStatusCode::kOk) {
-            SetFailureStatus(status, injection_status);
-            return;
-        }
-
-        MarkIndividualUnevaluated(next_fitness, next_evaluation_counts, next_has_fitness, slot_index);
         return;
     }
 
@@ -649,12 +583,12 @@ __global__ void AssembleNextGenerationKernel(
 
     BreedAndMutateGenome(GenomeBytesAt(current_genomes, current_layout, parent_pair.first_parent_index),
                          GenomeBytesAt(current_genomes, current_layout, parent_pair.second_parent_index),
-                         current_layout.action_count, GenomeBytesAt(next_genomes, next_layout, slot_index), random_state,
-                         config.breeding, config.mutation);
+                         current_layout.action_count, GenomeBytesAt(next_genomes, next_layout, slot_index),
+                         random_state, config.breeding, config.mutation);
 
-    const DeviceRuntimeStatusCode injection_status = TryApplyPendingOutputEmbeddingInjection(
-        GenomeBytesAt(next_genomes, next_layout, slot_index), current_layout.action_count,
-        pending_output_embedding_injection);
+    const DeviceRuntimeStatusCode injection_status =
+        TryApplyPendingOutputEmbeddingInjection(GenomeBytesAt(next_genomes, next_layout, slot_index),
+                                                current_layout.action_count, pending_output_embedding_injection);
     if (injection_status != DeviceRuntimeStatusCode::kOk) {
         SetFailureStatus(status, injection_status);
         return;
@@ -712,7 +646,8 @@ bool TryCreateDeviceRuntimeBuffers(DeviceRuntimeBuffers &buffers, const DeviceRu
 
     const std::size_t max_population_count = PopulationSizeForGenotypeBudgetBytes(
         config.genotype_memory_budget_bytes, config.initial_action_count, config.population_size_ceiling);
-    if ((config.genotype_memory_budget_bytes == 0) || (config.initial_action_count == 0) || (max_population_count == 0)) {
+    if ((config.genotype_memory_budget_bytes == 0) || (config.initial_action_count == 0) ||
+        (max_population_count == 0)) {
         return false;
     }
 
@@ -725,7 +660,8 @@ bool TryCreateDeviceRuntimeBuffers(DeviceRuntimeBuffers &buffers, const DeviceRu
     ok &= CheckCuda(cudaMalloc(&buffers.next_genomes, buffers.genotype_memory_budget_bytes));
     ok &= CheckCuda(cudaMalloc(&buffers.current_fitness, buffers.max_population_count * sizeof(float)));
     ok &= CheckCuda(cudaMalloc(&buffers.next_fitness, buffers.max_population_count * sizeof(float)));
-    ok &= CheckCuda(cudaMalloc(&buffers.current_evaluation_counts, buffers.max_population_count * sizeof(std::uint32_t)));
+    ok &=
+        CheckCuda(cudaMalloc(&buffers.current_evaluation_counts, buffers.max_population_count * sizeof(std::uint32_t)));
     ok &= CheckCuda(cudaMalloc(&buffers.next_evaluation_counts, buffers.max_population_count * sizeof(std::uint32_t)));
     ok &= CheckCuda(cudaMalloc(&buffers.current_has_fitness, buffers.max_population_count * sizeof(std::uint8_t)));
     ok &= CheckCuda(cudaMalloc(&buffers.next_has_fitness, buffers.max_population_count * sizeof(std::uint8_t)));
@@ -743,7 +679,8 @@ bool TryCreateDeviceRuntimeBuffers(DeviceRuntimeBuffers &buffers, const DeviceRu
     ok &= CheckCuda(cudaMemset(buffers.next_fitness, 0, buffers.max_population_count * sizeof(float)));
     ok &= CheckCuda(
         cudaMemset(buffers.current_evaluation_counts, 0, buffers.max_population_count * sizeof(std::uint32_t)));
-    ok &= CheckCuda(cudaMemset(buffers.next_evaluation_counts, 0, buffers.max_population_count * sizeof(std::uint32_t)));
+    ok &=
+        CheckCuda(cudaMemset(buffers.next_evaluation_counts, 0, buffers.max_population_count * sizeof(std::uint32_t)));
     ok &= CheckCuda(cudaMemset(buffers.current_has_fitness, 0, buffers.max_population_count * sizeof(std::uint8_t)));
     ok &= CheckCuda(cudaMemset(buffers.next_has_fitness, 0, buffers.max_population_count * sizeof(std::uint8_t)));
     ok &= CheckCuda(cudaMemset(buffers.summary, 0, sizeof(PopulationFitnessSummary)));
@@ -777,14 +714,15 @@ bool TryUploadCurrentPopulationToDevice(const HostPopulation &host_population, D
     buffers.next_layout = {};
 
     bool ok = true;
-    ok &= CheckCuda(cudaMemcpy(buffers.current_genomes, host_population.genomes.get(), host_population.layout.genotype_bytes,
-                               cudaMemcpyHostToDevice));
+    ok &= CheckCuda(cudaMemcpy(buffers.current_genomes, host_population.genomes.get(),
+                               host_population.layout.genotype_bytes, cudaMemcpyHostToDevice));
     ok &= CheckCuda(cudaMemset(buffers.next_genomes, 0, buffers.genotype_memory_budget_bytes));
     ok &= CheckCuda(cudaMemset(buffers.current_fitness, 0, buffers.max_population_count * sizeof(float)));
     ok &= CheckCuda(cudaMemset(buffers.next_fitness, 0, buffers.max_population_count * sizeof(float)));
     ok &= CheckCuda(
         cudaMemset(buffers.current_evaluation_counts, 0, buffers.max_population_count * sizeof(std::uint32_t)));
-    ok &= CheckCuda(cudaMemset(buffers.next_evaluation_counts, 0, buffers.max_population_count * sizeof(std::uint32_t)));
+    ok &=
+        CheckCuda(cudaMemset(buffers.next_evaluation_counts, 0, buffers.max_population_count * sizeof(std::uint32_t)));
     ok &= CheckCuda(cudaMemset(buffers.current_has_fitness, 0, buffers.max_population_count * sizeof(std::uint8_t)));
     ok &= CheckCuda(cudaMemset(buffers.next_has_fitness, 0, buffers.max_population_count * sizeof(std::uint8_t)));
     return ok;
@@ -801,8 +739,8 @@ bool TryDownloadCurrentPopulationFromDevice(const DeviceRuntimeBuffers &buffers,
         return false;
     }
 
-    return CheckCuda(cudaMemcpy(host_population.genomes.get(), buffers.current_genomes, host_population.layout.genotype_bytes,
-                                cudaMemcpyDeviceToHost));
+    return CheckCuda(cudaMemcpy(host_population.genomes.get(), buffers.current_genomes,
+                                host_population.layout.genotype_bytes, cudaMemcpyDeviceToHost));
 }
 
 bool TryEvaluatePopulationFitnessOnDevice(DeviceRuntimeBuffers &buffers, const RuntimeWordCounts &runtime_word_counts) {
@@ -854,14 +792,13 @@ bool TryReadDeviceRuntimeStatus(const DeviceRuntimeBuffers &buffers, DeviceRunti
 bool TryAssembleNextGenerationOnDevice(DeviceRuntimeBuffers &buffers, const std::uint32_t generation_seed,
                                        const GenerationAssemblyConfig &config,
                                        const PendingOutputEmbeddingInjection &pending_output_embedding_injection) {
-    if (!IsValidDynamicGenerationAssemblyConfig(config) || !IsValidDynamicPopulationLayout(buffers.current_layout)) {
+    if (!IsValidGenerationAssemblyConfig(config) || !IsValidDynamicPopulationLayout(buffers.current_layout)) {
         (void)WriteDeviceStatus(buffers, DeviceRuntimeStatusCode::kInvalidAssemblyConfig);
         return false;
     }
 
     DynamicPopulationLayout next_layout{};
-    if (!TryPlanNextPopulationLayout(buffers, pending_output_embedding_injection, next_layout) ||
-        (next_layout.active_individual_count < config.genetic_algorithm.elite_count)) {
+    if (!TryPlanNextPopulationLayout(buffers, pending_output_embedding_injection, next_layout)) {
         (void)WriteDeviceStatus(buffers, DeviceRuntimeStatusCode::kInvalidAssemblyConfig);
         return false;
     }
@@ -872,7 +809,8 @@ bool TryAssembleNextGenerationOnDevice(DeviceRuntimeBuffers &buffers, const std:
     ok &= ResetDeviceStatus(buffers);
     ok &= CheckCuda(cudaMemset(buffers.next_genomes, 0, buffers.genotype_memory_budget_bytes));
     ok &= CheckCuda(cudaMemset(buffers.next_fitness, 0, buffers.max_population_count * sizeof(float)));
-    ok &= CheckCuda(cudaMemset(buffers.next_evaluation_counts, 0, buffers.max_population_count * sizeof(std::uint32_t)));
+    ok &=
+        CheckCuda(cudaMemset(buffers.next_evaluation_counts, 0, buffers.max_population_count * sizeof(std::uint32_t)));
     ok &= CheckCuda(cudaMemset(buffers.next_has_fitness, 0, buffers.max_population_count * sizeof(std::uint8_t)));
     if (!ok) {
         return false;

@@ -248,7 +248,6 @@ bool ReportDeviceRuntimeFailure(const DeviceRuntimeBuffers &buffers, const std::
 
 GenerationAssemblyConfig MakeAssemblyConfig() {
     GenerationAssemblyConfig config{};
-    config.genetic_algorithm.elite_count = 1;
     config.parent_selection.tournament_size = 3;
     config.parent_selection.allow_self_parenting = false;
     config.breeding.first_parent_probability = 0.5f;
@@ -258,7 +257,7 @@ GenerationAssemblyConfig MakeAssemblyConfig() {
 }
 
 PendingOutputEmbeddingInjection MakePendingOutputEmbeddingInjection(const RuntimeWordCounts &runtime_word_counts,
-                                                                   const std::size_t next_scheduled_word_count) {
+                                                                    const std::size_t next_scheduled_word_count) {
     PendingOutputEmbeddingInjection pending_output_embedding_injection{};
     if (runtime_word_counts.action_space_word_count < next_scheduled_word_count) {
         pending_output_embedding_injection.enabled = true;
@@ -282,8 +281,8 @@ bool TryComputeGenotypeBudgetBytes(const CliConfig &cli_config, const std::size_
                 ? cli_config.population_size_ceiling
                 : neuroevolution::genetic_algorithm::dynamic_device::kDefaultPopulationSizeCeiling;
         const std::size_t genome_stride_bytes = ComputeDynamicGenomeStrideBytes(initial_action_count);
-        if ((genome_stride_bytes == 0) || (starting_population_target > (std::numeric_limits<std::size_t>::max() /
-                                                                         genome_stride_bytes))) {
+        if ((genome_stride_bytes == 0) ||
+            (starting_population_target > (std::numeric_limits<std::size_t>::max() / genome_stride_bytes))) {
             return false;
         }
 
@@ -362,7 +361,8 @@ int main(int argc, char **argv) {
         }
 
         const std::size_t initial_population_size = PopulationSizeForGenotypeBudgetBytes(
-            genotype_memory_budget_bytes, runtime_word_counts.action_space_word_count, cli_config.population_size_ceiling);
+            genotype_memory_budget_bytes, runtime_word_counts.action_space_word_count,
+            cli_config.population_size_ceiling);
         if (initial_population_size == 0) {
             std::cerr << "The requested genotype VRAM budget is too small for even one starting genome.\n";
             return 1;
@@ -398,8 +398,7 @@ int main(int argc, char **argv) {
                   << ", population_ceiling=" << PopulationCeilingLabel(runtime_config.population_size_ceiling)
                   << ", action_count=" << runtime_word_counts.action_space_word_count
                   << ", genome_stride_bytes=" << buffers.current_layout.genome_stride_bytes
-                  << ", genotype_vram_budget_bytes=" << genotype_memory_budget_bytes
-                  << ", genotype_vram_budget_gib="
+                  << ", genotype_vram_budget_bytes=" << genotype_memory_budget_bytes << ", genotype_vram_budget_gib="
                   << (static_cast<double>(genotype_memory_budget_bytes) / kBytesPerVramGiB)
                   << ", generations=" << cli_config.generation_count << ", seed=" << cli_config.seed
                   << ", training_word_catalog_entries=" << training_word_catalog.word_count
