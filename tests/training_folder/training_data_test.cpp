@@ -113,11 +113,31 @@ bool TestWordCountScheduleAdvancesByConfiguredStepAndClampsToCatalog() {
     return ok;
 }
 
+bool TestWordCountScheduleCanStayFixedWidthWithZeroStep() {
+    constexpr WordCountSchedule kSchedule{
+        .initial_word_count = 37,
+        .word_count_step = 0,
+        .word_count_step_period_generations = 5,
+    };
+
+    bool ok = true;
+    ok &= ExpectTrue(ScheduledWordCountForGeneration(kSchedule, kTrainingWordCatalogCapacity, 0) == 37,
+                     "Expected zero-step schedule generation zero to use the initial word count");
+    ok &= ExpectTrue(ScheduledWordCountForGeneration(kSchedule, kTrainingWordCatalogCapacity, 4) == 37,
+                     "Expected zero-step schedule to stay fixed before a period boundary");
+    ok &= ExpectTrue(ScheduledWordCountForGeneration(kSchedule, kTrainingWordCatalogCapacity, 500) == 37,
+                     "Expected zero-step schedule to remain fixed for later generations");
+    ok &= ExpectTrue(ScheduledWordCountForGeneration(kSchedule, 20, 500) == 20,
+                     "Expected zero-step schedule to still clamp to the catalog size");
+    return ok;
+}
+
 } // namespace
 
 int main() {
     if (!TestLoadTrainingWordCatalogReadsRandomisedActionSpaceWords() ||
-        !TestWordCountScheduleAdvancesByConfiguredStepAndClampsToCatalog()) {
+        !TestWordCountScheduleAdvancesByConfiguredStepAndClampsToCatalog() ||
+        !TestWordCountScheduleCanStayFixedWidthWithZeroStep()) {
         return 1;
     }
 

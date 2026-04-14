@@ -14,7 +14,7 @@ constexpr std::size_t kTrainingWordCatalogCapacity = 4739;
 
 struct WordCountSchedule {
     std::size_t initial_word_count = kDefaultInitialActiveWordCount;
-    std::size_t word_count_step = 1;
+    std::size_t word_count_step = 0;
     std::size_t word_count_step_period_generations = 1;
 };
 
@@ -38,18 +38,22 @@ constexpr NEUROEVOLUTION_HOST_DEVICE bool IsValidTrainingWordCatalog(const Train
 }
 
 constexpr NEUROEVOLUTION_HOST_DEVICE bool IsValidWordCountSchedule(const WordCountSchedule &schedule) noexcept {
-    return (schedule.initial_word_count > 0) && (schedule.word_count_step > 0) &&
-           (schedule.word_count_step_period_generations > 0);
+    return (schedule.initial_word_count > 0) && (schedule.word_count_step_period_generations > 0);
 }
 
-constexpr NEUROEVOLUTION_HOST_DEVICE std::size_t ScheduledWordCountForGeneration(
-    const WordCountSchedule &schedule, const std::size_t catalog_word_count, const std::size_t generation_index) noexcept {
+constexpr NEUROEVOLUTION_HOST_DEVICE std::size_t
+ScheduledWordCountForGeneration(const WordCountSchedule &schedule, const std::size_t catalog_word_count,
+                                const std::size_t generation_index) noexcept {
     if (!IsValidWordCountSchedule(schedule) || (catalog_word_count == 0)) {
         return 0;
     }
 
     const std::size_t initial_word_count =
         (schedule.initial_word_count < catalog_word_count) ? schedule.initial_word_count : catalog_word_count;
+    if (schedule.word_count_step == 0) {
+        return initial_word_count;
+    }
+
     const std::size_t completed_schedule_steps = generation_index / schedule.word_count_step_period_generations;
     if (completed_schedule_steps == 0) {
         return initial_word_count;

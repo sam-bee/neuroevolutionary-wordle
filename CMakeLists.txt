@@ -220,8 +220,7 @@ add_executable(run_genetic_algorithm
 )
 
 target_link_libraries(run_genetic_algorithm PRIVATE
-    genetic_algorithm_dynamic_device
-    training_folder
+    genetic_algorithm_arena_device
 )
 
 enable_project_warnings(run_genetic_algorithm)
