@@ -5,6 +5,7 @@
 #include "genetic_algorithm/generation_assembly.hpp"
 #include "genetic_algorithm/genome.hpp"
 #include "genetic_algorithm/genotype_arena/arena.hpp"
+#include "genetic_algorithm/genotype_arena/assembly.hpp"
 #include "genetic_algorithm/genotype_arena/generation.hpp"
 #include "genetic_algorithm/mutation.hpp"
 #include "genetic_algorithm/output_embedding_injection.hpp"

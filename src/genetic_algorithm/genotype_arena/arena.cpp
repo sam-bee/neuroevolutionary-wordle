@@ -8,12 +8,8 @@ namespace neuroevolution::genetic_algorithm::genotype_arena {
 
 namespace {
 
-void ClearArenaSlotBytes(HostGenotypeArena &arena, const std::uint32_t slot_index) {
-    std::memset(HostArenaSlotBytesAt(arena, slot_index), 0, arena.layout.slot_stride_bytes);
-}
-
-bool IsValidArenaSlotIndex(const HostGenotypeArena &arena, const std::uint32_t slot_index) {
-    return IsValidHostGenotypeArena(arena) && (slot_index < arena.layout.slot_count);
+void ClearArenaSlotBytes(const GenotypeArenaView arena, const std::uint32_t slot_index) {
+    std::memset(ArenaSlotBytesAt(arena.storage, arena.layout, slot_index), 0, arena.layout.slot_stride_bytes);
 }
 
 } // namespace
@@ -78,12 +74,12 @@ bool TryCreateHostGenotypeArena(HostGenotypeArena &arena, const std::size_t slot
     return TryAllocateHostArenaStorage(arena);
 }
 
-bool TryAllocateArenaSlot(HostGenotypeArena &arena, std::uint32_t &slot_index) {
-    if (!IsValidHostGenotypeArena(arena) || (arena.free_slot_count == 0)) {
+bool TryAllocateArenaSlot(const GenotypeArenaView arena, std::uint32_t &slot_index) {
+    if (!IsValidGenotypeArenaView(arena) || (ArenaFreeSlotCount(arena) == 0)) {
         return false;
     }
 
-    slot_index = arena.free_slot_stack[--arena.free_slot_count];
+    slot_index = arena.free_slot_stack[--(*arena.free_slot_count)];
     ArenaSlotState &slot_state = arena.slot_states[slot_index];
     if (slot_state.occupied || (slot_state.reference_count != 0)) {
         return false;
@@ -95,8 +91,12 @@ bool TryAllocateArenaSlot(HostGenotypeArena &arena, std::uint32_t &slot_index) {
     return true;
 }
 
-bool TryRetainArenaSlot(HostGenotypeArena &arena, const std::uint32_t slot_index) {
-    if (!IsValidArenaSlotIndex(arena, slot_index)) {
+bool TryAllocateArenaSlot(HostGenotypeArena &arena, std::uint32_t &slot_index) {
+    return TryAllocateArenaSlot(MakeGenotypeArenaView(arena), slot_index);
+}
+
+bool TryRetainArenaSlot(const GenotypeArenaView arena, const std::uint32_t slot_index) {
+    if (!IsValidGenotypeArenaView(arena) || (slot_index >= arena.layout.slot_count)) {
         return false;
     }
 
@@ -110,14 +110,18 @@ bool TryRetainArenaSlot(HostGenotypeArena &arena, const std::uint32_t slot_index
     return true;
 }
 
-bool TryReleaseArenaSlot(HostGenotypeArena &arena, const std::uint32_t slot_index) {
-    if (!IsValidArenaSlotIndex(arena, slot_index)) {
+bool TryRetainArenaSlot(HostGenotypeArena &arena, const std::uint32_t slot_index) {
+    return TryRetainArenaSlot(MakeGenotypeArenaView(arena), slot_index);
+}
+
+bool TryReleaseArenaSlot(const GenotypeArenaView arena, const std::uint32_t slot_index) {
+    if (!IsValidGenotypeArenaView(arena) || (slot_index >= arena.layout.slot_count)) {
         return false;
     }
 
     ArenaSlotState &slot_state = arena.slot_states[slot_index];
     if (!slot_state.occupied || (slot_state.reference_count == 0) ||
-        (arena.free_slot_count > arena.layout.slot_count)) {
+        (ArenaFreeSlotCount(arena) > arena.layout.slot_count)) {
         return false;
     }
 
@@ -125,25 +129,61 @@ bool TryReleaseArenaSlot(HostGenotypeArena &arena, const std::uint32_t slot_inde
     if (slot_state.reference_count == 0) {
         slot_state.occupied = false;
         ClearArenaSlotBytes(arena, slot_index);
-        if (arena.free_slot_count >= arena.layout.slot_count) {
+        if (ArenaFreeSlotCount(arena) >= arena.layout.slot_count) {
             return false;
         }
 
-        arena.free_slot_stack[arena.free_slot_count++] = slot_index;
+        arena.free_slot_stack[(*arena.free_slot_count)++] = slot_index;
     }
 
     return true;
 }
 
-bool TryCopyGenomeBytesIntoArenaSlot(HostGenotypeArena &arena, const std::uint32_t slot_index,
+bool TryReleaseArenaSlot(HostGenotypeArena &arena, const std::uint32_t slot_index) {
+    return TryReleaseArenaSlot(MakeGenotypeArenaView(arena), slot_index);
+}
+
+bool TryCopyGenomeBytesIntoArenaSlot(const GenotypeArenaView arena, const std::uint32_t slot_index,
                                      const std::uint8_t *source_genome_bytes, const std::size_t source_bytes) {
-    if (!IsValidArenaSlotIndex(arena, slot_index) || (source_genome_bytes == nullptr) ||
-        (source_bytes != arena.layout.slot_stride_bytes) || !arena.slot_states[slot_index].occupied) {
+    if (!IsValidGenotypeArenaView(arena) || (slot_index >= arena.layout.slot_count) ||
+        (source_genome_bytes == nullptr) || (source_bytes != arena.layout.slot_stride_bytes) ||
+        !arena.slot_states[slot_index].occupied) {
         return false;
     }
 
-    std::memcpy(HostArenaSlotBytesAt(arena, slot_index), source_genome_bytes, source_bytes);
+    std::memcpy(ArenaSlotBytesAt(arena.storage, arena.layout, slot_index), source_genome_bytes, source_bytes);
     return true;
+}
+
+bool TryCopyGenomeBytesIntoArenaSlot(HostGenotypeArena &arena, const std::uint32_t slot_index,
+                                     const std::uint8_t *source_genome_bytes, const std::size_t source_bytes) {
+    return TryCopyGenomeBytesIntoArenaSlot(MakeGenotypeArenaView(arena), slot_index, source_genome_bytes, source_bytes);
+}
+
+bool TryCloneArenaSlot(const GenotypeArenaView arena, const std::uint32_t source_slot_index,
+                       std::uint32_t &cloned_slot_index) {
+    if (!IsValidGenotypeArenaView(arena) || (source_slot_index >= arena.layout.slot_count) ||
+        !arena.slot_states[source_slot_index].occupied) {
+        return false;
+    }
+
+    if (!TryAllocateArenaSlot(arena, cloned_slot_index)) {
+        return false;
+    }
+
+    if (!TryCopyGenomeBytesIntoArenaSlot(arena, cloned_slot_index,
+                                         ArenaSlotBytesAt(arena.storage, arena.layout, source_slot_index),
+                                         arena.layout.slot_stride_bytes)) {
+        (void)TryReleaseArenaSlot(arena, cloned_slot_index);
+        return false;
+    }
+
+    return true;
+}
+
+bool TryCloneArenaSlot(HostGenotypeArena &arena, const std::uint32_t source_slot_index,
+                       std::uint32_t &cloned_slot_index) {
+    return TryCloneArenaSlot(MakeGenotypeArenaView(arena), source_slot_index, cloned_slot_index);
 }
 
 } // namespace neuroevolution::genetic_algorithm::genotype_arena

@@ -140,6 +140,7 @@ target_link_libraries(genetic_algorithm INTERFACE
 )
 
 add_library(genotype_arena STATIC
+    src/genetic_algorithm/genotype_arena/assembly.cpp
     src/genetic_algorithm/genotype_arena/arena.cpp
 )
 
