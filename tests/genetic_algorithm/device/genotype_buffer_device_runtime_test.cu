@@ -533,6 +533,94 @@ bool TestDeviceBufferRuntimeReusesSweptAndReleasedSlotsDuringAssembly() {
     return ok;
 }
 
+bool TestDeviceBufferRuntimeAssemblesChildBatchConcurrently() {
+    constexpr std::size_t kParentCount = 32;
+    constexpr std::size_t kChildCount = 32;
+    constexpr std::size_t kSlotCount = 96;
+    constexpr std::size_t kActionCount = 4;
+
+    HostGenotypeBuffer host_buffer{};
+    BufferGeneration current_generation{};
+    bool ok = TryCreateHostGenotypeBuffer(host_buffer, kSlotCount, kActionCount);
+    ok &= TryCreateBufferGeneration(current_generation, kParentCount, 11);
+    if (!ok) {
+        std::cerr << "FAIL: could not allocate concurrent assembly fixtures\n";
+        return false;
+    }
+
+    for (std::size_t parent_index = 0; parent_index < current_generation.active_individual_count; ++parent_index) {
+        std::uint32_t slot_index = 0;
+        ok &= TryAllocateBufferSlot(host_buffer, slot_index);
+        ok &= TrySetBufferGenerationSlot(current_generation, parent_index, slot_index);
+        GenomePolicyModelParameters(HostBufferSlotBytesAt(host_buffer, slot_index))
+            .dense_trunk.hidden1_to_output.biases[0] = ToFloat16(100.0f + static_cast<float>(parent_index));
+        GenomeTailRows(HostBufferSlotBytesAt(host_buffer, slot_index))[0][0] =
+            ToFloat16(20.0f + static_cast<float>(parent_index));
+    }
+    if (!ok) {
+        return false;
+    }
+
+    BufferAssemblyPlan plan{};
+    ok &= TryCreateBufferAssemblyPlan(plan, kChildCount);
+    for (std::size_t child_index = 0; child_index < kChildCount; ++child_index) {
+        plan.parent_pairs[child_index] = {
+            .first_parent_index = static_cast<std::uint32_t>(child_index),
+            .second_parent_index = static_cast<std::uint32_t>(child_index),
+        };
+    }
+
+    DeviceBufferRuntimeConfig runtime_config{};
+    runtime_config.slot_count = kSlotCount;
+    runtime_config.action_count = kActionCount;
+    runtime_config.max_generation_size = kSlotCount;
+
+    DeviceBufferRuntimeBuffers buffers{};
+    ok &= TryCreateDeviceBufferRuntimeBuffers(buffers, runtime_config);
+    ok &= TryUploadBufferToDevice(host_buffer, buffers);
+    ok &= TryUploadCurrentGenerationToDevice(current_generation, buffers);
+    ok &= TryUploadAssemblyPlanToDevice(plan, buffers);
+    ok &= TryAssembleNextGenerationOnDevice(buffers, 101U, MakeDeterministicAssemblyConfig());
+    if (!ok) {
+        DeviceBufferRuntimeStatusCode status_code = DeviceBufferRuntimeStatusCode::kOk;
+        (void)TryReadDeviceBufferRuntimeStatus(buffers, status_code);
+        std::cerr << "FAIL: concurrent device buffer assembly failed with status " << static_cast<int>(status_code)
+                  << '\n';
+        DestroyDeviceBufferRuntimeBuffers(buffers);
+        return false;
+    }
+
+    HostGenotypeBuffer downloaded_buffer{};
+    BufferGeneration downloaded_current_generation{};
+    BufferGeneration downloaded_next_generation{};
+    ok &= TryDownloadBufferFromDevice(buffers, downloaded_buffer);
+    ok &= TryDownloadCurrentGenerationFromDevice(buffers, downloaded_current_generation);
+    ok &= TryDownloadNextGenerationFromDevice(buffers, downloaded_next_generation);
+    DestroyDeviceBufferRuntimeBuffers(buffers);
+    if (!ok) {
+        return false;
+    }
+
+    ok &= ExpectTrue(downloaded_next_generation.generation_index == 12,
+                     "Expected concurrent device assembly to increment the generation index");
+    ok &= ExpectTrue(downloaded_buffer.free_slot_count == (kSlotCount - kChildCount),
+                     "Expected concurrent child assembly to leave only child slots occupied");
+    for (std::size_t child_index = 0; child_index < kChildCount; ++child_index) {
+        const std::uint32_t child_slot = downloaded_next_generation.slot_indices[child_index];
+        ok &= ExpectTrue(child_slot != kInvalidBufferSlotIndex, "Expected concurrent child slot to be set");
+        ok &= ExpectNear(ToFloat(GenomePolicyModelParameters(HostBufferSlotBytesAt(downloaded_buffer, child_slot))
+                                     .dense_trunk.hidden1_to_output.biases[0]),
+                         100.0f + static_cast<float>(child_index), "concurrent child bias copied from first parent");
+        ok &= ExpectNear(ToFloat(GenomeTailRows(HostBufferSlotBytesAt(downloaded_buffer, child_slot))[0][0]),
+                         20.0f + static_cast<float>(child_index),
+                         "concurrent child trainable tail copied from first parent");
+        ok &= ExpectTrue(downloaded_current_generation.slot_indices[child_index] == kInvalidBufferSlotIndex,
+                         "Expected concurrent assembly to release consumed parent slots");
+    }
+
+    return ok;
+}
+
 bool TestDeviceBufferRuntimeFailsCleanlyWhenBufferIsGenuinelyFull() {
     HostGenotypeBuffer host_buffer{};
     BufferGeneration current_generation{};
@@ -608,6 +696,7 @@ int main() {
         !TestDeviceBufferFreeListIsThreadSafeUnderWarpContention() ||
         !TestDeviceBufferRuntimeUploadsAndDownloadsBufferAndGenerationState() ||
         !TestDeviceBufferRuntimeReusesSweptAndReleasedSlotsDuringAssembly() ||
+        !TestDeviceBufferRuntimeAssemblesChildBatchConcurrently() ||
         !TestDeviceBufferRuntimeFailsCleanlyWhenBufferIsGenuinelyFull()) {
         return 1;
     }
