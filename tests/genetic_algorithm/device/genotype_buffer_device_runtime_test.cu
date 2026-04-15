@@ -16,10 +16,14 @@ using neuroevolution::common::ToFloat;
 using neuroevolution::common::ToFloat16;
 using neuroevolution::genetic_algorithm::genotype_buffer::BufferAssemblyPlan;
 using neuroevolution::genetic_algorithm::genotype_buffer::BufferGeneration;
+using neuroevolution::genetic_algorithm::genotype_buffer::BufferSlotState;
 using neuroevolution::genetic_algorithm::genotype_buffer::GenomePolicyModelParameters;
 using neuroevolution::genetic_algorithm::genotype_buffer::GenomeTailRows;
+using neuroevolution::genetic_algorithm::genotype_buffer::GenotypeBufferLayout;
+using neuroevolution::genetic_algorithm::genotype_buffer::GenotypeBufferView;
 using neuroevolution::genetic_algorithm::genotype_buffer::HostBufferSlotBytesAt;
 using neuroevolution::genetic_algorithm::genotype_buffer::HostGenotypeBuffer;
+using neuroevolution::genetic_algorithm::genotype_buffer::kInvalidBufferSlotIndex;
 using neuroevolution::genetic_algorithm::genotype_buffer::TryAllocateBufferSlot;
 using neuroevolution::genetic_algorithm::genotype_buffer::TryCreateBufferAssemblyPlan;
 using neuroevolution::genetic_algorithm::genotype_buffer::TryCreateBufferGeneration;
@@ -208,6 +212,159 @@ bool TestDeviceReferenceCountersAreAtomicUnderWarpContention() {
                      "Expected warp-contended reference counters to return to zero");
     ok &= ExpectTrue((host_final_release_counts[0] == 1U) && (host_final_release_counts[1] == 1U),
                      "Expected exactly one final-release observation per contended counter");
+    return ok;
+}
+
+__global__ void BufferFreeListWarpContentionKernel(std::uint8_t *buffer_storage, BufferSlotState *slot_states,
+                                                   std::uint32_t *free_slot_stack, std::uint32_t *free_slot_count,
+                                                   std::uint32_t *free_slot_lock,
+                                                   const GenotypeBufferLayout buffer_layout,
+                                                   std::uint32_t *allocated_slots, std::uint32_t *slot_hit_counts,
+                                                   int *status) {
+    constexpr unsigned kWarpMask = 0xFFFFFFFFU;
+    if ((blockIdx.x != 0) || (threadIdx.x >= 32)) {
+        return;
+    }
+
+    GenotypeBufferView buffer{
+        .layout = buffer_layout,
+        .storage = buffer_storage,
+        .slot_states = slot_states,
+        .free_slot_stack = free_slot_stack,
+        .free_slot_count = free_slot_count,
+        .free_slot_lock = free_slot_lock,
+    };
+
+    const std::uint32_t lane_index = threadIdx.x;
+    std::uint32_t slot_index = kInvalidBufferSlotIndex;
+    if (!TryAllocateBufferSlot(buffer, slot_index)) {
+        atomicCAS(status, 0, 1);
+        allocated_slots[lane_index] = kInvalidBufferSlotIndex;
+        return;
+    }
+
+    allocated_slots[lane_index] = slot_index;
+    if (slot_index >= buffer_layout.slot_count) {
+        atomicCAS(status, 0, 2);
+        return;
+    }
+
+    atomicAdd(&slot_hit_counts[slot_index], 1U);
+    __syncwarp(kWarpMask);
+
+    if (lane_index == 0) {
+        if (*free_slot_count != 0U) {
+            atomicCAS(status, 0, 3);
+        }
+
+        for (std::uint32_t checked_slot = 0; checked_slot < buffer_layout.slot_count; ++checked_slot) {
+            if (slot_hit_counts[checked_slot] != 1U) {
+                atomicCAS(status, 0, 4);
+            }
+
+            if (!slot_states[checked_slot].occupied || (slot_states[checked_slot].reference_count != 1U)) {
+                atomicCAS(status, 0, 5);
+            }
+        }
+    }
+
+    __syncwarp(kWarpMask);
+    if (!TryReleaseBufferSlot(buffer, allocated_slots[lane_index])) {
+        atomicCAS(status, 0, 6);
+    }
+
+    __syncwarp(kWarpMask);
+    if (lane_index == 0) {
+        if (*free_slot_count != buffer_layout.slot_count) {
+            atomicCAS(status, 0, 7);
+        }
+
+        for (std::uint32_t checked_slot = 0; checked_slot < buffer_layout.slot_count; ++checked_slot) {
+            if (slot_states[checked_slot].occupied || (slot_states[checked_slot].reference_count != 0U)) {
+                atomicCAS(status, 0, 8);
+            }
+        }
+    }
+}
+
+bool TestDeviceBufferFreeListIsThreadSafeUnderWarpContention() {
+    constexpr std::size_t kSlotCount = 32;
+    constexpr std::size_t kActionCount = 4;
+
+    HostGenotypeBuffer host_buffer{};
+    bool ok = TryCreateHostGenotypeBuffer(host_buffer, kSlotCount, kActionCount);
+    if (!ok) {
+        std::cerr << "FAIL: could not allocate free-list contention host buffer\n";
+        return false;
+    }
+
+    DeviceBufferRuntimeConfig runtime_config{};
+    runtime_config.slot_count = kSlotCount;
+    runtime_config.action_count = kActionCount;
+    runtime_config.max_generation_size = kSlotCount;
+
+    DeviceBufferRuntimeBuffers buffers{};
+    ok &= TryCreateDeviceBufferRuntimeBuffers(buffers, runtime_config);
+    ok &= TryUploadBufferToDevice(host_buffer, buffers);
+
+    std::uint32_t *device_allocated_slots = nullptr;
+    std::uint32_t *device_slot_hit_counts = nullptr;
+    int *device_status = nullptr;
+    ok &= CheckCuda(cudaMalloc(&device_allocated_slots, kSlotCount * sizeof(std::uint32_t)),
+                    "allocating device allocated-slot records");
+    ok &= CheckCuda(cudaMalloc(&device_slot_hit_counts, kSlotCount * sizeof(std::uint32_t)),
+                    "allocating device slot-hit counts");
+    ok &= CheckCuda(cudaMalloc(&device_status, sizeof(int)), "allocating device free-list status");
+    ok &= CheckCuda(cudaMemset(device_allocated_slots, 0xFF, kSlotCount * sizeof(std::uint32_t)),
+                    "clearing allocated-slot records");
+    ok &= CheckCuda(cudaMemset(device_slot_hit_counts, 0, kSlotCount * sizeof(std::uint32_t)),
+                    "clearing slot-hit counts");
+    ok &= CheckCuda(cudaMemset(device_status, 0, sizeof(int)), "clearing free-list status");
+    if (!ok) {
+        cudaFree(device_allocated_slots);
+        cudaFree(device_slot_hit_counts);
+        cudaFree(device_status);
+        DestroyDeviceBufferRuntimeBuffers(buffers);
+        return false;
+    }
+
+    BufferFreeListWarpContentionKernel<<<1, 32>>>(
+        buffers.buffer_storage, buffers.slot_states, buffers.free_slot_stack, buffers.free_slot_count,
+        buffers.free_slot_lock, buffers.buffer_layout, device_allocated_slots, device_slot_hit_counts, device_status);
+    ok &= CheckCuda(cudaGetLastError(), "launching free-list warp contention kernel");
+    ok &= CheckCuda(cudaDeviceSynchronize(), "running free-list warp contention kernel");
+
+    int host_status = 0;
+    std::uint32_t host_slot_hit_counts[kSlotCount]{};
+    ok &= CheckCuda(cudaMemcpy(&host_status, device_status, sizeof(int), cudaMemcpyDeviceToHost),
+                    "copying free-list contention status");
+    ok &= CheckCuda(
+        cudaMemcpy(host_slot_hit_counts, device_slot_hit_counts, sizeof(host_slot_hit_counts), cudaMemcpyDeviceToHost),
+        "copying free-list contention slot-hit counts");
+
+    HostGenotypeBuffer downloaded_buffer{};
+    ok &= TryDownloadBufferFromDevice(buffers, downloaded_buffer);
+
+    cudaFree(device_allocated_slots);
+    cudaFree(device_slot_hit_counts);
+    cudaFree(device_status);
+    DestroyDeviceBufferRuntimeBuffers(buffers);
+    if (!ok) {
+        return false;
+    }
+
+    ok &= ExpectTrue(host_status == 0, "Expected free-list warp contention status to stay ok");
+    ok &= ExpectTrue(downloaded_buffer.free_slot_count == kSlotCount,
+                     "Expected all contended slots to return to the genotype buffer");
+    for (std::size_t slot_index = 0; slot_index < kSlotCount; ++slot_index) {
+        ok &= ExpectTrue(host_slot_hit_counts[slot_index] == 1U,
+                         "Expected each genotype buffer slot to be allocated exactly once under warp contention");
+        ok &= ExpectTrue(!downloaded_buffer.slot_states[slot_index].occupied,
+                         "Expected released contended slot to be unoccupied");
+        ok &= ExpectTrue(downloaded_buffer.slot_states[slot_index].reference_count == 0U,
+                         "Expected released contended slot to have no references");
+    }
+
     return ok;
 }
 
@@ -448,6 +605,7 @@ int main() {
     }
 
     if (!TestDeviceReferenceCountersAreAtomicUnderWarpContention() ||
+        !TestDeviceBufferFreeListIsThreadSafeUnderWarpContention() ||
         !TestDeviceBufferRuntimeUploadsAndDownloadsBufferAndGenerationState() ||
         !TestDeviceBufferRuntimeReusesSweptAndReleasedSlotsDuringAssembly() ||
         !TestDeviceBufferRuntimeFailsCleanlyWhenBufferIsGenuinelyFull()) {

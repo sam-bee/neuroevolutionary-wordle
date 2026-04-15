@@ -49,7 +49,8 @@ constexpr NEUROEVOLUTION_HOST_DEVICE bool TryCreateBufferLayoutForByteBudget(Gen
     layout = {};
     const std::size_t slot_stride_bytes = ComputeBufferSlotStrideBytes(action_count);
     const std::size_t slot_count = BufferSlotCountForByteBudget(buffer_byte_budget_bytes, action_count);
-    if ((buffer_byte_budget_bytes == 0) || (slot_stride_bytes == 0) || (slot_count == 0)) {
+    if ((buffer_byte_budget_bytes == 0) || (slot_stride_bytes == 0) || (slot_count == 0) ||
+        (slot_count >= static_cast<std::size_t>(kInvalidBufferSlotIndex))) {
         return false;
     }
 
@@ -72,6 +73,7 @@ constexpr NEUROEVOLUTION_HOST_DEVICE bool TryCreateExpandedBufferLayout(const Ge
 
 constexpr NEUROEVOLUTION_HOST_DEVICE bool IsValidGenotypeBufferLayout(const GenotypeBufferLayout &layout) noexcept {
     return (layout.action_count > 0) && (layout.slot_count > 0) &&
+           (layout.slot_count < static_cast<std::size_t>(kInvalidBufferSlotIndex)) &&
            (layout.slot_stride_bytes == ComputeBufferSlotStrideBytes(layout.action_count)) &&
            (layout.slot_count == BufferSlotCountForByteBudget(layout.buffer_bytes, layout.action_count)) &&
            (layout.buffer_bytes >= (layout.slot_count * layout.slot_stride_bytes));

@@ -103,12 +103,13 @@ MapInjectionStatus(const DeviceOutputEmbeddingInjectionStatusCode status_code) n
 
 __global__ void AssembleNextGenerationKernel(
     std::uint8_t *buffer_storage, BufferSlotState *slot_states, std::uint32_t *free_slot_stack,
-    std::size_t *free_slot_count, const GenotypeBufferLayout buffer_layout, std::uint32_t *current_slot_indices,
-    float *current_fitness, std::uint32_t *current_evaluation_counts, std::uint8_t *current_has_fitness,
-    const std::size_t current_generation_index, const std::size_t current_generation_size,
-    std::uint32_t *next_slot_indices, float *next_fitness, std::uint32_t *next_evaluation_counts,
-    std::uint8_t *next_has_fitness, const std::size_t next_generation_index, const std::size_t next_generation_size,
-    const BufferParentPair *parent_pairs, std::uint32_t *parent_reference_counts, const std::uint32_t generation_seed,
+    std::uint32_t *free_slot_count, std::uint32_t *free_slot_lock, const GenotypeBufferLayout buffer_layout,
+    std::uint32_t *current_slot_indices, float *current_fitness, std::uint32_t *current_evaluation_counts,
+    std::uint8_t *current_has_fitness, const std::size_t current_generation_index,
+    const std::size_t current_generation_size, std::uint32_t *next_slot_indices, float *next_fitness,
+    std::uint32_t *next_evaluation_counts, std::uint8_t *next_has_fitness, const std::size_t next_generation_index,
+    const std::size_t next_generation_size, const BufferParentPair *parent_pairs,
+    std::uint32_t *parent_reference_counts, const std::uint32_t generation_seed,
     const BufferDeviceAssemblyConfig config, int *status) {
     if ((blockIdx.x != 0) || (threadIdx.x != 0)) {
         return;
@@ -120,6 +121,7 @@ __global__ void AssembleNextGenerationKernel(
         .slot_states = slot_states,
         .free_slot_stack = free_slot_stack,
         .free_slot_count = free_slot_count,
+        .free_slot_lock = free_slot_lock,
     };
     BufferGenerationView current_generation =
         MakeDeviceGenerationView(current_generation_index, current_generation_size, current_slot_indices,
@@ -219,8 +221,8 @@ __global__ void AssembleNextGenerationKernel(
 
 __global__ void PrepareBufferForExpandedActionCountKernel(
     const GenotypeBufferLayout current_layout, const GenotypeBufferLayout next_layout, std::uint8_t *buffer_storage,
-    BufferSlotState *slot_states, std::uint32_t *free_slot_stack, std::size_t *free_slot_count,
-    std::uint32_t *current_slot_indices, const std::size_t current_generation_size,
+    BufferSlotState *slot_states, std::uint32_t *free_slot_stack, std::uint32_t *free_slot_count,
+    std::uint32_t *free_slot_lock, std::uint32_t *current_slot_indices, const std::size_t current_generation_size,
     const BufferParentPair *parent_pairs, const std::size_t planned_child_count, std::uint32_t *parent_reference_counts,
     int *status) {
     if ((blockIdx.x != 0) || (threadIdx.x != 0)) {
@@ -228,8 +230,9 @@ __global__ void PrepareBufferForExpandedActionCountKernel(
     }
 
     if ((buffer_storage == nullptr) || (slot_states == nullptr) || (free_slot_stack == nullptr) ||
-        (free_slot_count == nullptr) || (current_slot_indices == nullptr) || (parent_pairs == nullptr) ||
-        (parent_reference_counts == nullptr) || (planned_child_count == 0) || (current_generation_size == 0)) {
+        (free_slot_count == nullptr) || (free_slot_lock == nullptr) || (current_slot_indices == nullptr) ||
+        (parent_pairs == nullptr) || (parent_reference_counts == nullptr) || (planned_child_count == 0) ||
+        (current_generation_size == 0)) {
         SetFailureStatus(status, DeviceBufferRuntimeStatusCode::kInvalidBuffer);
         return;
     }
@@ -275,7 +278,8 @@ bool TryCreateDeviceBufferRuntimeBuffers(DeviceBufferRuntimeBuffers &buffers, co
     ok &= CheckCuda(cudaMalloc(&buffers.buffer_storage, buffers.buffer_layout.buffer_bytes));
     ok &= CheckCuda(cudaMalloc(&buffers.slot_states, buffers.buffer_layout.slot_count * sizeof(BufferSlotState)));
     ok &= CheckCuda(cudaMalloc(&buffers.free_slot_stack, buffers.buffer_layout.slot_count * sizeof(std::uint32_t)));
-    ok &= CheckCuda(cudaMalloc(&buffers.free_slot_count, sizeof(std::size_t)));
+    ok &= CheckCuda(cudaMalloc(&buffers.free_slot_count, sizeof(std::uint32_t)));
+    ok &= CheckCuda(cudaMalloc(&buffers.free_slot_lock, sizeof(std::uint32_t)));
 
     ok &= CheckCuda(cudaMalloc(&buffers.current_slot_indices, buffers.max_generation_size * sizeof(std::uint32_t)));
     ok &= CheckCuda(cudaMalloc(&buffers.current_fitness, buffers.max_generation_size * sizeof(float)));
@@ -299,7 +303,8 @@ bool TryCreateDeviceBufferRuntimeBuffers(DeviceBufferRuntimeBuffers &buffers, co
     ok &= CheckCuda(cudaMemset(buffers.buffer_storage, 0, buffers.buffer_layout.buffer_bytes));
     ok &= CheckCuda(cudaMemset(buffers.slot_states, 0, buffers.buffer_layout.slot_count * sizeof(BufferSlotState)));
     ok &= CheckCuda(cudaMemset(buffers.free_slot_stack, 0, buffers.buffer_layout.slot_count * sizeof(std::uint32_t)));
-    ok &= CheckCuda(cudaMemset(buffers.free_slot_count, 0, sizeof(std::size_t)));
+    ok &= CheckCuda(cudaMemset(buffers.free_slot_count, 0, sizeof(std::uint32_t)));
+    ok &= CheckCuda(cudaMemset(buffers.free_slot_lock, 0, sizeof(std::uint32_t)));
     ok &=
         ClearGenerationBuffers(buffers.current_slot_indices, buffers.current_fitness, buffers.current_evaluation_counts,
                                buffers.current_has_fitness, buffers.max_generation_size);
@@ -323,6 +328,7 @@ void DestroyDeviceBufferRuntimeBuffers(DeviceBufferRuntimeBuffers &buffers) noex
     cudaFree(buffers.slot_states);
     cudaFree(buffers.free_slot_stack);
     cudaFree(buffers.free_slot_count);
+    cudaFree(buffers.free_slot_lock);
     cudaFree(buffers.current_slot_indices);
     cudaFree(buffers.current_fitness);
     cudaFree(buffers.current_evaluation_counts);
@@ -353,8 +359,9 @@ bool TryUploadBufferToDevice(const HostGenotypeBuffer &host_buffer, DeviceBuffer
                                host_buffer.layout.slot_count * sizeof(BufferSlotState), cudaMemcpyHostToDevice));
     ok &= CheckCuda(cudaMemcpy(buffers.free_slot_stack, host_buffer.free_slot_stack.get(),
                                host_buffer.layout.slot_count * sizeof(std::uint32_t), cudaMemcpyHostToDevice));
-    ok &= CheckCuda(
-        cudaMemcpy(buffers.free_slot_count, &host_buffer.free_slot_count, sizeof(std::size_t), cudaMemcpyHostToDevice));
+    ok &= CheckCuda(cudaMemcpy(buffers.free_slot_count, &host_buffer.free_slot_count, sizeof(std::uint32_t),
+                               cudaMemcpyHostToDevice));
+    ok &= CheckCuda(cudaMemset(buffers.free_slot_lock, 0, sizeof(std::uint32_t)));
     return ok;
 }
 
@@ -374,8 +381,9 @@ bool TryDownloadBufferFromDevice(const DeviceBufferRuntimeBuffers &buffers, Host
                                host_buffer.layout.slot_count * sizeof(BufferSlotState), cudaMemcpyDeviceToHost));
     ok &= CheckCuda(cudaMemcpy(host_buffer.free_slot_stack.get(), buffers.free_slot_stack,
                                host_buffer.layout.slot_count * sizeof(std::uint32_t), cudaMemcpyDeviceToHost));
-    ok &= CheckCuda(
-        cudaMemcpy(&host_buffer.free_slot_count, buffers.free_slot_count, sizeof(std::size_t), cudaMemcpyDeviceToHost));
+    ok &= CheckCuda(cudaMemcpy(&host_buffer.free_slot_count, buffers.free_slot_count, sizeof(std::uint32_t),
+                               cudaMemcpyDeviceToHost));
+    host_buffer.free_slot_lock = 0;
     return ok;
 }
 
@@ -483,7 +491,7 @@ bool TryPrepareBufferForExpandedActionCountOnDevice(DeviceBufferRuntimeBuffers &
 
     PrepareBufferForExpandedActionCountKernel<<<1, 1>>>(
         buffers.buffer_layout, next_layout, buffers.buffer_storage, buffers.slot_states, buffers.free_slot_stack,
-        buffers.free_slot_count, buffers.current_slot_indices, buffers.current_generation_size,
+        buffers.free_slot_count, buffers.free_slot_lock, buffers.current_slot_indices, buffers.current_generation_size,
         buffers.assembly_parent_pairs, buffers.planned_child_count, buffers.parent_reference_counts, buffers.status);
     if (!CheckCuda(cudaGetLastError()) || !CheckCuda(cudaDeviceSynchronize())) {
         return false;
@@ -522,11 +530,12 @@ bool TryAssembleNextGenerationOnDevice(DeviceBufferRuntimeBuffers &buffers, cons
 
     AssembleNextGenerationKernel<<<1, kBufferRuntimeThreadBlockSize>>>(
         buffers.buffer_storage, buffers.slot_states, buffers.free_slot_stack, buffers.free_slot_count,
-        buffers.buffer_layout, buffers.current_slot_indices, buffers.current_fitness, buffers.current_evaluation_counts,
-        buffers.current_has_fitness, buffers.current_generation_index, buffers.current_generation_size,
-        buffers.next_slot_indices, buffers.next_fitness, buffers.next_evaluation_counts, buffers.next_has_fitness,
-        buffers.next_generation_index, buffers.next_generation_size, buffers.assembly_parent_pairs,
-        buffers.parent_reference_counts, generation_seed, config, buffers.status);
+        buffers.free_slot_lock, buffers.buffer_layout, buffers.current_slot_indices, buffers.current_fitness,
+        buffers.current_evaluation_counts, buffers.current_has_fitness, buffers.current_generation_index,
+        buffers.current_generation_size, buffers.next_slot_indices, buffers.next_fitness,
+        buffers.next_evaluation_counts, buffers.next_has_fitness, buffers.next_generation_index,
+        buffers.next_generation_size, buffers.assembly_parent_pairs, buffers.parent_reference_counts, generation_seed,
+        config, buffers.status);
     if (!CheckCuda(cudaGetLastError()) || !CheckCuda(cudaDeviceSynchronize())) {
         return false;
     }

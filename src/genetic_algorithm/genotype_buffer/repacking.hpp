@@ -60,7 +60,7 @@ inline NEUROEVOLUTION_HOST_DEVICE std::uint32_t FindReferencedParentIndexOwningS
 
 inline NEUROEVOLUTION_HOST_DEVICE bool TryCompactAndRepackBufferForExpandedActionCount(
     GenotypeBufferLayout &buffer_layout, std::uint8_t *buffer_storage, BufferSlotState *slot_states,
-    std::uint32_t *free_slot_stack, std::size_t &free_slot_count, std::uint32_t *generation_slot_indices,
+    std::uint32_t *free_slot_stack, std::uint32_t &free_slot_count, std::uint32_t *generation_slot_indices,
     const std::size_t active_individual_count, const std::uint32_t *parent_reference_counts,
     const std::size_t next_action_count) noexcept {
     // Stop-the-world reference-counting GC for growth: collect unreferenced parents, compact survivors,
@@ -146,9 +146,9 @@ inline NEUROEVOLUTION_HOST_DEVICE bool TryCompactAndRepackBufferForExpandedActio
         slot_states[slot_index].reference_count = 1;
     }
 
-    free_slot_count = destination_base_slot;
-    for (std::size_t free_slot_index = 0; free_slot_index < free_slot_count; ++free_slot_index) {
-        free_slot_stack[free_slot_index] = static_cast<std::uint32_t>((free_slot_count - 1) - free_slot_index);
+    free_slot_count = static_cast<std::uint32_t>(destination_base_slot);
+    for (std::uint32_t free_slot_index = 0; free_slot_index < free_slot_count; ++free_slot_index) {
+        free_slot_stack[free_slot_index] = (free_slot_count - 1) - free_slot_index;
         detail::ZeroBufferBytes(BufferSlotBytesAt(buffer_storage, next_layout, free_slot_index),
                                 next_layout.slot_stride_bytes);
     }

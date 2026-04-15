@@ -16,6 +16,7 @@ bool TryAllocateHostBufferStorage(HostGenotypeBuffer &buffer) {
     buffer.slot_states.reset();
     buffer.free_slot_stack.reset();
     buffer.free_slot_count = 0;
+    buffer.free_slot_lock = 0;
 
     if (!IsValidGenotypeBufferLayout(buffer.layout)) {
         return false;
@@ -39,7 +40,8 @@ bool TryAllocateHostBufferStorage(HostGenotypeBuffer &buffer) {
     for (std::size_t slot_index = 0; slot_index < buffer.layout.slot_count; ++slot_index) {
         buffer.free_slot_stack[slot_index] = static_cast<std::uint32_t>((buffer.layout.slot_count - 1) - slot_index);
     }
-    buffer.free_slot_count = buffer.layout.slot_count;
+    buffer.free_slot_count = static_cast<std::uint32_t>(buffer.layout.slot_count);
+    buffer.free_slot_lock = 0;
     return true;
 }
 

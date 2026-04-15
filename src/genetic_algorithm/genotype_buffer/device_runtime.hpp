@@ -55,7 +55,8 @@ struct DeviceBufferRuntimeBuffers {
     std::uint8_t *buffer_storage = nullptr;
     BufferSlotState *slot_states = nullptr;
     std::uint32_t *free_slot_stack = nullptr;
-    std::size_t *free_slot_count = nullptr;
+    std::uint32_t *free_slot_count = nullptr;
+    std::uint32_t *free_slot_lock = nullptr;
 
     std::uint32_t *current_slot_indices = nullptr;
     float *current_fitness = nullptr;
