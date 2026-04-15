@@ -8,6 +8,7 @@
 
 #include "genetic_algorithm/device/genome_ops.cuh"
 #include "genetic_algorithm/device/injection_ops.cuh"
+#include "genetic_algorithm/genotype_pool/reference_counter.hpp"
 #include "genetic_algorithm/genotype_pool/repacking.hpp"
 
 namespace neuroevolution::genetic_algorithm::genotype_pool::device {
@@ -99,36 +100,6 @@ MapInjectionStatus(const DeviceOutputEmbeddingInjectionStatusCode status_code) n
     return DevicePoolRuntimeStatusCode::kOutputEmbeddingInjectionFailed;
 }
 
-__device__ bool IsValidParentIndex(const PoolGenerationView &generation, const std::uint32_t parent_index) {
-    return IsValidPoolGenerationView(generation) && (parent_index < generation.active_individual_count) &&
-           (generation.slot_indices[parent_index] != kInvalidPoolSlotIndex);
-}
-
-__device__ bool IsValidParentIndex(const std::uint32_t *slot_indices, const std::size_t generation_size,
-                                   const std::uint32_t parent_index) {
-    return (slot_indices != nullptr) && (parent_index < generation_size) &&
-           (slot_indices[parent_index] != kInvalidPoolSlotIndex);
-}
-
-__device__ bool TryReleaseParentReference(GenotypePoolView pool, PoolGenerationView current_generation,
-                                          std::uint32_t *parent_reference_counts, const std::uint32_t parent_index) {
-    if (!IsValidParentIndex(current_generation, parent_index) || (parent_reference_counts == nullptr) ||
-        (parent_reference_counts[parent_index] == 0)) {
-        return false;
-    }
-
-    --parent_reference_counts[parent_index];
-    if (parent_reference_counts[parent_index] == 0) {
-        if (!TryReleasePoolSlot(pool, current_generation.slot_indices[parent_index])) {
-            return false;
-        }
-
-        ClearPoolGenerationSlot(current_generation, parent_index);
-    }
-
-    return true;
-}
-
 __global__ void AssembleNextGenerationKernel(
     std::uint8_t *pool_storage, PoolSlotState *slot_states, std::uint32_t *free_slot_stack,
     std::size_t *free_slot_count, const GenotypePoolLayout pool_layout, std::uint32_t *current_slot_indices,
@@ -190,32 +161,15 @@ __global__ void AssembleNextGenerationKernel(
         next_generation.has_fitness[child_index] = 0;
     }
 
-    for (std::size_t parent_index = 0; parent_index < current_generation_size; ++parent_index) {
-        parent_reference_counts[parent_index] = 0;
+    if (!TryBuildParentReferenceCounts(current_generation, parent_pairs, next_generation_size,
+                                       parent_reference_counts)) {
+        SetFailureStatus(status, DevicePoolRuntimeStatusCode::kInvalidParentIndex);
+        return;
     }
 
-    for (std::size_t child_index = 0; child_index < next_generation_size; ++child_index) {
-        const PoolParentPair &parent_pair = parent_pairs[child_index];
-        if (!IsValidParentIndex(current_generation, parent_pair.first_parent_index) ||
-            !IsValidParentIndex(current_generation, parent_pair.second_parent_index)) {
-            SetFailureStatus(status, DevicePoolRuntimeStatusCode::kInvalidParentIndex);
-            return;
-        }
-
-        ++parent_reference_counts[parent_pair.first_parent_index];
-        ++parent_reference_counts[parent_pair.second_parent_index];
-    }
-
-    for (std::size_t parent_index = 0; parent_index < current_generation_size; ++parent_index) {
-        if ((parent_reference_counts[parent_index] == 0) &&
-            (current_generation.slot_indices[parent_index] != kInvalidPoolSlotIndex)) {
-            if (!TryReleasePoolSlot(pool, current_generation.slot_indices[parent_index])) {
-                SetFailureStatus(status, DevicePoolRuntimeStatusCode::kInvalidPool);
-                return;
-            }
-
-            ClearPoolGenerationSlot(current_generation, parent_index);
-        }
+    if (!TryCollectZeroReferenceParents(pool, current_generation, parent_reference_counts)) {
+        SetFailureStatus(status, DevicePoolRuntimeStatusCode::kInvalidPool);
+        return;
     }
 
     for (std::size_t child_index = 0; child_index < next_generation_size; ++child_index) {
@@ -283,20 +237,10 @@ __global__ void PreparePoolForExpandedActionCountKernel(
         return;
     }
 
-    for (std::size_t parent_index = 0; parent_index < current_generation_size; ++parent_index) {
-        parent_reference_counts[parent_index] = 0;
-    }
-
-    for (std::size_t child_index = 0; child_index < planned_child_count; ++child_index) {
-        const PoolParentPair &parent_pair = parent_pairs[child_index];
-        if (!IsValidParentIndex(current_slot_indices, current_generation_size, parent_pair.first_parent_index) ||
-            !IsValidParentIndex(current_slot_indices, current_generation_size, parent_pair.second_parent_index)) {
-            SetFailureStatus(status, DevicePoolRuntimeStatusCode::kInvalidParentIndex);
-            return;
-        }
-
-        ++parent_reference_counts[parent_pair.first_parent_index];
-        ++parent_reference_counts[parent_pair.second_parent_index];
+    if (!TryBuildParentReferenceCounts(current_slot_indices, current_generation_size, parent_pairs, planned_child_count,
+                                       parent_reference_counts)) {
+        SetFailureStatus(status, DevicePoolRuntimeStatusCode::kInvalidParentIndex);
+        return;
     }
 
     GenotypePoolLayout working_layout = current_layout;

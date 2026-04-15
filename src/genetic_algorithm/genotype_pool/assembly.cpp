@@ -5,6 +5,8 @@
 #include <memory>
 #include <new>
 
+#include "genetic_algorithm/genotype_pool/reference_counter.hpp"
+
 namespace neuroevolution::genetic_algorithm::genotype_pool {
 
 namespace {
@@ -16,30 +18,6 @@ bool TryCleanupFailedAssembly(HostGenotypePool &pool, PoolGeneration &next_gener
     }
 
     return false;
-}
-
-bool IsValidParentIndex(const PoolGeneration &generation, const std::uint32_t parent_index) {
-    return IsValidPoolGeneration(generation) && (parent_index < generation.active_individual_count) &&
-           (generation.slot_indices[parent_index] != kInvalidPoolSlotIndex);
-}
-
-bool TryReleaseParentReference(HostGenotypePool &pool, PoolGeneration &current_generation,
-                               std::uint32_t *parent_reference_counts, const std::uint32_t parent_index) {
-    if (!IsValidParentIndex(current_generation, parent_index) || (parent_reference_counts == nullptr) ||
-        (parent_reference_counts[parent_index] == 0)) {
-        return false;
-    }
-
-    --parent_reference_counts[parent_index];
-    if (parent_reference_counts[parent_index] == 0) {
-        if (!TryReleasePoolSlot(pool, current_generation.slot_indices[parent_index])) {
-            return false;
-        }
-
-        current_generation.slot_indices[parent_index] = kInvalidPoolSlotIndex;
-    }
-
-    return true;
 }
 
 } // namespace
@@ -58,26 +36,14 @@ bool TryAssembleNextGeneration(HostGenotypePool &pool, PoolGeneration &current_g
         return false;
     }
 
-    for (std::size_t child_index = 0; child_index < plan.child_count; ++child_index) {
-        const PoolParentPair &parent_pair = plan.parent_pairs[child_index];
-        if (!IsValidParentIndex(current_generation, parent_pair.first_parent_index) ||
-            !IsValidParentIndex(current_generation, parent_pair.second_parent_index)) {
-            return false;
-        }
-
-        ++parent_reference_counts[parent_pair.first_parent_index];
-        ++parent_reference_counts[parent_pair.second_parent_index];
+    if (!TryBuildParentReferenceCounts(MakePoolGenerationView(current_generation), plan.parent_pairs.get(),
+                                       plan.child_count, parent_reference_counts.get())) {
+        return false;
     }
 
-    for (std::size_t parent_index = 0; parent_index < current_generation.active_individual_count; ++parent_index) {
-        if ((parent_reference_counts[parent_index] == 0) &&
-            (current_generation.slot_indices[parent_index] != kInvalidPoolSlotIndex)) {
-            if (!TryReleasePoolSlot(pool, current_generation.slot_indices[parent_index])) {
-                return false;
-            }
-
-            current_generation.slot_indices[parent_index] = kInvalidPoolSlotIndex;
-        }
+    if (!TryCollectZeroReferenceParents(MakeGenotypePoolView(pool), MakePoolGenerationView(current_generation),
+                                        parent_reference_counts.get())) {
+        return false;
     }
 
     if (!TryCreatePoolGeneration(next_generation, plan.child_count, current_generation.generation_index + 1)) {
@@ -109,10 +75,10 @@ bool TryAssembleNextGeneration(HostGenotypePool &pool, PoolGeneration &current_g
             return TryCleanupFailedAssembly(pool, next_generation);
         }
 
-        if (!TryReleaseParentReference(pool, current_generation, parent_reference_counts.get(),
-                                       parent_pair.first_parent_index) ||
-            !TryReleaseParentReference(pool, current_generation, parent_reference_counts.get(),
-                                       parent_pair.second_parent_index)) {
+        if (!TryReleaseParentReference(MakeGenotypePoolView(pool), MakePoolGenerationView(current_generation),
+                                       parent_reference_counts.get(), parent_pair.first_parent_index) ||
+            !TryReleaseParentReference(MakeGenotypePoolView(pool), MakePoolGenerationView(current_generation),
+                                       parent_reference_counts.get(), parent_pair.second_parent_index)) {
             return TryCleanupFailedAssembly(pool, next_generation);
         }
     }

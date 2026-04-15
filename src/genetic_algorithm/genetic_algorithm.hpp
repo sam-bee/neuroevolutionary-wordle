@@ -9,6 +9,7 @@
 #include "genetic_algorithm/genotype_pool/device_runtime.hpp"
 #include "genetic_algorithm/genotype_pool/generation.hpp"
 #include "genetic_algorithm/genotype_pool/pool.hpp"
+#include "genetic_algorithm/genotype_pool/reference_counter.hpp"
 #include "genetic_algorithm/genotype_pool/repacking.hpp"
 #include "genetic_algorithm/mutation.hpp"
 #include "genetic_algorithm/output_embedding_injection.hpp"

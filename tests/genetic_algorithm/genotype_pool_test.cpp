@@ -9,6 +9,7 @@
 #include "genetic_algorithm/genotype_pool/assembly.hpp"
 #include "genetic_algorithm/genotype_pool/generation.hpp"
 #include "genetic_algorithm/genotype_pool/pool.hpp"
+#include "genetic_algorithm/genotype_pool/reference_counter.hpp"
 #include "genetic_algorithm/genotype_pool/repacking.hpp"
 
 namespace {
@@ -37,12 +38,15 @@ using neuroevolution::genetic_algorithm::genotype_pool::PoolGenerationView;
 using neuroevolution::genetic_algorithm::genotype_pool::PoolSlotCountForByteBudget;
 using neuroevolution::genetic_algorithm::genotype_pool::TryAllocatePoolSlot;
 using neuroevolution::genetic_algorithm::genotype_pool::TryAssembleNextGeneration;
+using neuroevolution::genetic_algorithm::genotype_pool::TryBuildParentReferenceCounts;
 using neuroevolution::genetic_algorithm::genotype_pool::TryClonePoolSlotIntoGeneration;
+using neuroevolution::genetic_algorithm::genotype_pool::TryCollectZeroReferenceParents;
 using neuroevolution::genetic_algorithm::genotype_pool::TryCompactAndRepackPoolForExpandedActionCount;
 using neuroevolution::genetic_algorithm::genotype_pool::TryCopyGenomeBytesIntoPoolSlot;
 using neuroevolution::genetic_algorithm::genotype_pool::TryCreateHostGenotypePool;
 using neuroevolution::genetic_algorithm::genotype_pool::TryCreatePoolAssemblyPlan;
 using neuroevolution::genetic_algorithm::genotype_pool::TryCreatePoolGeneration;
+using neuroevolution::genetic_algorithm::genotype_pool::TryReleaseParentReference;
 using neuroevolution::genetic_algorithm::genotype_pool::TryReleasePoolGenerationSlots;
 using neuroevolution::genetic_algorithm::genotype_pool::TryReleasePoolSlot;
 using neuroevolution::genetic_algorithm::genotype_pool::TryRetainPoolSlot;
@@ -253,6 +257,72 @@ bool TestHostPoolAllocatesReleasesAndReusesFixedWidthSlots() {
     std::uint32_t reused_slot = kInvalidPoolSlotIndex;
     ok &= TryAllocatePoolSlot(pool, reused_slot);
     ok &= ExpectTrue(reused_slot == slot1, "Expected the most recently released slot to be reused first");
+    return ok;
+}
+
+bool TestReferenceCounterBuildsCollectsAndReleasesParentSlots() {
+    HostGenotypePool pool{};
+    PoolGeneration current_generation{};
+    PoolAssemblyPlan plan{};
+    bool ok = TryCreateHostGenotypePool(pool, 4, 4);
+    ok &= TryCreatePoolGeneration(current_generation, 3, 11);
+    ok &= TryCreatePoolAssemblyPlan(plan, 2);
+    ok &= ExpectTrue(ok, "Expected reference-counter fixtures to allocate");
+    if (!ok) {
+        return false;
+    }
+
+    std::uint32_t parent_slots[3]{};
+    for (std::size_t parent_index = 0; parent_index < 3; ++parent_index) {
+        ok &= TryAllocatePoolSlot(pool, parent_slots[parent_index]);
+        ok &= TrySetPoolGenerationSlot(current_generation, parent_index, parent_slots[parent_index]);
+    }
+    ok &= ExpectTrue(ok, "Expected reference-counter parent slots to allocate");
+    if (!ok) {
+        return false;
+    }
+
+    plan.parent_pairs[0] = {.first_parent_index = 0, .second_parent_index = 1};
+    plan.parent_pairs[1] = {.first_parent_index = 0, .second_parent_index = 0};
+
+    std::uint32_t parent_reference_counts[3]{};
+    ok &= TryBuildParentReferenceCounts(MakePoolGenerationView(current_generation), plan.parent_pairs.get(),
+                                        plan.child_count, parent_reference_counts);
+    ok &= ExpectTrue(parent_reference_counts[0] == 3U,
+                     "Expected repeated parent selection to add every parent reference");
+    ok &= ExpectTrue(parent_reference_counts[1] == 1U, "Expected singly selected parent to get one parent reference");
+    ok &= ExpectTrue(parent_reference_counts[2] == 0U, "Expected unselected parent to remain zero-reference");
+
+    ok &= TryCollectZeroReferenceParents(MakeGenotypePoolView(pool), MakePoolGenerationView(current_generation),
+                                         parent_reference_counts);
+    ok &= ExpectTrue(current_generation.slot_indices[2] == kInvalidPoolSlotIndex,
+                     "Expected zero-reference parent to be garbage-collected");
+    ok &= ExpectTrue(pool.free_slot_count == 2U,
+                     "Expected zero-reference collection to return the parent slot to the pool");
+
+    ok &= TryReleaseParentReference(MakeGenotypePoolView(pool), MakePoolGenerationView(current_generation),
+                                    parent_reference_counts, 1);
+    ok &= ExpectTrue(current_generation.slot_indices[1] == kInvalidPoolSlotIndex,
+                     "Expected final reference release to clear the singly selected parent");
+    ok &= ExpectTrue(pool.free_slot_count == 3U,
+                     "Expected final reference release to return the singly selected parent slot");
+
+    ok &= TryReleaseParentReference(MakeGenotypePoolView(pool), MakePoolGenerationView(current_generation),
+                                    parent_reference_counts, 0);
+    ok &= TryReleaseParentReference(MakeGenotypePoolView(pool), MakePoolGenerationView(current_generation),
+                                    parent_reference_counts, 0);
+    ok &= ExpectTrue(current_generation.slot_indices[0] == parent_slots[0],
+                     "Expected parent with remaining references to stay live");
+    ok &= ExpectTrue(pool.free_slot_count == 3U, "Expected non-final releases to leave the parent slot occupied");
+
+    ok &= TryReleaseParentReference(MakeGenotypePoolView(pool), MakePoolGenerationView(current_generation),
+                                    parent_reference_counts, 0);
+    ok &= ExpectTrue(current_generation.slot_indices[0] == kInvalidPoolSlotIndex,
+                     "Expected the last parent reference to garbage-collect the parent slot");
+    ok &= ExpectTrue(pool.free_slot_count == 4U, "Expected every parent slot to be free after final releases");
+    ok &= ExpectTrue(!TryReleaseParentReference(MakeGenotypePoolView(pool), MakePoolGenerationView(current_generation),
+                                                parent_reference_counts, 0),
+                     "Expected releasing a collected parent reference to fail");
     return ok;
 }
 
@@ -505,6 +575,10 @@ int main() {
     }
 
     if (!TestHostPoolAllocatesReleasesAndReusesFixedWidthSlots()) {
+        return 1;
+    }
+
+    if (!TestReferenceCounterBuildsCollectsAndReleasesParentSlots()) {
         return 1;
     }
 
