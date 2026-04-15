@@ -621,6 +621,89 @@ bool TestDeviceBufferRuntimeAssemblesChildBatchConcurrently() {
     return ok;
 }
 
+bool TestDeviceBufferRuntimeCleansUpPartialAssemblyWhenLaterBatchFails() {
+    constexpr std::size_t kParentCount = 4;
+    constexpr std::size_t kChildCount = 6;
+    constexpr std::size_t kSlotCount = 5;
+    constexpr std::size_t kActionCount = 4;
+
+    HostGenotypeBuffer host_buffer{};
+    BufferGeneration current_generation{};
+    bool ok = TryCreateHostGenotypeBuffer(host_buffer, kSlotCount, kActionCount);
+    ok &= TryCreateBufferGeneration(current_generation, kParentCount, 17);
+    if (!ok) {
+        std::cerr << "FAIL: could not allocate partial-failure assembly fixtures\n";
+        return false;
+    }
+
+    std::uint32_t original_parent_slots[kParentCount]{};
+    for (std::size_t parent_index = 0; parent_index < current_generation.active_individual_count; ++parent_index) {
+        ok &= TryAllocateBufferSlot(host_buffer, original_parent_slots[parent_index]);
+        ok &= TrySetBufferGenerationSlot(current_generation, parent_index, original_parent_slots[parent_index]);
+    }
+    if (!ok) {
+        return false;
+    }
+
+    BufferAssemblyPlan plan{};
+    ok &= TryCreateBufferAssemblyPlan(plan, kChildCount);
+    for (std::size_t child_index = 0; child_index < kChildCount; ++child_index) {
+        plan.parent_pairs[child_index] = {
+            .first_parent_index = static_cast<std::uint32_t>(child_index % kParentCount),
+            .second_parent_index = static_cast<std::uint32_t>(child_index % kParentCount),
+        };
+    }
+
+    DeviceBufferRuntimeConfig runtime_config{};
+    runtime_config.slot_count = kSlotCount;
+    runtime_config.action_count = kActionCount;
+    runtime_config.max_generation_size = kChildCount;
+
+    DeviceBufferRuntimeBuffers buffers{};
+    ok &= TryCreateDeviceBufferRuntimeBuffers(buffers, runtime_config);
+    ok &= TryUploadBufferToDevice(host_buffer, buffers);
+    ok &= TryUploadCurrentGenerationToDevice(current_generation, buffers);
+    ok &= TryUploadAssemblyPlanToDevice(plan, buffers);
+    if (!ok) {
+        DestroyDeviceBufferRuntimeBuffers(buffers);
+        return false;
+    }
+
+    ok &= ExpectTrue(!TryAssembleNextGenerationOnDevice(buffers, 303U, MakeDeterministicAssemblyConfig()),
+                     "Expected over-large device assembly to fail after a partial child batch");
+
+    DeviceBufferRuntimeStatusCode status_code = DeviceBufferRuntimeStatusCode::kOk;
+    ok &= TryReadDeviceBufferRuntimeStatus(buffers, status_code);
+
+    HostGenotypeBuffer downloaded_buffer{};
+    BufferGeneration downloaded_current_generation{};
+    BufferGeneration downloaded_next_generation{};
+    ok &= TryDownloadBufferFromDevice(buffers, downloaded_buffer);
+    ok &= TryDownloadCurrentGenerationFromDevice(buffers, downloaded_current_generation);
+    ok &= ExpectTrue(!TryDownloadNextGenerationFromDevice(buffers, downloaded_next_generation),
+                     "Expected failed partial assembly to clear the next-generation handle");
+    DestroyDeviceBufferRuntimeBuffers(buffers);
+    if (!ok) {
+        return false;
+    }
+
+    ok &= ExpectTrue(status_code == DeviceBufferRuntimeStatusCode::kBufferFull,
+                     "Expected partial assembly failure to preserve kBufferFull status");
+    ok &= ExpectTrue(downloaded_buffer.free_slot_count == 1,
+                     "Expected partial assembly cleanup to release the allocated child slot");
+    for (std::size_t parent_index = 0; parent_index < kParentCount; ++parent_index) {
+        ok &=
+            ExpectTrue(downloaded_current_generation.slot_indices[parent_index] == original_parent_slots[parent_index],
+                       "Expected partial assembly cleanup to leave unreleased parent slots intact");
+        ok &= ExpectTrue(downloaded_buffer.slot_states[original_parent_slots[parent_index]].occupied,
+                         "Expected partial assembly cleanup to keep original parent slots occupied");
+        ok &= ExpectTrue(downloaded_buffer.slot_states[original_parent_slots[parent_index]].reference_count == 1U,
+                         "Expected partial assembly cleanup to preserve parent slot references");
+    }
+
+    return ok;
+}
+
 bool TestDeviceBufferRuntimeFailsCleanlyWhenBufferIsGenuinelyFull() {
     HostGenotypeBuffer host_buffer{};
     BufferGeneration current_generation{};
@@ -697,6 +780,7 @@ int main() {
         !TestDeviceBufferRuntimeUploadsAndDownloadsBufferAndGenerationState() ||
         !TestDeviceBufferRuntimeReusesSweptAndReleasedSlotsDuringAssembly() ||
         !TestDeviceBufferRuntimeAssemblesChildBatchConcurrently() ||
+        !TestDeviceBufferRuntimeCleansUpPartialAssemblyWhenLaterBatchFails() ||
         !TestDeviceBufferRuntimeFailsCleanlyWhenBufferIsGenuinelyFull()) {
         return 1;
     }

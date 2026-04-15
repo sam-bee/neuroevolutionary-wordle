@@ -349,7 +349,45 @@ __global__ void AssembleChildBatchKernel(
         }
 
         next_generation.slot_indices[child_index] = child_slot;
+    }
+}
 
+__global__ void
+ReleaseParentReferenceBatchKernel(std::uint8_t *buffer_storage, BufferSlotState *slot_states,
+                                  std::uint32_t *free_slot_stack, std::uint32_t *free_slot_count,
+                                  std::uint32_t *free_slot_lock, const GenotypeBufferLayout buffer_layout,
+                                  std::uint32_t *current_slot_indices, float *current_fitness,
+                                  std::uint32_t *current_evaluation_counts, std::uint8_t *current_has_fitness,
+                                  const std::size_t current_generation_index, const std::size_t current_generation_size,
+                                  const BufferParentPair *parent_pairs, std::uint32_t *parent_reference_counts,
+                                  const std::size_t child_offset, const std::size_t batch_child_count, int *status) {
+    if (!IsDeviceStatusOk(status)) {
+        return;
+    }
+
+    GenotypeBufferView buffer{
+        .layout = buffer_layout,
+        .storage = buffer_storage,
+        .slot_states = slot_states,
+        .free_slot_stack = free_slot_stack,
+        .free_slot_count = free_slot_count,
+        .free_slot_lock = free_slot_lock,
+    };
+    BufferGenerationView current_generation =
+        MakeDeviceGenerationView(current_generation_index, current_generation_size, current_slot_indices,
+                                 current_fitness, current_evaluation_counts, current_has_fitness);
+
+    const std::size_t worker_index =
+        (static_cast<std::size_t>(blockIdx.x) * static_cast<std::size_t>(blockDim.x)) + threadIdx.x;
+    const std::size_t worker_count = static_cast<std::size_t>(gridDim.x) * static_cast<std::size_t>(blockDim.x);
+    for (std::size_t batch_child_index = worker_index; batch_child_index < batch_child_count;
+         batch_child_index += worker_count) {
+        if (!IsDeviceStatusOk(status)) {
+            return;
+        }
+
+        const std::size_t child_index = child_offset + batch_child_index;
+        const BufferParentPair &parent_pair = parent_pairs[child_index];
         if (!TryReleaseParentReference(buffer, current_generation, parent_reference_counts,
                                        parent_pair.first_parent_index) ||
             !TryReleaseParentReference(buffer, current_generation, parent_reference_counts,
@@ -358,6 +396,85 @@ __global__ void AssembleChildBatchKernel(
             return;
         }
     }
+}
+
+__global__ void CleanupNextGenerationSlotsKernel(std::uint8_t *buffer_storage, BufferSlotState *slot_states,
+                                                 std::uint32_t *free_slot_stack, std::uint32_t *free_slot_count,
+                                                 std::uint32_t *free_slot_lock,
+                                                 const GenotypeBufferLayout buffer_layout,
+                                                 std::uint32_t *next_slot_indices, float *next_fitness,
+                                                 std::uint32_t *next_evaluation_counts, std::uint8_t *next_has_fitness,
+                                                 const std::size_t next_generation_size, int *status) {
+    GenotypeBufferView buffer{
+        .layout = buffer_layout,
+        .storage = buffer_storage,
+        .slot_states = slot_states,
+        .free_slot_stack = free_slot_stack,
+        .free_slot_count = free_slot_count,
+        .free_slot_lock = free_slot_lock,
+    };
+
+    const std::size_t worker_index =
+        (static_cast<std::size_t>(blockIdx.x) * static_cast<std::size_t>(blockDim.x)) + threadIdx.x;
+    const std::size_t worker_count = static_cast<std::size_t>(gridDim.x) * static_cast<std::size_t>(blockDim.x);
+    for (std::size_t child_index = worker_index; child_index < next_generation_size; child_index += worker_count) {
+        const std::uint32_t child_slot = next_slot_indices[child_index];
+        if ((child_slot != kInvalidBufferSlotIndex) && !TryReleaseBufferSlot(buffer, child_slot)) {
+            SetFailureStatus(status, DeviceBufferRuntimeStatusCode::kInvalidBuffer);
+        }
+
+        next_slot_indices[child_index] = kInvalidBufferSlotIndex;
+        next_fitness[child_index] = 0.0f;
+        next_evaluation_counts[child_index] = 0;
+        next_has_fitness[child_index] = 0;
+    }
+}
+
+inline bool CleanupFailedAssemblyOnDevice(DeviceBufferRuntimeBuffers &buffers) {
+    const std::size_t cleanup_generation_size = buffers.next_generation_size;
+    int original_status = DeviceStatusValue(DeviceBufferRuntimeStatusCode::kCudaFailure);
+    bool ok = ReadDeviceStatus(buffers, original_status);
+    ok &= ResetDeviceStatus(buffers);
+
+    if (cleanup_generation_size > 0) {
+        CleanupNextGenerationSlotsKernel<<<BoundedAssemblyBlockCount(cleanup_generation_size),
+                                           kBufferAssemblyThreadBlockSize>>>(
+            buffers.buffer_storage, buffers.slot_states, buffers.free_slot_stack, buffers.free_slot_count,
+            buffers.free_slot_lock, buffers.buffer_layout, buffers.next_slot_indices, buffers.next_fitness,
+            buffers.next_evaluation_counts, buffers.next_has_fitness, cleanup_generation_size, buffers.status);
+        ok &= CheckCuda(cudaGetLastError());
+        ok &= CheckCuda(cudaDeviceSynchronize());
+    }
+
+    ok &= ClearGenerationBuffers(buffers.next_slot_indices, buffers.next_fitness, buffers.next_evaluation_counts,
+                                 buffers.next_has_fitness, buffers.max_generation_size);
+
+    int cleanup_status = DeviceStatusValue(DeviceBufferRuntimeStatusCode::kCudaFailure);
+    ok &= ReadDeviceStatus(buffers, cleanup_status);
+    if (original_status != DeviceStatusValue(DeviceBufferRuntimeStatusCode::kOk)) {
+        ok &= WriteDeviceStatus(buffers, static_cast<DeviceBufferRuntimeStatusCode>(original_status));
+    }
+
+    buffers.next_generation_index = 0;
+    buffers.next_generation_size = 0;
+    return ok && (cleanup_status == DeviceStatusValue(DeviceBufferRuntimeStatusCode::kOk));
+}
+
+inline bool FinishAssemblyKernelOrCleanup(DeviceBufferRuntimeBuffers &buffers) {
+    const bool launch_ok = CheckCuda(cudaGetLastError());
+    const bool sync_ok = CheckCuda(cudaDeviceSynchronize());
+    if (!launch_ok || !sync_ok) {
+        (void)WriteDeviceStatus(buffers, DeviceBufferRuntimeStatusCode::kCudaFailure);
+        (void)CleanupFailedAssemblyOnDevice(buffers);
+        return false;
+    }
+
+    if (!IsDeviceStatusOk(buffers)) {
+        (void)CleanupFailedAssemblyOnDevice(buffers);
+        return false;
+    }
+
+    return true;
 }
 
 __global__ void PrepareBufferForExpandedActionCountKernel(
@@ -677,7 +794,7 @@ bool TryAssembleNextGenerationOnDevice(DeviceBufferRuntimeBuffers &buffers, cons
         buffers.next_evaluation_counts, buffers.next_has_fitness, buffers.next_generation_index,
         buffers.next_generation_size, buffers.assembly_parent_pairs, buffers.parent_reference_counts, config,
         buffers.status);
-    if (!CheckCuda(cudaGetLastError()) || !CheckCuda(cudaDeviceSynchronize()) || !IsDeviceStatusOk(buffers)) {
+    if (!FinishAssemblyKernelOrCleanup(buffers)) {
         return false;
     }
 
@@ -685,7 +802,7 @@ bool TryAssembleNextGenerationOnDevice(DeviceBufferRuntimeBuffers &buffers, cons
                                        kBufferAssemblyThreadBlockSize>>>(
         buffers.current_slot_indices, buffers.current_generation_size, buffers.assembly_parent_pairs,
         buffers.next_generation_size, buffers.parent_reference_counts, buffers.status);
-    if (!CheckCuda(cudaGetLastError()) || !CheckCuda(cudaDeviceSynchronize()) || !IsDeviceStatusOk(buffers)) {
+    if (!FinishAssemblyKernelOrCleanup(buffers)) {
         return false;
     }
 
@@ -695,7 +812,7 @@ bool TryAssembleNextGenerationOnDevice(DeviceBufferRuntimeBuffers &buffers, cons
         buffers.free_slot_lock, buffers.buffer_layout, buffers.current_slot_indices, buffers.current_fitness,
         buffers.current_evaluation_counts, buffers.current_has_fitness, buffers.current_generation_index,
         buffers.current_generation_size, buffers.parent_reference_counts, buffers.status);
-    if (!CheckCuda(cudaGetLastError()) || !CheckCuda(cudaDeviceSynchronize()) || !IsDeviceStatusOk(buffers)) {
+    if (!FinishAssemblyKernelOrCleanup(buffers)) {
         return false;
     }
 
@@ -703,11 +820,14 @@ bool TryAssembleNextGenerationOnDevice(DeviceBufferRuntimeBuffers &buffers, cons
     while (child_offset < buffers.next_generation_size) {
         std::uint32_t free_slot_count = 0;
         if (!ReadDeviceFreeSlotCount(buffers, free_slot_count)) {
+            (void)WriteDeviceStatus(buffers, DeviceBufferRuntimeStatusCode::kCudaFailure);
+            (void)CleanupFailedAssemblyOnDevice(buffers);
             return false;
         }
 
         if (free_slot_count == 0) {
             (void)WriteDeviceStatus(buffers, DeviceBufferRuntimeStatusCode::kBufferFull);
+            (void)CleanupFailedAssemblyOnDevice(buffers);
             return false;
         }
 
@@ -727,7 +847,18 @@ bool TryAssembleNextGenerationOnDevice(DeviceBufferRuntimeBuffers &buffers, cons
             buffers.next_evaluation_counts, buffers.next_has_fitness, buffers.next_generation_index,
             buffers.next_generation_size, buffers.assembly_parent_pairs, buffers.parent_reference_counts, child_offset,
             batch_child_count, generation_seed, config, buffers.status);
-        if (!CheckCuda(cudaGetLastError()) || !CheckCuda(cudaDeviceSynchronize()) || !IsDeviceStatusOk(buffers)) {
+        if (!FinishAssemblyKernelOrCleanup(buffers)) {
+            return false;
+        }
+
+        ReleaseParentReferenceBatchKernel<<<BoundedAssemblyBlockCount(batch_child_count),
+                                            kBufferAssemblyThreadBlockSize>>>(
+            buffers.buffer_storage, buffers.slot_states, buffers.free_slot_stack, buffers.free_slot_count,
+            buffers.free_slot_lock, buffers.buffer_layout, buffers.current_slot_indices, buffers.current_fitness,
+            buffers.current_evaluation_counts, buffers.current_has_fitness, buffers.current_generation_index,
+            buffers.current_generation_size, buffers.assembly_parent_pairs, buffers.parent_reference_counts,
+            child_offset, batch_child_count, buffers.status);
+        if (!FinishAssemblyKernelOrCleanup(buffers)) {
             return false;
         }
 
