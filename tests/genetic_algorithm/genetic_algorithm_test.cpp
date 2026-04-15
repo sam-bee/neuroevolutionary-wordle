@@ -524,7 +524,7 @@ bool TestPopulationInitializationSeedsRandomGenomesAndClearsMetadata() {
     return ok;
 }
 
-bool TestNextGenerationAssemblyBreedsEveryChildWithoutElitism() {
+bool TestNextGenerationAssemblyBreedsEveryChild() {
     constexpr std::size_t kPopulationSize = 4;
 
     Population<ModelGenome<2>, kPopulationSize> current_population{};
@@ -686,7 +686,7 @@ int main() {
         return 1;
     }
 
-    if (!TestNextGenerationAssemblyBreedsEveryChildWithoutElitism()) {
+    if (!TestNextGenerationAssemblyBreedsEveryChild()) {
         return 1;
     }
 

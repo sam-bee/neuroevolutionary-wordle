@@ -12,40 +12,41 @@
 #include <string>
 #include <string_view>
 
-#include "genetic_algorithm/device/arena_runtime.hpp"
+#include "genetic_algorithm/device/pool_runtime.hpp"
 #include "genetic_algorithm/genome/dynamic_layout.hpp"
-#include "genetic_algorithm/genotype_arena/arena.hpp"
-#include "genetic_algorithm/genotype_arena/generation.hpp"
+#include "genetic_algorithm/genotype_pool/generation.hpp"
+#include "genetic_algorithm/genotype_pool/pool.hpp"
 #include "training_folder/training_data.hpp"
 
 namespace {
 
 using neuroevolution::genetic_algorithm::GenerationAssemblyConfig;
-using neuroevolution::genetic_algorithm::arena_device::DestroyDeviceArenaGARuntimeBuffers;
-using neuroevolution::genetic_algorithm::arena_device::DeviceArenaGARuntimeBuffers;
-using neuroevolution::genetic_algorithm::arena_device::DeviceArenaGARuntimeConfig;
-using neuroevolution::genetic_algorithm::arena_device::DeviceArenaGARuntimeStatusCode;
-using neuroevolution::genetic_algorithm::arena_device::DeviceArenaGARuntimeStatusCodeString;
-using neuroevolution::genetic_algorithm::arena_device::PopulationFitnessSummary;
-using neuroevolution::genetic_algorithm::arena_device::RuntimeWordCounts;
-using neuroevolution::genetic_algorithm::arena_device::TryAdvanceGenerationOnDevice;
-using neuroevolution::genetic_algorithm::arena_device::TryCreateDeviceArenaGARuntimeBuffers;
-using neuroevolution::genetic_algorithm::arena_device::TryEvaluateCurrentGenerationFitnessOnDevice;
-using neuroevolution::genetic_algorithm::arena_device::TryReadDeviceArenaGARuntimeStatus;
-using neuroevolution::genetic_algorithm::arena_device::TryReadPopulationFitnessSummaryFromDevice;
-using neuroevolution::genetic_algorithm::arena_device::TryUploadCurrentArenaPopulationToDevice;
 using neuroevolution::genetic_algorithm::genome::HostGenomeBytesAt;
 using neuroevolution::genetic_algorithm::genome::HostPopulation;
 using neuroevolution::genetic_algorithm::genome::TryInitializeRandomHostPopulation;
-using neuroevolution::genetic_algorithm::genotype_arena::ArenaGeneration;
-using neuroevolution::genetic_algorithm::genotype_arena::ArenaSlotCountForByteBudget;
-using neuroevolution::genetic_algorithm::genotype_arena::ComputeArenaSlotStrideBytes;
-using neuroevolution::genetic_algorithm::genotype_arena::HostGenotypeArena;
-using neuroevolution::genetic_algorithm::genotype_arena::TryAllocateArenaSlot;
-using neuroevolution::genetic_algorithm::genotype_arena::TryCopyGenomeBytesIntoArenaSlot;
-using neuroevolution::genetic_algorithm::genotype_arena::TryCreateArenaGeneration;
-using neuroevolution::genetic_algorithm::genotype_arena::TryCreateHostGenotypeArena;
-using neuroevolution::genetic_algorithm::genotype_arena::TrySetArenaGenerationSlot;
+using neuroevolution::genetic_algorithm::genotype_pool::ComputePoolSlotStrideBytes;
+using neuroevolution::genetic_algorithm::genotype_pool::HostGenotypePool;
+using neuroevolution::genetic_algorithm::genotype_pool::PoolGeneration;
+using neuroevolution::genetic_algorithm::genotype_pool::PoolSlotCountForByteBudget;
+using neuroevolution::genetic_algorithm::genotype_pool::TryAllocatePoolSlot;
+using neuroevolution::genetic_algorithm::genotype_pool::TryCopyGenomeBytesIntoPoolSlot;
+using neuroevolution::genetic_algorithm::genotype_pool::TryCreateHostGenotypePool;
+using neuroevolution::genetic_algorithm::genotype_pool::TryCreatePoolGeneration;
+using neuroevolution::genetic_algorithm::genotype_pool::TrySetPoolGenerationSlot;
+using neuroevolution::genetic_algorithm::pool_device::DestroyDevicePoolGARuntimeBuffers;
+using neuroevolution::genetic_algorithm::pool_device::DevicePoolGARuntimeBuffers;
+using neuroevolution::genetic_algorithm::pool_device::DevicePoolGARuntimeConfig;
+using neuroevolution::genetic_algorithm::pool_device::DevicePoolGARuntimeStatusCode;
+using neuroevolution::genetic_algorithm::pool_device::DevicePoolGARuntimeStatusCodeString;
+using neuroevolution::genetic_algorithm::pool_device::PendingOutputEmbeddingInjection;
+using neuroevolution::genetic_algorithm::pool_device::PopulationFitnessSummary;
+using neuroevolution::genetic_algorithm::pool_device::RuntimeWordCounts;
+using neuroevolution::genetic_algorithm::pool_device::TryAdvanceGenerationOnDevice;
+using neuroevolution::genetic_algorithm::pool_device::TryCreateDevicePoolGARuntimeBuffers;
+using neuroevolution::genetic_algorithm::pool_device::TryEvaluateCurrentGenerationFitnessOnDevice;
+using neuroevolution::genetic_algorithm::pool_device::TryReadDevicePoolGARuntimeStatus;
+using neuroevolution::genetic_algorithm::pool_device::TryReadPopulationFitnessSummaryFromDevice;
+using neuroevolution::genetic_algorithm::pool_device::TryUploadCurrentPoolPopulationToDevice;
 using neuroevolution::training_folder::DefaultActionSpacePath;
 using neuroevolution::training_folder::IsValidWordCountSchedule;
 using neuroevolution::training_folder::LoadTrainingWordCatalogFromActionSpace;
@@ -84,12 +85,12 @@ void PrintUsage() {
               << "If --population-size is omitted, the program does not apply an extra population ceiling.\n"
               << "If both --population-size and --genotype-vram-gb are omitted, the program uses "
               << kDefaultPopulationSizeTarget
-              << " as the default starting-population target when deriving the initial fixed-width arena budget.\n"
+              << " as the default starting-population target when deriving the initial fixed-width pool budget.\n"
               << "The shared training/action schedule defaults to initial_word_count="
               << neuroevolution::training_folder::kDefaultInitialActiveWordCount
               << ", word_count_step=0, word_count_step_period_generations=1.\n"
-              << "The current arena-backed runtime is fixed-width only, so positive word-count growth is rejected "
-                 "until compaction lands.\n"
+              << "Positive word-count growth is handled by pool compaction/repacking, so later generations may "
+                 "shrink population size as the output embedding grows.\n"
               << "If --genotype-vram-gb is omitted, the program uses exactly enough genotype bytes to fit the "
                  "requested initial population plus matching child-slot capacity at the starting action count.\n"
               << "The VRAM budget flag is interpreted in binary GiB-style units (" << kBytesPerVramGiB
@@ -242,10 +243,10 @@ ArgumentParseResult TryParseArguments(const int argc, char **argv, CliConfig &co
     return ArgumentParseResult::kSuccess;
 }
 
-bool ReportDeviceArenaRuntimeFailure(const DeviceArenaGARuntimeBuffers &buffers, const std::string_view action) {
-    DeviceArenaGARuntimeStatusCode status_code = DeviceArenaGARuntimeStatusCode::kCudaFailure;
-    if (TryReadDeviceArenaGARuntimeStatus(buffers, status_code)) {
-        std::cerr << action << " failed: " << DeviceArenaGARuntimeStatusCodeString(status_code) << '\n';
+bool ReportDevicePoolRuntimeFailure(const DevicePoolGARuntimeBuffers &buffers, const std::string_view action) {
+    DevicePoolGARuntimeStatusCode status_code = DevicePoolGARuntimeStatusCode::kCudaFailure;
+    if (TryReadDevicePoolGARuntimeStatus(buffers, status_code)) {
+        std::cerr << action << " failed: " << DevicePoolGARuntimeStatusCodeString(status_code) << '\n';
     } else {
         std::cerr << action << " failed and the device status could not be read.\n";
     }
@@ -272,7 +273,7 @@ bool TryComputeGenotypeBudgetBytes(const CliConfig &cli_config, const std::size_
     if (!cli_config.genotype_vram_gb_was_provided) {
         const std::size_t starting_population_target =
             cli_config.population_size_was_provided ? cli_config.population_size_ceiling : kDefaultPopulationSizeTarget;
-        const std::size_t slot_stride_bytes = ComputeArenaSlotStrideBytes(initial_action_count);
+        const std::size_t slot_stride_bytes = ComputePoolSlotStrideBytes(initial_action_count);
         if ((slot_stride_bytes == 0) || (starting_population_target > (std::numeric_limits<std::size_t>::max() / 2))) {
             return false;
         }
@@ -299,11 +300,23 @@ std::string PopulationCeilingLabel(const std::size_t population_size_ceiling) {
     return (population_size_ceiling == 0) ? "none" : std::to_string(population_size_ceiling);
 }
 
-bool TryPopulateArenaGenerationFromHostPopulation(const HostPopulation &population, const std::size_t slot_count,
-                                                  const std::size_t generation_index, HostGenotypeArena &arena,
-                                                  ArenaGeneration &generation) {
-    bool ok = TryCreateHostGenotypeArena(arena, slot_count, population.layout.action_count);
-    ok &= TryCreateArenaGeneration(generation, population.layout.active_individual_count, generation_index);
+PendingOutputEmbeddingInjection MakePendingOutputEmbeddingInjection(const std::size_t current_action_count,
+                                                                    const std::size_t next_scheduled_word_count) {
+    PendingOutputEmbeddingInjection pending_output_embedding_injection{};
+    if (current_action_count < next_scheduled_word_count) {
+        pending_output_embedding_injection.enabled = true;
+        pending_output_embedding_injection.first_catalog_word_index = current_action_count;
+        pending_output_embedding_injection.injection_count = next_scheduled_word_count - current_action_count;
+    }
+
+    return pending_output_embedding_injection;
+}
+
+bool TryPopulatePoolGenerationFromHostPopulation(const HostPopulation &population, const std::size_t slot_count,
+                                                 const std::size_t generation_index, HostGenotypePool &pool,
+                                                 PoolGeneration &generation) {
+    bool ok = TryCreateHostGenotypePool(pool, slot_count, population.layout.action_count);
+    ok &= TryCreatePoolGeneration(generation, population.layout.active_individual_count, generation_index);
     if (!ok) {
         return false;
     }
@@ -311,10 +324,10 @@ bool TryPopulateArenaGenerationFromHostPopulation(const HostPopulation &populati
     for (std::size_t individual_index = 0; individual_index < population.layout.active_individual_count;
          ++individual_index) {
         std::uint32_t slot_index = 0;
-        ok &= TryAllocateArenaSlot(arena, slot_index);
-        ok &= TrySetArenaGenerationSlot(generation, individual_index, slot_index);
-        ok &= TryCopyGenomeBytesIntoArenaSlot(arena, slot_index, HostGenomeBytesAt(population, individual_index),
-                                              population.layout.genome_stride_bytes);
+        ok &= TryAllocatePoolSlot(pool, slot_index);
+        ok &= TrySetPoolGenerationSlot(generation, individual_index, slot_index);
+        ok &= TryCopyGenomeBytesIntoPoolSlot(pool, slot_index, HostGenomeBytesAt(population, individual_index),
+                                             population.layout.genome_stride_bytes);
     }
 
     return ok;
@@ -359,12 +372,6 @@ int main(int argc, char **argv) {
             return 1;
         }
 
-        if (word_count_schedule.word_count_step != 0) {
-            std::cerr << "The arena-backed runtime is fixed-width only right now. Use --word-count-step 0 until "
-                         "compaction is implemented.\n";
-            return 1;
-        }
-
         const std::size_t initial_active_word_count =
             ScheduledWordCountForGeneration(word_count_schedule, training_word_catalog.word_count, 0);
         if (initial_active_word_count == 0) {
@@ -383,14 +390,14 @@ int main(int argc, char **argv) {
             return 1;
         }
 
-        const std::size_t arena_slot_count =
-            ArenaSlotCountForByteBudget(genotype_memory_budget_bytes, runtime_word_counts.action_space_word_count);
-        if (arena_slot_count < 2) {
-            std::cerr << "The requested genotype VRAM budget is too small for a fixed-width arena generation.\n";
+        const std::size_t pool_slot_count =
+            PoolSlotCountForByteBudget(genotype_memory_budget_bytes, runtime_word_counts.action_space_word_count);
+        if (pool_slot_count < 2) {
+            std::cerr << "The requested genotype VRAM budget is too small for a fixed-width pool generation.\n";
             return 1;
         }
 
-        const std::size_t guaranteed_population_capacity = arena_slot_count / 2;
+        const std::size_t guaranteed_population_capacity = pool_slot_count / 2;
         if (guaranteed_population_capacity == 0) {
             std::cerr << "The requested genotype VRAM budget does not leave room for both current and child slots.\n";
             return 1;
@@ -402,7 +409,7 @@ int main(int argc, char **argv) {
         if (initial_population_size > guaranteed_population_capacity) {
             std::cerr << "The requested genotype VRAM budget is too small to guarantee a population of "
                       << initial_population_size
-                      << " individuals in the fixed-width arena. Increase "
+                      << " individuals in the fixed-width pool. Increase "
                          "--genotype-vram-gb or lower --population-size.\n";
             return 1;
         }
@@ -414,38 +421,38 @@ int main(int argc, char **argv) {
             return 1;
         }
 
-        HostGenotypeArena host_arena{};
-        ArenaGeneration current_generation{};
-        if (!TryPopulateArenaGenerationFromHostPopulation(population, arena_slot_count, 0, host_arena,
-                                                          current_generation)) {
-            std::cerr << "Could not populate the starting arena generation.\n";
+        HostGenotypePool host_pool{};
+        PoolGeneration current_generation{};
+        if (!TryPopulatePoolGenerationFromHostPopulation(population, pool_slot_count, 0, host_pool,
+                                                         current_generation)) {
+            std::cerr << "Could not populate the starting pool generation.\n";
             return 1;
         }
 
-        DeviceArenaGARuntimeConfig runtime_config{};
-        runtime_config.slot_count = arena_slot_count;
+        DevicePoolGARuntimeConfig runtime_config{};
+        runtime_config.slot_count = pool_slot_count;
         runtime_config.action_count = runtime_word_counts.action_space_word_count;
-        runtime_config.generation_size = initial_population_size;
+        runtime_config.max_generation_size = initial_population_size;
 
-        DeviceArenaGARuntimeBuffers buffers{};
-        if (!TryCreateDeviceArenaGARuntimeBuffers(buffers, runtime_config)) {
-            std::cerr << "Could not allocate arena-backed device-runtime buffers.\n";
+        DevicePoolGARuntimeBuffers buffers{};
+        if (!TryCreateDevicePoolGARuntimeBuffers(buffers, runtime_config)) {
+            std::cerr << "Could not allocate pool-backed device-runtime buffers.\n";
             return 1;
         }
 
         const GenerationAssemblyConfig assembly_config = MakeAssemblyConfig();
 
-        if (!TryUploadCurrentArenaPopulationToDevice(host_arena, current_generation, buffers)) {
-            std::cerr << "Could not upload the initial arena population to device memory.\n";
-            DestroyDeviceArenaGARuntimeBuffers(buffers);
+        if (!TryUploadCurrentPoolPopulationToDevice(host_pool, current_generation, buffers)) {
+            std::cerr << "Could not upload the initial pool population to device memory.\n";
+            DestroyDevicePoolGARuntimeBuffers(buffers);
             return 1;
         }
 
         std::cout << "Running device GA demo with initial_population=" << initial_population_size
                   << ", population_ceiling=" << PopulationCeilingLabel(cli_config.population_size_ceiling)
-                  << ", arena_slot_count=" << arena_slot_count
+                  << ", pool_slot_count=" << pool_slot_count
                   << ", action_count=" << runtime_word_counts.action_space_word_count
-                  << ", genome_stride_bytes=" << host_arena.layout.slot_stride_bytes
+                  << ", genome_stride_bytes=" << host_pool.layout.slot_stride_bytes
                   << ", genotype_vram_budget_bytes=" << genotype_memory_budget_bytes << ", genotype_vram_budget_gib="
                   << (static_cast<double>(genotype_memory_budget_bytes) / kBytesPerVramGiB)
                   << ", generations=" << cli_config.generation_count << ", seed=" << cli_config.seed
@@ -464,34 +471,43 @@ int main(int argc, char **argv) {
             const bool is_last_generation = ((generation_step + 1) == cli_config.generation_count);
             if (is_last_generation) {
                 if (!TryEvaluateCurrentGenerationFitnessOnDevice(buffers, runtime_word_counts)) {
-                    (void)ReportDeviceArenaRuntimeFailure(buffers, "Population fitness evaluation");
-                    DestroyDeviceArenaGARuntimeBuffers(buffers);
+                    (void)ReportDevicePoolRuntimeFailure(buffers, "Population fitness evaluation");
+                    DestroyDevicePoolGARuntimeBuffers(buffers);
                     return 1;
                 }
             } else {
+                const std::size_t next_scheduled_word_count = ScheduledWordCountForGeneration(
+                    word_count_schedule, training_word_catalog.word_count, generation_step + 1);
+                const PendingOutputEmbeddingInjection pending_output_embedding_injection =
+                    MakePendingOutputEmbeddingInjection(runtime_word_counts.action_space_word_count,
+                                                        next_scheduled_word_count);
                 const std::uint32_t generation_seed =
                     cli_config.seed + 2U + static_cast<std::uint32_t>(generation_step);
-                if (!TryAdvanceGenerationOnDevice(buffers, generation_seed, runtime_word_counts, assembly_config)) {
-                    (void)ReportDeviceArenaRuntimeFailure(buffers, "Next-generation assembly");
-                    DestroyDeviceArenaGARuntimeBuffers(buffers);
+                if (!TryAdvanceGenerationOnDevice(buffers, generation_seed, runtime_word_counts, assembly_config,
+                                                  pending_output_embedding_injection)) {
+                    (void)ReportDevicePoolRuntimeFailure(buffers, "Next-generation assembly");
+                    DestroyDevicePoolGARuntimeBuffers(buffers);
                     return 1;
                 }
+
+                runtime_word_counts.training_word_count = next_scheduled_word_count;
+                runtime_word_counts.action_space_word_count = next_scheduled_word_count;
             }
 
             PopulationFitnessSummary summary{};
             if (!TryReadPopulationFitnessSummaryFromDevice(buffers, summary)) {
                 std::cerr << "Could not read the population fitness summary back from device memory.\n";
-                DestroyDeviceArenaGARuntimeBuffers(buffers);
+                DestroyDevicePoolGARuntimeBuffers(buffers);
                 return 1;
             }
 
             std::cout << "Generation " << summary.generation_index << ": best=" << summary.best_fitness
                       << ", average=" << summary.average_fitness << ", best_index=" << summary.best_index
                       << ", population=" << summary.population_size << ", action_count=" << summary.action_count
-                      << ", genome_stride_bytes=" << host_arena.layout.slot_stride_bytes << '\n';
+                      << ", genome_stride_bytes=" << ComputePoolSlotStrideBytes(summary.action_count) << '\n';
         }
 
-        DestroyDeviceArenaGARuntimeBuffers(buffers);
+        DestroyDevicePoolGARuntimeBuffers(buffers);
         std::cout << "GA demo finished after " << cli_config.generation_count << " generations.\n";
         return 0;
     } catch (const std::exception &exception) {

@@ -139,58 +139,59 @@ target_link_libraries(genetic_algorithm INTERFACE
     policy_model
 )
 
-add_library(genotype_arena STATIC
-    src/genetic_algorithm/genotype_arena/assembly.cpp
-    src/genetic_algorithm/genotype_arena/arena.cpp
+add_library(genotype_pool STATIC
+    src/genetic_algorithm/genotype_pool/assembly.cpp
+    src/genetic_algorithm/genotype_pool/pool.cpp
 )
 
-target_include_directories(genotype_arena PUBLIC
+target_include_directories(genotype_pool PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/src
 )
 
-target_link_libraries(genotype_arena PUBLIC
+target_link_libraries(genotype_pool PUBLIC
     genetic_algorithm
 )
 
-enable_project_warnings(genotype_arena)
+enable_project_warnings(genotype_pool)
 
-add_library(genotype_arena_device STATIC
-    src/genetic_algorithm/genotype_arena/device_runtime.cu
+add_library(genotype_pool_device STATIC
+    src/genetic_algorithm/genotype_pool/device_runtime.cu
 )
 
-target_include_directories(genotype_arena_device PUBLIC
+target_include_directories(genotype_pool_device PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/src
     ${CUDAToolkit_INCLUDE_DIRS}
 )
 
-target_link_libraries(genotype_arena_device PUBLIC
-    genotype_arena
-)
-
-enable_project_warnings(genotype_arena_device)
-
-set_target_properties(genotype_arena_device PROPERTIES
-    CUDA_SEPARABLE_COMPILATION ON
-)
-
-add_library(genetic_algorithm_arena_device STATIC
-    src/genetic_algorithm/genome/dynamic_layout.cpp
-    src/genetic_algorithm/device/arena_runtime.cu
-)
-
-target_include_directories(genetic_algorithm_arena_device PUBLIC
-    ${CMAKE_CURRENT_SOURCE_DIR}/src
-    ${CUDAToolkit_INCLUDE_DIRS}
-)
-
-target_link_libraries(genetic_algorithm_arena_device PUBLIC
-    genotype_arena_device
+target_link_libraries(genotype_pool_device PUBLIC
+    genotype_pool
     training_folder
 )
 
-enable_project_warnings(genetic_algorithm_arena_device)
+enable_project_warnings(genotype_pool_device)
 
-set_target_properties(genetic_algorithm_arena_device PROPERTIES
+set_target_properties(genotype_pool_device PROPERTIES
+    CUDA_SEPARABLE_COMPILATION ON
+)
+
+add_library(genetic_algorithm_pool_device STATIC
+    src/genetic_algorithm/genome/dynamic_layout.cpp
+    src/genetic_algorithm/device/pool_runtime.cu
+)
+
+target_include_directories(genetic_algorithm_pool_device PUBLIC
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
+    ${CUDAToolkit_INCLUDE_DIRS}
+)
+
+target_link_libraries(genetic_algorithm_pool_device PUBLIC
+    genotype_pool_device
+    training_folder
+)
+
+enable_project_warnings(genetic_algorithm_pool_device)
+
+set_target_properties(genetic_algorithm_pool_device PROPERTIES
     CUDA_SEPARABLE_COMPILATION ON
 )
 
@@ -220,7 +221,7 @@ add_executable(run_genetic_algorithm
 )
 
 target_link_libraries(run_genetic_algorithm PRIVATE
-    genetic_algorithm_arena_device
+    genetic_algorithm_pool_device
 )
 
 enable_project_warnings(run_genetic_algorithm)
@@ -394,18 +395,18 @@ set_tests_properties(output_embedding_genome_runtime_test PROPERTIES
     LABELS "cpu;unit"
 )
 
-add_executable(genotype_arena_test
-    tests/genetic_algorithm/genotype_arena_test.cpp
+add_executable(genotype_pool_test
+    tests/genetic_algorithm/genotype_pool_test.cpp
 )
 
-target_link_libraries(genotype_arena_test PRIVATE
-    genotype_arena
+target_link_libraries(genotype_pool_test PRIVATE
+    genotype_pool
 )
 
-enable_project_warnings(genotype_arena_test)
+enable_project_warnings(genotype_pool_test)
 
-add_test(NAME genotype_arena_test COMMAND genotype_arena_test)
-set_tests_properties(genotype_arena_test PROPERTIES
+add_test(NAME genotype_pool_test COMMAND genotype_pool_test)
+set_tests_properties(genotype_pool_test PROPERTIES
     LABELS "cpu;unit"
 )
 
@@ -514,43 +515,43 @@ set_tests_properties(dynamic_runtime_test PROPERTIES
     RESOURCE_LOCK cuda_device
 )
 
-add_executable(genotype_arena_device_runtime_test
-    tests/genetic_algorithm/device/genotype_arena_device_runtime_test.cu
+add_executable(genotype_pool_device_runtime_test
+    tests/genetic_algorithm/device/genotype_pool_device_runtime_test.cu
 )
 
-target_link_libraries(genotype_arena_device_runtime_test PRIVATE
-    genotype_arena_device
+target_link_libraries(genotype_pool_device_runtime_test PRIVATE
+    genotype_pool_device
 )
 
-enable_project_warnings(genotype_arena_device_runtime_test)
+enable_project_warnings(genotype_pool_device_runtime_test)
 
-set_target_properties(genotype_arena_device_runtime_test PROPERTIES
+set_target_properties(genotype_pool_device_runtime_test PROPERTIES
     CUDA_SEPARABLE_COMPILATION ON
 )
 
-add_test(NAME genotype_arena_device_runtime_test COMMAND genotype_arena_device_runtime_test)
-set_tests_properties(genotype_arena_device_runtime_test PROPERTIES
+add_test(NAME genotype_pool_device_runtime_test COMMAND genotype_pool_device_runtime_test)
+set_tests_properties(genotype_pool_device_runtime_test PROPERTIES
     LABELS "gpu;integration"
     RESOURCE_LOCK cuda_device
 )
 
-add_executable(arena_runtime_test
-    tests/genetic_algorithm/device/arena_runtime_test.cu
+add_executable(pool_runtime_test
+    tests/genetic_algorithm/device/pool_runtime_test.cu
 )
 
-target_link_libraries(arena_runtime_test PRIVATE
-    genetic_algorithm_arena_device
+target_link_libraries(pool_runtime_test PRIVATE
+    genetic_algorithm_pool_device
     training_folder
 )
 
-enable_project_warnings(arena_runtime_test)
+enable_project_warnings(pool_runtime_test)
 
-set_target_properties(arena_runtime_test PROPERTIES
+set_target_properties(pool_runtime_test PROPERTIES
     CUDA_SEPARABLE_COMPILATION ON
 )
 
-add_test(NAME arena_runtime_test COMMAND arena_runtime_test)
-set_tests_properties(arena_runtime_test PROPERTIES
+add_test(NAME pool_runtime_test COMMAND pool_runtime_test)
+set_tests_properties(pool_runtime_test PROPERTIES
     LABELS "gpu;integration"
     RESOURCE_LOCK cuda_device
 )
