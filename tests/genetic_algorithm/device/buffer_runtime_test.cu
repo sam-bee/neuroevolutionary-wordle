@@ -17,34 +17,34 @@ namespace {
 using neuroevolution::common::ToFloat;
 using neuroevolution::genetic_algorithm::GenerationAssemblyConfig;
 using neuroevolution::genetic_algorithm::TrySeedOutputEmbeddingTailFromHintGrids;
+using neuroevolution::genetic_algorithm::buffer_device::DeviceBufferGARuntimeBuffers;
+using neuroevolution::genetic_algorithm::buffer_device::DeviceBufferGARuntimeConfig;
+using neuroevolution::genetic_algorithm::buffer_device::DeviceBufferGARuntimeStatusCode;
+using neuroevolution::genetic_algorithm::buffer_device::PendingOutputEmbeddingInjection;
+using neuroevolution::genetic_algorithm::buffer_device::PopulationFitnessSummary;
+using neuroevolution::genetic_algorithm::buffer_device::RuntimeWordCounts;
+using neuroevolution::genetic_algorithm::buffer_device::TryAdvanceGenerationOnDevice;
+using neuroevolution::genetic_algorithm::buffer_device::TryCreateDeviceBufferGARuntimeBuffers;
+using neuroevolution::genetic_algorithm::buffer_device::TryDownloadBufferFromDevice;
+using neuroevolution::genetic_algorithm::buffer_device::TryDownloadCurrentGenerationFromDevice;
+using neuroevolution::genetic_algorithm::buffer_device::TryEvaluateCurrentGenerationFitnessOnDevice;
+using neuroevolution::genetic_algorithm::buffer_device::TryReadDeviceBufferGARuntimeStatus;
+using neuroevolution::genetic_algorithm::buffer_device::TryReadPopulationFitnessSummaryFromDevice;
+using neuroevolution::genetic_algorithm::buffer_device::TryUploadCurrentBufferPopulationToDevice;
 using neuroevolution::genetic_algorithm::dynamic_device::GenomePolicyModelParameters;
 using neuroevolution::genetic_algorithm::dynamic_device::GenomeTailRows;
 using neuroevolution::genetic_algorithm::dynamic_device::HostGenomeBytesAt;
 using neuroevolution::genetic_algorithm::dynamic_device::HostPopulation;
 using neuroevolution::genetic_algorithm::dynamic_device::TrainableActionEmbeddingTail;
 using neuroevolution::genetic_algorithm::dynamic_device::TryInitializeRandomHostPopulation;
-using neuroevolution::genetic_algorithm::genotype_pool::HostGenotypePool;
-using neuroevolution::genetic_algorithm::genotype_pool::HostPoolSlotBytesAt;
-using neuroevolution::genetic_algorithm::genotype_pool::PoolGeneration;
-using neuroevolution::genetic_algorithm::genotype_pool::TryAllocatePoolSlot;
-using neuroevolution::genetic_algorithm::genotype_pool::TryCopyGenomeBytesIntoPoolSlot;
-using neuroevolution::genetic_algorithm::genotype_pool::TryCreateHostGenotypePool;
-using neuroevolution::genetic_algorithm::genotype_pool::TryCreatePoolGeneration;
-using neuroevolution::genetic_algorithm::genotype_pool::TrySetPoolGenerationSlot;
-using neuroevolution::genetic_algorithm::pool_device::DevicePoolGARuntimeBuffers;
-using neuroevolution::genetic_algorithm::pool_device::DevicePoolGARuntimeConfig;
-using neuroevolution::genetic_algorithm::pool_device::DevicePoolGARuntimeStatusCode;
-using neuroevolution::genetic_algorithm::pool_device::PendingOutputEmbeddingInjection;
-using neuroevolution::genetic_algorithm::pool_device::PopulationFitnessSummary;
-using neuroevolution::genetic_algorithm::pool_device::RuntimeWordCounts;
-using neuroevolution::genetic_algorithm::pool_device::TryAdvanceGenerationOnDevice;
-using neuroevolution::genetic_algorithm::pool_device::TryCreateDevicePoolGARuntimeBuffers;
-using neuroevolution::genetic_algorithm::pool_device::TryDownloadCurrentGenerationFromDevice;
-using neuroevolution::genetic_algorithm::pool_device::TryDownloadPoolFromDevice;
-using neuroevolution::genetic_algorithm::pool_device::TryEvaluateCurrentGenerationFitnessOnDevice;
-using neuroevolution::genetic_algorithm::pool_device::TryReadDevicePoolGARuntimeStatus;
-using neuroevolution::genetic_algorithm::pool_device::TryReadPopulationFitnessSummaryFromDevice;
-using neuroevolution::genetic_algorithm::pool_device::TryUploadCurrentPoolPopulationToDevice;
+using neuroevolution::genetic_algorithm::genotype_buffer::BufferGeneration;
+using neuroevolution::genetic_algorithm::genotype_buffer::HostBufferSlotBytesAt;
+using neuroevolution::genetic_algorithm::genotype_buffer::HostGenotypeBuffer;
+using neuroevolution::genetic_algorithm::genotype_buffer::TryAllocateBufferSlot;
+using neuroevolution::genetic_algorithm::genotype_buffer::TryCopyGenomeBytesIntoBufferSlot;
+using neuroevolution::genetic_algorithm::genotype_buffer::TryCreateBufferGeneration;
+using neuroevolution::genetic_algorithm::genotype_buffer::TryCreateHostGenotypeBuffer;
+using neuroevolution::genetic_algorithm::genotype_buffer::TrySetBufferGenerationSlot;
 using neuroevolution::training_folder::LoadTrainingWordCatalogFromActionSpace;
 using neuroevolution::training_folder::TrainingWordCatalog;
 using neuroevolution::training_folder::UploadTrainingWordCatalogToDeviceConstantMemory;
@@ -142,11 +142,12 @@ GenerationAssemblyConfig MakeAssemblyConfig() {
     return config;
 }
 
-bool PopulatePoolGenerationFromHostPopulation(const HostPopulation &host_population, const std::size_t slot_count,
-                                              const std::size_t generation_index, HostGenotypePool &host_pool,
-                                              PoolGeneration &current_generation) {
-    bool ok = TryCreateHostGenotypePool(host_pool, slot_count, host_population.layout.action_count);
-    ok &= TryCreatePoolGeneration(current_generation, host_population.layout.active_individual_count, generation_index);
+bool PopulateBufferGenerationFromHostPopulation(const HostPopulation &host_population, const std::size_t slot_count,
+                                                const std::size_t generation_index, HostGenotypeBuffer &host_buffer,
+                                                BufferGeneration &current_generation) {
+    bool ok = TryCreateHostGenotypeBuffer(host_buffer, slot_count, host_population.layout.action_count);
+    ok &=
+        TryCreateBufferGeneration(current_generation, host_population.layout.active_individual_count, generation_index);
     if (!ok) {
         return false;
     }
@@ -154,11 +155,11 @@ bool PopulatePoolGenerationFromHostPopulation(const HostPopulation &host_populat
     for (std::size_t individual_index = 0; individual_index < host_population.layout.active_individual_count;
          ++individual_index) {
         std::uint32_t slot_index = 0;
-        ok &= TryAllocatePoolSlot(host_pool, slot_index);
-        ok &= TrySetPoolGenerationSlot(current_generation, individual_index, slot_index);
-        ok &=
-            TryCopyGenomeBytesIntoPoolSlot(host_pool, slot_index, HostGenomeBytesAt(host_population, individual_index),
-                                           host_population.layout.genome_stride_bytes);
+        ok &= TryAllocateBufferSlot(host_buffer, slot_index);
+        ok &= TrySetBufferGenerationSlot(current_generation, individual_index, slot_index);
+        ok &= TryCopyGenomeBytesIntoBufferSlot(host_buffer, slot_index,
+                                               HostGenomeBytesAt(host_population, individual_index),
+                                               host_population.layout.genome_stride_bytes);
     }
 
     return ok;
@@ -183,7 +184,7 @@ bool InitializeTrainingCatalog(TrainingWordCatalog &training_word_catalog) {
     return UploadTrainingWordCatalogToDeviceConstantMemory(training_word_catalog);
 }
 
-bool TestPoolRuntimeEvaluatesAndSummarizesCurrentGeneration() {
+bool TestBufferRuntimeEvaluatesAndSummarizesCurrentGeneration() {
     TrainingWordCatalog training_word_catalog{};
     if (!InitializeTrainingCatalog(training_word_catalog)) {
         std::cerr << "FAIL: could not upload training-word catalog to device constant memory\n";
@@ -192,33 +193,33 @@ bool TestPoolRuntimeEvaluatesAndSummarizesCurrentGeneration() {
 
     HostPopulation host_population{};
     bool ok = TryInitializeRandomHostPopulation(host_population, 3, kActionCount, 41U);
-    HostGenotypePool host_pool{};
-    PoolGeneration current_generation{};
-    ok &= PopulatePoolGenerationFromHostPopulation(host_population, 6, 4, host_pool, current_generation);
+    HostGenotypeBuffer host_buffer{};
+    BufferGeneration current_generation{};
+    ok &= PopulateBufferGenerationFromHostPopulation(host_population, 6, 4, host_buffer, current_generation);
     if (!ok) {
-        std::cerr << "FAIL: could not build pool evaluation fixtures\n";
+        std::cerr << "FAIL: could not build buffer evaluation fixtures\n";
         return false;
     }
 
-    DevicePoolGARuntimeConfig runtime_config{};
+    DeviceBufferGARuntimeConfig runtime_config{};
     runtime_config.slot_count = 6;
     runtime_config.action_count = kActionCount;
     runtime_config.max_generation_size = 3;
 
-    DevicePoolGARuntimeBuffers buffers{};
-    ok &= TryCreateDevicePoolGARuntimeBuffers(buffers, runtime_config);
-    ok &= TryUploadCurrentPoolPopulationToDevice(host_pool, current_generation, buffers);
+    DeviceBufferGARuntimeBuffers buffers{};
+    ok &= TryCreateDeviceBufferGARuntimeBuffers(buffers, runtime_config);
+    ok &= TryUploadCurrentBufferPopulationToDevice(host_buffer, current_generation, buffers);
     ok &= TryEvaluateCurrentGenerationFitnessOnDevice(buffers, MakeRuntimeWordCounts());
     if (!ok) {
-        neuroevolution::genetic_algorithm::pool_device::DestroyDevicePoolGARuntimeBuffers(buffers);
+        neuroevolution::genetic_algorithm::buffer_device::DestroyDeviceBufferGARuntimeBuffers(buffers);
         return false;
     }
 
     PopulationFitnessSummary summary{};
-    PoolGeneration downloaded_generation{};
+    BufferGeneration downloaded_generation{};
     ok &= TryReadPopulationFitnessSummaryFromDevice(buffers, summary);
     ok &= TryDownloadCurrentGenerationFromDevice(buffers, downloaded_generation);
-    neuroevolution::genetic_algorithm::pool_device::DestroyDevicePoolGARuntimeBuffers(buffers);
+    neuroevolution::genetic_algorithm::buffer_device::DestroyDeviceBufferGARuntimeBuffers(buffers);
     if (!ok) {
         return false;
     }
@@ -243,7 +244,7 @@ bool TestPoolRuntimeEvaluatesAndSummarizesCurrentGeneration() {
     return ok;
 }
 
-bool TestPoolRuntimeAdvancesOneGeneration() {
+bool TestBufferRuntimeAdvancesOneGeneration() {
     TrainingWordCatalog training_word_catalog{};
     if (!InitializeTrainingCatalog(training_word_catalog)) {
         std::cerr << "FAIL: could not upload training-word catalog to device constant memory\n";
@@ -254,11 +255,11 @@ bool TestPoolRuntimeAdvancesOneGeneration() {
     bool ok = TryInitializeRandomHostPopulation(host_population, 3, kActionCount, 77U);
     CopyGenomeAcrossPopulation(host_population, 0);
 
-    HostGenotypePool host_pool{};
-    PoolGeneration current_generation{};
-    ok &= PopulatePoolGenerationFromHostPopulation(host_population, 6, 2, host_pool, current_generation);
+    HostGenotypeBuffer host_buffer{};
+    BufferGeneration current_generation{};
+    ok &= PopulateBufferGenerationFromHostPopulation(host_population, 6, 2, host_buffer, current_generation);
     if (!ok) {
-        std::cerr << "FAIL: could not build pool generation-step fixtures\n";
+        std::cerr << "FAIL: could not build buffer generation-step fixtures\n";
         return false;
     }
 
@@ -266,30 +267,30 @@ bool TestPoolRuntimeAdvancesOneGeneration() {
         GenomePolicyModelParameters(HostGenomeBytesAt(host_population, 0)).dense_trunk.hidden1_to_output.biases[0]);
     const float expected_tail = ToFloat(GenomeTailRows(HostGenomeBytesAt(host_population, 0))[0][0]);
 
-    DevicePoolGARuntimeConfig runtime_config{};
+    DeviceBufferGARuntimeConfig runtime_config{};
     runtime_config.slot_count = 6;
     runtime_config.action_count = kActionCount;
     runtime_config.max_generation_size = 3;
 
-    DevicePoolGARuntimeBuffers buffers{};
-    ok &= TryCreateDevicePoolGARuntimeBuffers(buffers, runtime_config);
-    ok &= TryUploadCurrentPoolPopulationToDevice(host_pool, current_generation, buffers);
+    DeviceBufferGARuntimeBuffers buffers{};
+    ok &= TryCreateDeviceBufferGARuntimeBuffers(buffers, runtime_config);
+    ok &= TryUploadCurrentBufferPopulationToDevice(host_buffer, current_generation, buffers);
     ok &= TryAdvanceGenerationOnDevice(buffers, 19U, MakeRuntimeWordCounts(), MakeAssemblyConfig());
     if (!ok) {
-        DevicePoolGARuntimeStatusCode status_code = DevicePoolGARuntimeStatusCode::kOk;
-        (void)TryReadDevicePoolGARuntimeStatus(buffers, status_code);
-        std::cerr << "FAIL: pool generation step failed with status " << static_cast<int>(status_code) << '\n';
-        neuroevolution::genetic_algorithm::pool_device::DestroyDevicePoolGARuntimeBuffers(buffers);
+        DeviceBufferGARuntimeStatusCode status_code = DeviceBufferGARuntimeStatusCode::kOk;
+        (void)TryReadDeviceBufferGARuntimeStatus(buffers, status_code);
+        std::cerr << "FAIL: buffer generation step failed with status " << static_cast<int>(status_code) << '\n';
+        neuroevolution::genetic_algorithm::buffer_device::DestroyDeviceBufferGARuntimeBuffers(buffers);
         return false;
     }
 
     PopulationFitnessSummary summary{};
-    HostGenotypePool downloaded_pool{};
-    PoolGeneration downloaded_generation{};
+    HostGenotypeBuffer downloaded_buffer{};
+    BufferGeneration downloaded_generation{};
     ok &= TryReadPopulationFitnessSummaryFromDevice(buffers, summary);
-    ok &= TryDownloadPoolFromDevice(buffers, downloaded_pool);
+    ok &= TryDownloadBufferFromDevice(buffers, downloaded_buffer);
     ok &= TryDownloadCurrentGenerationFromDevice(buffers, downloaded_generation);
-    neuroevolution::genetic_algorithm::pool_device::DestroyDevicePoolGARuntimeBuffers(buffers);
+    neuroevolution::genetic_algorithm::buffer_device::DestroyDeviceBufferGARuntimeBuffers(buffers);
     if (!ok) {
         return false;
     }
@@ -297,31 +298,31 @@ bool TestPoolRuntimeAdvancesOneGeneration() {
     ok &= ExpectTrue(summary.generation_index == 2, "Expected summary to describe the evaluated parent generation");
     ok &= ExpectTrue(downloaded_generation.generation_index == 3,
                      "Expected a successful generation step to increment the current generation index");
-    ok &= ExpectTrue(downloaded_pool.free_slot_count == 3,
-                     "Expected three pool slots to be free after three parents are replaced by three children");
+    ok &= ExpectTrue(downloaded_buffer.free_slot_count == 3,
+                     "Expected three buffer slots to be free after three parents are replaced by three children");
 
     for (std::size_t individual_index = 0; individual_index < downloaded_generation.active_individual_count;
          ++individual_index) {
         const std::uint32_t slot_index = downloaded_generation.slot_indices[individual_index];
-        ok &= ExpectTrue(slot_index != neuroevolution::genetic_algorithm::genotype_pool::kInvalidPoolSlotIndex,
-                         "Expected every child generation handle to reference a live pool slot");
+        ok &= ExpectTrue(slot_index != neuroevolution::genetic_algorithm::genotype_buffer::kInvalidBufferSlotIndex,
+                         "Expected every child generation handle to reference a live buffer slot");
         ok &= ExpectTrue(downloaded_generation.has_fitness[individual_index] == 0,
                          "Expected newly assembled children to start unevaluated");
         ok &= ExpectTrue(downloaded_generation.evaluation_counts[individual_index] == 0,
                          "Expected newly assembled children to start with zero evaluation count");
-        ok &= ExpectNear(ToFloat(GenomePolicyModelParameters(HostPoolSlotBytesAt(downloaded_pool, slot_index))
+        ok &= ExpectNear(ToFloat(GenomePolicyModelParameters(HostBufferSlotBytesAt(downloaded_buffer, slot_index))
                                      .dense_trunk.hidden1_to_output.biases[0]),
                          expected_bias, "child dense-trunk bias");
-        ok &= ExpectNear(ToFloat(GenomeTailRows(HostPoolSlotBytesAt(downloaded_pool, slot_index))[0][0]), expected_tail,
-                         "child trainable tail value");
-        ok &= ExpectTrue(downloaded_pool.slot_states[slot_index].reference_count == 1,
+        ok &= ExpectNear(ToFloat(GenomeTailRows(HostBufferSlotBytesAt(downloaded_buffer, slot_index))[0][0]),
+                         expected_tail, "child trainable tail value");
+        ok &= ExpectTrue(downloaded_buffer.slot_states[slot_index].reference_count == 1,
                          "Expected each child slot to hold exactly one generation reference");
     }
 
     return ok;
 }
 
-bool TestPoolRuntimeGrowsActionCountWithPoolRepacking() {
+bool TestBufferRuntimeGrowsActionCountWithBufferRepacking() {
     constexpr std::size_t kInjectedWordCount = 3;
 
     TrainingWordCatalog training_word_catalog{};
@@ -334,11 +335,11 @@ bool TestPoolRuntimeGrowsActionCountWithPoolRepacking() {
     bool ok = TryInitializeRandomHostPopulation(host_population, 3, kActionCount, 91U);
     CopyGenomeAcrossPopulation(host_population, 0);
 
-    HostGenotypePool host_pool{};
-    PoolGeneration current_generation{};
-    ok &= PopulatePoolGenerationFromHostPopulation(host_population, 6, 8, host_pool, current_generation);
+    HostGenotypeBuffer host_buffer{};
+    BufferGeneration current_generation{};
+    ok &= PopulateBufferGenerationFromHostPopulation(host_population, 6, 8, host_buffer, current_generation);
     if (!ok) {
-        std::cerr << "FAIL: could not build pool growth fixtures\n";
+        std::cerr << "FAIL: could not build buffer growth fixtures\n";
         return false;
     }
 
@@ -359,31 +360,31 @@ bool TestPoolRuntimeGrowsActionCountWithPoolRepacking() {
         return false;
     }
 
-    DevicePoolGARuntimeConfig runtime_config{};
+    DeviceBufferGARuntimeConfig runtime_config{};
     runtime_config.slot_count = 6;
     runtime_config.action_count = kActionCount;
     runtime_config.max_generation_size = 3;
 
-    DevicePoolGARuntimeBuffers buffers{};
-    ok &= TryCreateDevicePoolGARuntimeBuffers(buffers, runtime_config);
-    ok &= TryUploadCurrentPoolPopulationToDevice(host_pool, current_generation, buffers);
+    DeviceBufferGARuntimeBuffers buffers{};
+    ok &= TryCreateDeviceBufferGARuntimeBuffers(buffers, runtime_config);
+    ok &= TryUploadCurrentBufferPopulationToDevice(host_buffer, current_generation, buffers);
     ok &= TryAdvanceGenerationOnDevice(buffers, 31U, MakeRuntimeWordCounts(), MakeAssemblyConfig(),
                                        pending_output_embedding_injection);
     if (!ok) {
-        DevicePoolGARuntimeStatusCode status_code = DevicePoolGARuntimeStatusCode::kOk;
-        (void)TryReadDevicePoolGARuntimeStatus(buffers, status_code);
-        std::cerr << "FAIL: pool growth step failed with status " << static_cast<int>(status_code) << '\n';
-        neuroevolution::genetic_algorithm::pool_device::DestroyDevicePoolGARuntimeBuffers(buffers);
+        DeviceBufferGARuntimeStatusCode status_code = DeviceBufferGARuntimeStatusCode::kOk;
+        (void)TryReadDeviceBufferGARuntimeStatus(buffers, status_code);
+        std::cerr << "FAIL: buffer growth step failed with status " << static_cast<int>(status_code) << '\n';
+        neuroevolution::genetic_algorithm::buffer_device::DestroyDeviceBufferGARuntimeBuffers(buffers);
         return false;
     }
 
     PopulationFitnessSummary summary{};
-    HostGenotypePool downloaded_pool{};
-    PoolGeneration downloaded_generation{};
+    HostGenotypeBuffer downloaded_buffer{};
+    BufferGeneration downloaded_generation{};
     ok &= TryReadPopulationFitnessSummaryFromDevice(buffers, summary);
-    ok &= TryDownloadPoolFromDevice(buffers, downloaded_pool);
+    ok &= TryDownloadBufferFromDevice(buffers, downloaded_buffer);
     ok &= TryDownloadCurrentGenerationFromDevice(buffers, downloaded_generation);
-    neuroevolution::genetic_algorithm::pool_device::DestroyDevicePoolGARuntimeBuffers(buffers);
+    neuroevolution::genetic_algorithm::buffer_device::DestroyDeviceBufferGARuntimeBuffers(buffers);
     if (!ok) {
         return false;
     }
@@ -394,17 +395,17 @@ bool TestPoolRuntimeGrowsActionCountWithPoolRepacking() {
                      "Expected a successful growth step to increment the generation index");
     ok &= ExpectTrue(downloaded_generation.active_individual_count == 2,
                      "Expected growth to shrink the next generation to the conservative repacked child capacity");
-    ok &= ExpectTrue(downloaded_pool.layout.action_count == (kActionCount + kInjectedWordCount),
-                     "Expected repacking to expand the pool action count before child assembly");
+    ok &= ExpectTrue(downloaded_buffer.layout.action_count == (kActionCount + kInjectedWordCount),
+                     "Expected repacking to expand the buffer action count before child assembly");
 
     for (std::size_t individual_index = 0; individual_index < downloaded_generation.active_individual_count;
          ++individual_index) {
         const std::uint32_t slot_index = downloaded_generation.slot_indices[individual_index];
-        ok &= ExpectTrue(slot_index != neuroevolution::genetic_algorithm::genotype_pool::kInvalidPoolSlotIndex,
-                         "Expected every grown child to occupy a live pool slot");
+        ok &= ExpectTrue(slot_index != neuroevolution::genetic_algorithm::genotype_buffer::kInvalidBufferSlotIndex,
+                         "Expected every grown child to occupy a live buffer slot");
         for (std::size_t injection_offset = 0; injection_offset < kInjectedWordCount; ++injection_offset) {
             ok &= ExpectTailEquals(
-                GenomeTailRows(HostPoolSlotBytesAt(downloaded_pool, slot_index))[kActionCount + injection_offset],
+                GenomeTailRows(HostBufferSlotBytesAt(downloaded_buffer, slot_index))[kActionCount + injection_offset],
                 expected_tails[injection_offset],
                 std::string("grown child injected tail ") + std::to_string(individual_index) + ":" +
                     std::to_string(injection_offset));
@@ -414,7 +415,7 @@ bool TestPoolRuntimeGrowsActionCountWithPoolRepacking() {
     return ok;
 }
 
-bool TestPoolRuntimeFailsCleanlyWhenThePoolIsTooSmall() {
+bool TestBufferRuntimeFailsCleanlyWhenTheBufferIsTooSmall() {
     TrainingWordCatalog training_word_catalog{};
     if (!InitializeTrainingCatalog(training_word_catalog)) {
         std::cerr << "FAIL: could not upload training-word catalog to device constant memory\n";
@@ -423,39 +424,39 @@ bool TestPoolRuntimeFailsCleanlyWhenThePoolIsTooSmall() {
 
     HostPopulation host_population{};
     bool ok = TryInitializeRandomHostPopulation(host_population, 2, kActionCount, 11U);
-    HostGenotypePool host_pool{};
-    PoolGeneration current_generation{};
-    ok &= PopulatePoolGenerationFromHostPopulation(host_population, 2, 0, host_pool, current_generation);
+    HostGenotypeBuffer host_buffer{};
+    BufferGeneration current_generation{};
+    ok &= PopulateBufferGenerationFromHostPopulation(host_population, 2, 0, host_buffer, current_generation);
     if (!ok) {
-        std::cerr << "FAIL: could not build full-pool runtime fixtures\n";
+        std::cerr << "FAIL: could not build full-buffer runtime fixtures\n";
         return false;
     }
 
-    DevicePoolGARuntimeConfig runtime_config{};
+    DeviceBufferGARuntimeConfig runtime_config{};
     runtime_config.slot_count = 2;
     runtime_config.action_count = kActionCount;
     runtime_config.max_generation_size = 2;
 
-    DevicePoolGARuntimeBuffers buffers{};
-    ok &= TryCreateDevicePoolGARuntimeBuffers(buffers, runtime_config);
-    ok &= TryUploadCurrentPoolPopulationToDevice(host_pool, current_generation, buffers);
+    DeviceBufferGARuntimeBuffers buffers{};
+    ok &= TryCreateDeviceBufferGARuntimeBuffers(buffers, runtime_config);
+    ok &= TryUploadCurrentBufferPopulationToDevice(host_buffer, current_generation, buffers);
     if (!ok) {
-        neuroevolution::genetic_algorithm::pool_device::DestroyDevicePoolGARuntimeBuffers(buffers);
+        neuroevolution::genetic_algorithm::buffer_device::DestroyDeviceBufferGARuntimeBuffers(buffers);
         return false;
     }
 
     ok &= ExpectTrue(!TryAdvanceGenerationOnDevice(buffers, 23U, MakeRuntimeWordCounts(), MakeAssemblyConfig()),
-                     "Expected pool-backed generation stepping to fail when no child slot can be allocated");
+                     "Expected buffer-backed generation stepping to fail when no child slot can be allocated");
 
-    DevicePoolGARuntimeStatusCode status_code = DevicePoolGARuntimeStatusCode::kOk;
-    ok &= TryReadDevicePoolGARuntimeStatus(buffers, status_code);
-    neuroevolution::genetic_algorithm::pool_device::DestroyDevicePoolGARuntimeBuffers(buffers);
+    DeviceBufferGARuntimeStatusCode status_code = DeviceBufferGARuntimeStatusCode::kOk;
+    ok &= TryReadDeviceBufferGARuntimeStatus(buffers, status_code);
+    neuroevolution::genetic_algorithm::buffer_device::DestroyDeviceBufferGARuntimeBuffers(buffers);
     if (!ok) {
         return false;
     }
 
-    ok &= ExpectTrue(status_code == DevicePoolGARuntimeStatusCode::kPoolFull,
-                     "Expected an undersized pool to report kPoolFull during generation stepping");
+    ok &= ExpectTrue(status_code == DeviceBufferGARuntimeStatusCode::kBufferFull,
+                     "Expected an undersized buffer to report kBufferFull during generation stepping");
     return ok;
 }
 
@@ -466,11 +467,12 @@ int main() {
         return 1;
     }
 
-    if (!TestPoolRuntimeEvaluatesAndSummarizesCurrentGeneration() || !TestPoolRuntimeAdvancesOneGeneration() ||
-        !TestPoolRuntimeGrowsActionCountWithPoolRepacking() || !TestPoolRuntimeFailsCleanlyWhenThePoolIsTooSmall()) {
+    if (!TestBufferRuntimeEvaluatesAndSummarizesCurrentGeneration() || !TestBufferRuntimeAdvancesOneGeneration() ||
+        !TestBufferRuntimeGrowsActionCountWithBufferRepacking() ||
+        !TestBufferRuntimeFailsCleanlyWhenTheBufferIsTooSmall()) {
         return 1;
     }
 
-    std::cout << "PASS: pool_runtime_test\n";
+    std::cout << "PASS: buffer_runtime_test\n";
     return 0;
 }
