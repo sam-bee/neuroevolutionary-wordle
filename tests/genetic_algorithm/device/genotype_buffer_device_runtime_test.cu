@@ -8,6 +8,7 @@
 
 #include "common/float16.hpp"
 #include "genetic_algorithm/genotype_buffer/device_runtime.hpp"
+#include "genetic_algorithm/genotype_buffer/reference_counter.hpp"
 
 namespace {
 
@@ -23,6 +24,8 @@ using neuroevolution::genetic_algorithm::genotype_buffer::TryAllocateBufferSlot;
 using neuroevolution::genetic_algorithm::genotype_buffer::TryCreateBufferAssemblyPlan;
 using neuroevolution::genetic_algorithm::genotype_buffer::TryCreateBufferGeneration;
 using neuroevolution::genetic_algorithm::genotype_buffer::TryCreateHostGenotypeBuffer;
+using neuroevolution::genetic_algorithm::genotype_buffer::TryDecrementParentReferenceCount;
+using neuroevolution::genetic_algorithm::genotype_buffer::TryIncrementParentReferenceCount;
 using neuroevolution::genetic_algorithm::genotype_buffer::TryReleaseBufferSlot;
 using neuroevolution::genetic_algorithm::genotype_buffer::TryRetainBufferSlot;
 using neuroevolution::genetic_algorithm::genotype_buffer::TrySetBufferGenerationSlot;
@@ -92,6 +95,120 @@ BufferDeviceAssemblyConfig MakeDeterministicAssemblyConfig() {
     config.mutation.mutation_probability = 0.0f;
     config.mutation.mutation_sigma = 0.0f;
     return config;
+}
+
+__global__ void ReferenceCounterWarpContentionKernel(std::uint32_t *parent_reference_counts,
+                                                     std::uint32_t *final_release_counts, int *status) {
+    constexpr unsigned kWarpMask = 0xFFFFFFFFU;
+    if ((blockIdx.x != 0) || (threadIdx.x >= 32)) {
+        return;
+    }
+
+    const std::uint32_t lane_index = threadIdx.x;
+    if (!TryIncrementParentReferenceCount(parent_reference_counts, 0)) {
+        atomicCAS(status, 0, 1);
+    }
+
+    if ((lane_index % 2U) == 0) {
+        if (!TryIncrementParentReferenceCount(parent_reference_counts, 1)) {
+            atomicCAS(status, 0, 2);
+        }
+    }
+
+    __syncwarp(kWarpMask);
+    if (lane_index == 0) {
+        if ((parent_reference_counts[0] != 32U) || (parent_reference_counts[1] != 16U) ||
+            (parent_reference_counts[2] != 0U)) {
+            atomicCAS(status, 0, 3);
+        }
+    }
+
+    __syncwarp(kWarpMask);
+    std::uint32_t previous_count = 0;
+    if (!TryDecrementParentReferenceCount(parent_reference_counts, 0, previous_count)) {
+        atomicCAS(status, 0, 4);
+    } else if (previous_count == 1U) {
+        atomicAdd(&final_release_counts[0], 1U);
+    }
+
+    if ((lane_index % 2U) == 0) {
+        previous_count = 0;
+        if (!TryDecrementParentReferenceCount(parent_reference_counts, 1, previous_count)) {
+            atomicCAS(status, 0, 5);
+        } else if (previous_count == 1U) {
+            atomicAdd(&final_release_counts[1], 1U);
+        }
+    }
+
+    __syncwarp(kWarpMask);
+    previous_count = 0;
+    if (TryDecrementParentReferenceCount(parent_reference_counts, 2, previous_count)) {
+        atomicCAS(status, 0, 6);
+    }
+
+    __syncwarp(kWarpMask);
+    if (lane_index == 0) {
+        if ((parent_reference_counts[0] != 0U) || (parent_reference_counts[1] != 0U) ||
+            (parent_reference_counts[2] != 0U) || (final_release_counts[0] != 1U) || (final_release_counts[1] != 1U)) {
+            atomicCAS(status, 0, 7);
+        }
+    }
+}
+
+bool TestDeviceReferenceCountersAreAtomicUnderWarpContention() {
+    std::uint32_t *device_parent_reference_counts = nullptr;
+    std::uint32_t *device_final_release_counts = nullptr;
+    int *device_status = nullptr;
+
+    bool ok = true;
+    ok &= CheckCuda(cudaMalloc(&device_parent_reference_counts, 3 * sizeof(std::uint32_t)),
+                    "allocating device reference counts");
+    ok &= CheckCuda(cudaMalloc(&device_final_release_counts, 2 * sizeof(std::uint32_t)),
+                    "allocating device final-release counts");
+    ok &= CheckCuda(cudaMalloc(&device_status, sizeof(int)), "allocating device reference-counter status");
+    ok &= CheckCuda(cudaMemset(device_parent_reference_counts, 0, 3 * sizeof(std::uint32_t)),
+                    "clearing device reference counts");
+    ok &= CheckCuda(cudaMemset(device_final_release_counts, 0, 2 * sizeof(std::uint32_t)),
+                    "clearing device final-release counts");
+    ok &= CheckCuda(cudaMemset(device_status, 0, sizeof(int)), "clearing device reference-counter status");
+    if (!ok) {
+        cudaFree(device_parent_reference_counts);
+        cudaFree(device_final_release_counts);
+        cudaFree(device_status);
+        return false;
+    }
+
+    ReferenceCounterWarpContentionKernel<<<1, 32>>>(device_parent_reference_counts, device_final_release_counts,
+                                                    device_status);
+    ok &= CheckCuda(cudaGetLastError(), "launching reference-counter warp contention kernel");
+    ok &= CheckCuda(cudaDeviceSynchronize(), "running reference-counter warp contention kernel");
+
+    std::uint32_t host_parent_reference_counts[3]{};
+    std::uint32_t host_final_release_counts[2]{};
+    int host_status = 0;
+    ok &= CheckCuda(cudaMemcpy(host_parent_reference_counts, device_parent_reference_counts,
+                               sizeof(host_parent_reference_counts), cudaMemcpyDeviceToHost),
+                    "copying reference counts after warp contention");
+    ok &= CheckCuda(cudaMemcpy(host_final_release_counts, device_final_release_counts,
+                               sizeof(host_final_release_counts), cudaMemcpyDeviceToHost),
+                    "copying final-release counts after warp contention");
+    ok &= CheckCuda(cudaMemcpy(&host_status, device_status, sizeof(int), cudaMemcpyDeviceToHost),
+                    "copying reference-counter warp status");
+
+    cudaFree(device_parent_reference_counts);
+    cudaFree(device_final_release_counts);
+    cudaFree(device_status);
+    if (!ok) {
+        return false;
+    }
+
+    ok &= ExpectTrue(host_status == 0, "Expected atomic reference-counter warp contention status to stay ok");
+    ok &= ExpectTrue((host_parent_reference_counts[0] == 0U) && (host_parent_reference_counts[1] == 0U) &&
+                         (host_parent_reference_counts[2] == 0U),
+                     "Expected warp-contended reference counters to return to zero");
+    ok &= ExpectTrue((host_final_release_counts[0] == 1U) && (host_final_release_counts[1] == 1U),
+                     "Expected exactly one final-release observation per contended counter");
+    return ok;
 }
 
 bool TestDeviceBufferRuntimeUploadsAndDownloadsBufferAndGenerationState() {
@@ -330,7 +447,8 @@ int main() {
         return 1;
     }
 
-    if (!TestDeviceBufferRuntimeUploadsAndDownloadsBufferAndGenerationState() ||
+    if (!TestDeviceReferenceCountersAreAtomicUnderWarpContention() ||
+        !TestDeviceBufferRuntimeUploadsAndDownloadsBufferAndGenerationState() ||
         !TestDeviceBufferRuntimeReusesSweptAndReleasedSlotsDuringAssembly() ||
         !TestDeviceBufferRuntimeFailsCleanlyWhenBufferIsGenuinelyFull()) {
         return 1;
