@@ -43,6 +43,7 @@ using neuroevolution::genetic_algorithm::genotype_buffer::device::TryCreateDevic
 using neuroevolution::genetic_algorithm::genotype_buffer::device::TryDownloadBufferFromDevice;
 using neuroevolution::genetic_algorithm::genotype_buffer::device::TryDownloadCurrentGenerationFromDevice;
 using neuroevolution::genetic_algorithm::genotype_buffer::device::TryDownloadNextGenerationFromDevice;
+using neuroevolution::genetic_algorithm::genotype_buffer::device::TryPrepareBufferForExpandedActionCountOnDevice;
 using neuroevolution::genetic_algorithm::genotype_buffer::device::TryReadDeviceBufferRuntimeStatus;
 using neuroevolution::genetic_algorithm::genotype_buffer::device::TryUploadAssemblyPlanToDevice;
 using neuroevolution::genetic_algorithm::genotype_buffer::device::TryUploadBufferToDevice;
@@ -533,6 +534,192 @@ bool TestDeviceBufferRuntimeReusesSweptAndReleasedSlotsDuringAssembly() {
     return ok;
 }
 
+bool TestDeviceBufferRuntimeRepacksAndAssemblesAfterActionCountGrowth() {
+    constexpr std::size_t kInitialActionCount = 4;
+    constexpr std::size_t kExpandedActionCount = 8;
+
+    HostGenotypeBuffer host_buffer{};
+    BufferGeneration current_generation{};
+    bool ok = TryCreateHostGenotypeBuffer(host_buffer, 6, kInitialActionCount);
+    ok &= TryCreateBufferGeneration(current_generation, 3, 20);
+    if (!ok) {
+        std::cerr << "FAIL: could not allocate growth-and-assembly fixtures\n";
+        return false;
+    }
+
+    for (std::size_t parent_index = 0; parent_index < current_generation.active_individual_count; ++parent_index) {
+        std::uint32_t slot_index = 0;
+        ok &= TryAllocateBufferSlot(host_buffer, slot_index);
+        ok &= TrySetBufferGenerationSlot(current_generation, parent_index, slot_index);
+        GenomePolicyModelParameters(HostBufferSlotBytesAt(host_buffer, slot_index))
+            .dense_trunk.hidden1_to_output.biases[0] = ToFloat16(11.0f * static_cast<float>(parent_index + 1));
+        GenomeTailRows(HostBufferSlotBytesAt(host_buffer, slot_index))[0][0] =
+            ToFloat16(2.0f * static_cast<float>(parent_index + 1));
+    }
+    if (!ok) {
+        return false;
+    }
+
+    BufferAssemblyPlan plan{};
+    ok &= TryCreateBufferAssemblyPlan(plan, 2);
+    plan.parent_pairs[0] = {.first_parent_index = 0, .second_parent_index = 0};
+    plan.parent_pairs[1] = {.first_parent_index = 2, .second_parent_index = 2};
+
+    DeviceBufferRuntimeConfig runtime_config{};
+    runtime_config.slot_count = 6;
+    runtime_config.action_count = kInitialActionCount;
+    runtime_config.max_generation_size = 3;
+
+    DeviceBufferRuntimeBuffers buffers{};
+    ok &= TryCreateDeviceBufferRuntimeBuffers(buffers, runtime_config);
+    ok &= TryUploadBufferToDevice(host_buffer, buffers);
+    ok &= TryUploadCurrentGenerationToDevice(current_generation, buffers);
+    ok &= TryUploadAssemblyPlanToDevice(plan, buffers);
+    ok &= TryPrepareBufferForExpandedActionCountOnDevice(buffers, kExpandedActionCount);
+
+    BufferDeviceAssemblyConfig assembly_config = MakeDeterministicAssemblyConfig();
+    assembly_config.parent_action_count = kInitialActionCount;
+    ok &= TryAssembleNextGenerationOnDevice(buffers, 211U, assembly_config);
+    if (!ok) {
+        DeviceBufferRuntimeStatusCode status_code = DeviceBufferRuntimeStatusCode::kOk;
+        (void)TryReadDeviceBufferRuntimeStatus(buffers, status_code);
+        std::cerr << "FAIL: growth-and-assembly device buffer test failed with status " << static_cast<int>(status_code)
+                  << '\n';
+        DestroyDeviceBufferRuntimeBuffers(buffers);
+        return false;
+    }
+
+    HostGenotypeBuffer downloaded_buffer{};
+    BufferGeneration downloaded_current_generation{};
+    BufferGeneration downloaded_next_generation{};
+    ok &= TryDownloadBufferFromDevice(buffers, downloaded_buffer);
+    ok &= TryDownloadCurrentGenerationFromDevice(buffers, downloaded_current_generation);
+    ok &= TryDownloadNextGenerationFromDevice(buffers, downloaded_next_generation);
+    DestroyDeviceBufferRuntimeBuffers(buffers);
+    if (!ok) {
+        return false;
+    }
+
+    ok &= ExpectTrue(downloaded_buffer.layout.action_count == kExpandedActionCount,
+                     "Expected device repacking to expand the buffer action count");
+    ok &= ExpectTrue(downloaded_next_generation.generation_index == 21,
+                     "Expected post-growth assembly to increment the generation index");
+    ok &= ExpectTrue(downloaded_buffer.free_slot_count == 3,
+                     "Expected post-growth assembly to leave only child slots occupied");
+    ok &= ExpectTrue(downloaded_current_generation.slot_indices[0] == kInvalidBufferSlotIndex,
+                     "Expected post-growth assembly to release first referenced parent");
+    ok &= ExpectTrue(downloaded_current_generation.slot_indices[1] == kInvalidBufferSlotIndex,
+                     "Expected growth repacking to collect zero-reference parent");
+    ok &= ExpectTrue(downloaded_current_generation.slot_indices[2] == kInvalidBufferSlotIndex,
+                     "Expected post-growth assembly to release second referenced parent");
+
+    const std::uint32_t first_child_slot = downloaded_next_generation.slot_indices[0];
+    const std::uint32_t second_child_slot = downloaded_next_generation.slot_indices[1];
+    ok &= ExpectTrue(first_child_slot != kInvalidBufferSlotIndex,
+                     "Expected first post-growth child to have a buffer slot");
+    ok &= ExpectTrue(second_child_slot != kInvalidBufferSlotIndex,
+                     "Expected second post-growth child to have a buffer slot");
+    ok &= ExpectNear(ToFloat(GenomePolicyModelParameters(HostBufferSlotBytesAt(downloaded_buffer, first_child_slot))
+                                 .dense_trunk.hidden1_to_output.biases[0]),
+                     11.0f, "first post-growth child bias");
+    ok &= ExpectNear(ToFloat(GenomeTailRows(HostBufferSlotBytesAt(downloaded_buffer, first_child_slot))[0][0]), 2.0f,
+                     "first post-growth child inherited tail");
+    ok &= ExpectNear(
+        ToFloat(GenomeTailRows(HostBufferSlotBytesAt(downloaded_buffer, first_child_slot))[kInitialActionCount][0]),
+        0.0f, "first post-growth child appended tail remains cleared without injection");
+    ok &= ExpectNear(ToFloat(GenomePolicyModelParameters(HostBufferSlotBytesAt(downloaded_buffer, second_child_slot))
+                                 .dense_trunk.hidden1_to_output.biases[0]),
+                     33.0f, "second post-growth child bias");
+    ok &= ExpectNear(ToFloat(GenomeTailRows(HostBufferSlotBytesAt(downloaded_buffer, second_child_slot))[0][0]), 6.0f,
+                     "second post-growth child inherited tail");
+    ok &= ExpectNear(
+        ToFloat(GenomeTailRows(HostBufferSlotBytesAt(downloaded_buffer, second_child_slot))[kInitialActionCount][0]),
+        0.0f, "second post-growth child appended tail remains cleared without injection");
+    return ok;
+}
+
+bool TestDeviceBufferRuntimeRepackFailureDoesNotMutateBuffer() {
+    constexpr std::size_t kInitialActionCount = 4;
+    constexpr std::size_t kExpandedActionCount = 8;
+
+    HostGenotypeBuffer host_buffer{};
+    BufferGeneration current_generation{};
+    bool ok = TryCreateHostGenotypeBuffer(host_buffer, 6, kInitialActionCount);
+    ok &= TryCreateBufferGeneration(current_generation, 3, 24);
+    if (!ok) {
+        std::cerr << "FAIL: could not allocate failed-growth fixtures\n";
+        return false;
+    }
+
+    std::uint32_t parent_slots[3]{};
+    for (std::size_t parent_index = 0; parent_index < current_generation.active_individual_count; ++parent_index) {
+        ok &= TryAllocateBufferSlot(host_buffer, parent_slots[parent_index]);
+        ok &= TrySetBufferGenerationSlot(current_generation, parent_index, parent_slots[parent_index]);
+        GenomePolicyModelParameters(HostBufferSlotBytesAt(host_buffer, parent_slots[parent_index]))
+            .dense_trunk.hidden1_to_output.biases[0] = ToFloat16(5.0f + static_cast<float>(parent_index));
+    }
+    if (!ok) {
+        return false;
+    }
+
+    BufferAssemblyPlan plan{};
+    ok &= TryCreateBufferAssemblyPlan(plan, 4);
+    for (std::size_t child_index = 0; child_index < plan.child_count; ++child_index) {
+        plan.parent_pairs[child_index] = {.first_parent_index = 0, .second_parent_index = 2};
+    }
+
+    DeviceBufferRuntimeConfig runtime_config{};
+    runtime_config.slot_count = 6;
+    runtime_config.action_count = kInitialActionCount;
+    runtime_config.max_generation_size = 4;
+
+    DeviceBufferRuntimeBuffers buffers{};
+    ok &= TryCreateDeviceBufferRuntimeBuffers(buffers, runtime_config);
+    ok &= TryUploadBufferToDevice(host_buffer, buffers);
+    ok &= TryUploadCurrentGenerationToDevice(current_generation, buffers);
+    ok &= TryUploadAssemblyPlanToDevice(plan, buffers);
+    if (!ok) {
+        DestroyDeviceBufferRuntimeBuffers(buffers);
+        return false;
+    }
+
+    ok &= ExpectTrue(!TryPrepareBufferForExpandedActionCountOnDevice(buffers, kExpandedActionCount),
+                     "Expected growth repacking to fail when planned children cannot fit");
+
+    DeviceBufferRuntimeStatusCode status_code = DeviceBufferRuntimeStatusCode::kOk;
+    ok &= TryReadDeviceBufferRuntimeStatus(buffers, status_code);
+
+    HostGenotypeBuffer downloaded_buffer{};
+    BufferGeneration downloaded_current_generation{};
+    ok &= TryDownloadBufferFromDevice(buffers, downloaded_buffer);
+    ok &= TryDownloadCurrentGenerationFromDevice(buffers, downloaded_current_generation);
+    DestroyDeviceBufferRuntimeBuffers(buffers);
+    if (!ok) {
+        return false;
+    }
+
+    ok &= ExpectTrue(status_code == DeviceBufferRuntimeStatusCode::kBufferRepackFailed,
+                     "Expected failed growth to report kBufferRepackFailed");
+    ok &= ExpectTrue(downloaded_buffer.layout.action_count == kInitialActionCount,
+                     "Expected failed growth to preserve the original action count");
+    ok &= ExpectTrue(downloaded_buffer.free_slot_count == 3,
+                     "Expected failed growth to preserve the original free-slot count");
+    for (std::size_t parent_index = 0; parent_index < current_generation.active_individual_count; ++parent_index) {
+        ok &= ExpectTrue(downloaded_current_generation.slot_indices[parent_index] == parent_slots[parent_index],
+                         "Expected failed growth to preserve current-generation slot handles");
+        ok &= ExpectTrue(downloaded_buffer.slot_states[parent_slots[parent_index]].occupied,
+                         "Expected failed growth to preserve live parent slot state");
+        ok &= ExpectTrue(downloaded_buffer.slot_states[parent_slots[parent_index]].reference_count == 1U,
+                         "Expected failed growth to preserve live parent slot references");
+        ok &= ExpectNear(
+            ToFloat(GenomePolicyModelParameters(HostBufferSlotBytesAt(downloaded_buffer, parent_slots[parent_index]))
+                        .dense_trunk.hidden1_to_output.biases[0]),
+            5.0f + static_cast<float>(parent_index), "failed growth preserved parent bias");
+    }
+
+    return ok;
+}
+
 bool TestDeviceBufferRuntimeAssemblesChildBatchConcurrently() {
     constexpr std::size_t kParentCount = 32;
     constexpr std::size_t kChildCount = 32;
@@ -779,6 +966,8 @@ int main() {
         !TestDeviceBufferFreeListIsThreadSafeUnderWarpContention() ||
         !TestDeviceBufferRuntimeUploadsAndDownloadsBufferAndGenerationState() ||
         !TestDeviceBufferRuntimeReusesSweptAndReleasedSlotsDuringAssembly() ||
+        !TestDeviceBufferRuntimeRepacksAndAssemblesAfterActionCountGrowth() ||
+        !TestDeviceBufferRuntimeRepackFailureDoesNotMutateBuffer() ||
         !TestDeviceBufferRuntimeAssemblesChildBatchConcurrently() ||
         !TestDeviceBufferRuntimeCleansUpPartialAssemblyWhenLaterBatchFails() ||
         !TestDeviceBufferRuntimeFailsCleanlyWhenBufferIsGenuinelyFull()) {

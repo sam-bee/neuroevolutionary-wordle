@@ -22,6 +22,7 @@ using neuroevolution::genetic_algorithm::genotype_buffer::BufferAssemblyPlan;
 using neuroevolution::genetic_algorithm::genotype_buffer::BufferGeneration;
 using neuroevolution::genetic_algorithm::genotype_buffer::BufferGenerationView;
 using neuroevolution::genetic_algorithm::genotype_buffer::BufferSlotCountForByteBudget;
+using neuroevolution::genetic_algorithm::genotype_buffer::BufferSlotState;
 using neuroevolution::genetic_algorithm::genotype_buffer::ClearBufferGenerationFitness;
 using neuroevolution::genetic_algorithm::genotype_buffer::ComputeBufferSlotStrideBytes;
 using neuroevolution::genetic_algorithm::genotype_buffer::ComputeOutputEmbeddingGrowthBytes;
@@ -196,6 +197,92 @@ bool TestHostBufferCompactsAndRepacksForExpandedActionCount() {
                      "expected newly appended trainable tails to start zeroed");
     ok &= ExpectNear(ToFloat(GenomeTailRows(HostBufferSlotBytesAt(buffer, 3))[kExpandedActionCount - 1][0]), 0.0f,
                      "expected all appended trainable tails to be cleared before injection");
+    return ok;
+}
+
+bool TestHostBufferRepackFailureDoesNotMutateBuffer() {
+    constexpr std::size_t kInitialActionCount = 4;
+    constexpr std::size_t kExpandedActionCount = 8;
+    constexpr std::size_t kRequiredFreeSlots = 4;
+
+    HostGenotypeBuffer buffer{};
+    BufferGeneration current_generation{};
+    bool ok = TryCreateHostGenotypeBuffer(buffer, 6, kInitialActionCount);
+    ok &= TryCreateBufferGeneration(current_generation, 3, 12);
+    ok &= ExpectTrue(ok, "Expected transactional repack fixtures to allocate");
+    if (!ok) {
+        return false;
+    }
+
+    ok &= ExpectTrue(BufferSlotCountForByteBudget(buffer.layout.buffer_bytes, kExpandedActionCount) == 5,
+                     "Expected transactional repack fixture to shrink to five expanded slots");
+
+    std::uint32_t slots[6]{};
+    for (std::size_t slot_offset = 0; slot_offset < 6; ++slot_offset) {
+        ok &= TryAllocateBufferSlot(buffer, slots[slot_offset]);
+    }
+    ok &= TrySetBufferGenerationSlot(current_generation, 0, slots[5]);
+    ok &= TrySetBufferGenerationSlot(current_generation, 1, slots[1]);
+    ok &= TrySetBufferGenerationSlot(current_generation, 2, slots[4]);
+    ok &= TryReleaseBufferSlot(buffer, slots[0]);
+    ok &= TryReleaseBufferSlot(buffer, slots[2]);
+    ok &= TryReleaseBufferSlot(buffer, slots[3]);
+    if (!ok) {
+        return false;
+    }
+
+    GenomePolicyModelParameters(HostBufferSlotBytesAt(buffer, slots[5])).dense_trunk.hidden1_to_output.biases[0] = 7.0f;
+    GenomeTailRows(HostBufferSlotBytesAt(buffer, slots[5]))[1][0] = 1.25f;
+    GenomePolicyModelParameters(HostBufferSlotBytesAt(buffer, slots[4])).dense_trunk.hidden1_to_output.biases[0] = 9.0f;
+    GenomeTailRows(HostBufferSlotBytesAt(buffer, slots[4]))[3][0] = 2.25f;
+
+    const GenotypeBufferLayout original_layout = buffer.layout;
+    const std::uint32_t original_free_slot_count = buffer.free_slot_count;
+    std::uint32_t original_generation_slots[3]{};
+    BufferSlotState original_slot_states[6]{};
+    for (std::size_t parent_index = 0; parent_index < 3; ++parent_index) {
+        original_generation_slots[parent_index] = current_generation.slot_indices[parent_index];
+    }
+    for (std::size_t slot_index = 0; slot_index < 6; ++slot_index) {
+        original_slot_states[slot_index] = buffer.slot_states[slot_index];
+    }
+
+    std::uint32_t parent_reference_counts[3]{1U, 0U, 2U};
+    ok &= ExpectTrue(!TryCompactAndRepackBufferForExpandedActionCount(
+                         buffer, current_generation, parent_reference_counts, kExpandedActionCount, kRequiredFreeSlots),
+                     "Expected repacking to fail before mutation when planned children cannot fit");
+
+    ok &= ExpectTrue(buffer.layout.action_count == original_layout.action_count,
+                     "Expected failed repacking to preserve the original action count");
+    ok &= ExpectTrue(buffer.layout.slot_count == original_layout.slot_count,
+                     "Expected failed repacking to preserve the original slot count");
+    ok &= ExpectTrue(buffer.layout.slot_stride_bytes == original_layout.slot_stride_bytes,
+                     "Expected failed repacking to preserve the original slot stride");
+    ok &= ExpectTrue(buffer.layout.buffer_bytes == original_layout.buffer_bytes,
+                     "Expected failed repacking to preserve the original byte budget");
+    ok &= ExpectTrue(buffer.free_slot_count == original_free_slot_count,
+                     "Expected failed repacking to preserve the free-slot count");
+    for (std::size_t parent_index = 0; parent_index < 3; ++parent_index) {
+        ok &= ExpectTrue(current_generation.slot_indices[parent_index] == original_generation_slots[parent_index],
+                         "Expected failed repacking to preserve generation slot handles");
+    }
+    for (std::size_t slot_index = 0; slot_index < 6; ++slot_index) {
+        ok &= ExpectTrue(buffer.slot_states[slot_index].occupied == original_slot_states[slot_index].occupied,
+                         "Expected failed repacking to preserve slot occupancy");
+        ok &= ExpectTrue(buffer.slot_states[slot_index].reference_count ==
+                             original_slot_states[slot_index].reference_count,
+                         "Expected failed repacking to preserve slot reference counts");
+    }
+    ok &= ExpectNear(ToFloat(GenomePolicyModelParameters(HostBufferSlotBytesAt(buffer, slots[5]))
+                                 .dense_trunk.hidden1_to_output.biases[0]),
+                     7.0f, "failed repack parent 0 bias");
+    ok &= ExpectNear(ToFloat(GenomeTailRows(HostBufferSlotBytesAt(buffer, slots[5]))[1][0]), 1.25f,
+                     "failed repack parent 0 tail");
+    ok &= ExpectNear(ToFloat(GenomePolicyModelParameters(HostBufferSlotBytesAt(buffer, slots[4]))
+                                 .dense_trunk.hidden1_to_output.biases[0]),
+                     9.0f, "failed repack parent 2 bias");
+    ok &= ExpectNear(ToFloat(GenomeTailRows(HostBufferSlotBytesAt(buffer, slots[4]))[3][0]), 2.25f,
+                     "failed repack parent 2 tail");
     return ok;
 }
 
@@ -574,6 +661,10 @@ int main() {
     }
 
     if (!TestHostBufferCompactsAndRepacksForExpandedActionCount()) {
+        return 1;
+    }
+
+    if (!TestHostBufferRepackFailureDoesNotMutateBuffer()) {
         return 1;
     }
 

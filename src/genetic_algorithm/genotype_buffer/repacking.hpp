@@ -56,17 +56,33 @@ inline NEUROEVOLUTION_HOST_DEVICE std::uint32_t FindReferencedParentIndexOwningS
     return kInvalidBufferSlotIndex;
 }
 
-} // namespace detail
+struct BufferRepackPreflight {
+    GenotypeBufferLayout next_layout{};
+    std::size_t survivor_count = 0;
+    std::size_t destination_base_slot = 0;
+};
 
-inline NEUROEVOLUTION_HOST_DEVICE bool TryCompactAndRepackBufferForExpandedActionCount(
-    GenotypeBufferLayout &buffer_layout, std::uint8_t *buffer_storage, BufferSlotState *slot_states,
-    std::uint32_t *free_slot_stack, std::uint32_t &free_slot_count, std::uint32_t *generation_slot_indices,
-    const std::size_t active_individual_count, const std::uint32_t *parent_reference_counts,
-    const std::size_t next_action_count) noexcept {
-    // Stop-the-world reference-counting GC for growth: collect unreferenced parents, compact survivors,
-    // then repack them to the right using the expanded slot stride.
-    if (!IsValidGenotypeBufferLayout(buffer_layout) || (buffer_storage == nullptr) || (slot_states == nullptr) ||
-        (free_slot_stack == nullptr) || (generation_slot_indices == nullptr) || (active_individual_count == 0) ||
+inline NEUROEVOLUTION_HOST_DEVICE bool ReferencedParentSlotIsUnique(const std::uint32_t *generation_slot_indices,
+                                                                    const std::uint32_t *parent_reference_counts,
+                                                                    const std::size_t parent_index) noexcept {
+    for (std::size_t previous_parent_index = 0; previous_parent_index < parent_index; ++previous_parent_index) {
+        if ((parent_reference_counts[previous_parent_index] > 0) &&
+            (generation_slot_indices[previous_parent_index] == generation_slot_indices[parent_index])) {
+            return false;
+        }
+    }
+
+    return true;
+}
+
+inline NEUROEVOLUTION_HOST_DEVICE bool TryPreflightCompactionAndRepackForExpandedActionCount(
+    const GenotypeBufferLayout &buffer_layout, const BufferSlotState *slot_states,
+    const std::uint32_t *generation_slot_indices, const std::size_t active_individual_count,
+    const std::uint32_t *parent_reference_counts, const std::size_t next_action_count,
+    const std::size_t required_free_slot_count, BufferRepackPreflight &preflight) noexcept {
+    preflight = {};
+    if (!IsValidGenotypeBufferLayout(buffer_layout) || (slot_states == nullptr) ||
+        (generation_slot_indices == nullptr) || (active_individual_count == 0) ||
         (parent_reference_counts == nullptr) || (next_action_count <= buffer_layout.action_count)) {
         return false;
     }
@@ -76,6 +92,55 @@ inline NEUROEVOLUTION_HOST_DEVICE bool TryCompactAndRepackBufferForExpandedActio
         return false;
     }
 
+    std::size_t survivor_count = 0;
+    for (std::size_t parent_index = 0; parent_index < active_individual_count; ++parent_index) {
+        if (parent_reference_counts[parent_index] == 0) {
+            continue;
+        }
+
+        const std::uint32_t slot_index = generation_slot_indices[parent_index];
+        if ((slot_index == kInvalidBufferSlotIndex) || (slot_index >= buffer_layout.slot_count) ||
+            !slot_states[slot_index].occupied || (slot_states[slot_index].reference_count == 0) ||
+            !ReferencedParentSlotIsUnique(generation_slot_indices, parent_reference_counts, parent_index)) {
+            return false;
+        }
+
+        ++survivor_count;
+    }
+
+    if ((survivor_count == 0) || ((survivor_count + required_free_slot_count) > next_layout.slot_count)) {
+        return false;
+    }
+
+    preflight.next_layout = next_layout;
+    preflight.survivor_count = survivor_count;
+    preflight.destination_base_slot = next_layout.slot_count - survivor_count;
+    return true;
+}
+
+} // namespace detail
+
+inline NEUROEVOLUTION_HOST_DEVICE bool TryCompactAndRepackBufferForExpandedActionCount(
+    GenotypeBufferLayout &buffer_layout, std::uint8_t *buffer_storage, BufferSlotState *slot_states,
+    std::uint32_t *free_slot_stack, std::uint32_t &free_slot_count, std::uint32_t *generation_slot_indices,
+    const std::size_t active_individual_count, const std::uint32_t *parent_reference_counts,
+    const std::size_t next_action_count, const std::size_t required_free_slot_count = 1) noexcept {
+    // Stop-the-world reference-counting GC for growth: collect unreferenced parents, compact survivors,
+    // then repack them to the right using the expanded slot stride.
+    if (!IsValidGenotypeBufferLayout(buffer_layout) || (buffer_storage == nullptr) || (slot_states == nullptr) ||
+        (free_slot_stack == nullptr) || (generation_slot_indices == nullptr) || (active_individual_count == 0) ||
+        (parent_reference_counts == nullptr) || (next_action_count <= buffer_layout.action_count)) {
+        return false;
+    }
+
+    detail::BufferRepackPreflight preflight{};
+    if (!detail::TryPreflightCompactionAndRepackForExpandedActionCount(
+            buffer_layout, slot_states, generation_slot_indices, active_individual_count, parent_reference_counts,
+            next_action_count, required_free_slot_count, preflight)) {
+        return false;
+    }
+
+    const GenotypeBufferLayout next_layout = preflight.next_layout;
     const std::size_t current_slot_stride_bytes = buffer_layout.slot_stride_bytes;
     std::size_t survivor_count = 0;
 
@@ -84,10 +149,6 @@ inline NEUROEVOLUTION_HOST_DEVICE bool TryCompactAndRepackBufferForExpandedActio
             generation_slot_indices, active_individual_count, parent_reference_counts, source_slot_index);
         if (parent_index == kInvalidBufferSlotIndex) {
             continue;
-        }
-
-        if (survivor_count >= next_layout.slot_count) {
-            return false;
         }
 
         if (survivor_count != source_slot_index) {
@@ -108,11 +169,11 @@ inline NEUROEVOLUTION_HOST_DEVICE bool TryCompactAndRepackBufferForExpandedActio
         }
     }
 
-    if ((survivor_count == 0) || (survivor_count >= next_layout.slot_count)) {
+    if (survivor_count != preflight.survivor_count) {
         return false;
     }
 
-    const std::size_t destination_base_slot = next_layout.slot_count - survivor_count;
+    const std::size_t destination_base_slot = preflight.destination_base_slot;
     for (std::size_t compacted_slot = survivor_count; compacted_slot > 0; --compacted_slot) {
         const std::size_t source_slot_index = compacted_slot - 1;
         const std::size_t destination_slot_index = destination_base_slot + source_slot_index;
@@ -161,11 +222,12 @@ inline NEUROEVOLUTION_HOST_DEVICE bool TryCompactAndRepackBufferForExpandedActio
 
 inline bool TryCompactAndRepackBufferForExpandedActionCount(HostGenotypeBuffer &buffer, BufferGeneration &generation,
                                                             const std::uint32_t *parent_reference_counts,
-                                                            const std::size_t next_action_count) {
+                                                            const std::size_t next_action_count,
+                                                            const std::size_t required_free_slot_count = 1) {
     return TryCompactAndRepackBufferForExpandedActionCount(
         buffer.layout, buffer.storage.get(), buffer.slot_states.get(), buffer.free_slot_stack.get(),
         buffer.free_slot_count, generation.slot_indices.get(), generation.active_individual_count,
-        parent_reference_counts, next_action_count);
+        parent_reference_counts, next_action_count, required_free_slot_count);
 }
 
 } // namespace neuroevolution::genetic_algorithm::genotype_buffer

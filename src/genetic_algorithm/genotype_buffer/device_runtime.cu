@@ -509,7 +509,7 @@ __global__ void PrepareBufferForExpandedActionCountKernel(
     GenotypeBufferLayout working_layout = current_layout;
     if (!TryCompactAndRepackBufferForExpandedActionCount(
             working_layout, buffer_storage, slot_states, free_slot_stack, *free_slot_count, current_slot_indices,
-            current_generation_size, parent_reference_counts, next_layout.action_count)) {
+            current_generation_size, parent_reference_counts, next_layout.action_count, planned_child_count)) {
         SetFailureStatus(status, DeviceBufferRuntimeStatusCode::kBufferRepackFailed);
     }
 }
