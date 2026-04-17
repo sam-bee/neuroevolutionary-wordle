@@ -44,7 +44,7 @@ using neuroevolution::genetic_algorithm::genotype_slab::device::TryDownloadCurre
 using neuroevolution::genetic_algorithm::genotype_slab::device::TryDownloadNextGenerationFromDevice;
 using neuroevolution::genetic_algorithm::genotype_slab::device::TryDownloadSlabFromDevice;
 using neuroevolution::genetic_algorithm::genotype_slab::device::TryPrepareSlabForExpandedActionCountOnDevice;
-using neuroevolution::genetic_algorithm::genotype_slab::device::TryPrioritizeSlabAssemblyPlanForParentReleaseOnDevice;
+using neuroevolution::genetic_algorithm::genotype_slab::device::TryApplyFinalChildPriorityToAssemblyPlanOnDevice;
 using neuroevolution::genetic_algorithm::genotype_slab::device::TryReadDeviceSlabRuntimeStatus;
 using neuroevolution::genetic_algorithm::genotype_slab::device::TryUploadAssemblyPlanToDevice;
 using neuroevolution::genetic_algorithm::genotype_slab::device::TryUploadCurrentGenerationToDevice;
@@ -533,7 +533,7 @@ bool TestDeviceSlabRuntimeReusesSweptAndReleasedSlotsDuringAssembly() {
     return ok;
 }
 
-bool TestDeviceAssemblyPlanPrioritisesChildrenThatFreeParents() {
+bool TestDeviceAssemblyPlanAppliesFinalChildPriority() {
     HostGenotypeSlab host_buffer{};
     SlabGeneration current_generation{};
     bool ok = TryCreateHostGenotypeSlab(host_buffer, 3, 4);
@@ -593,7 +593,7 @@ bool TestDeviceAssemblyPlanPrioritisesChildrenThatFreeParents() {
     ok &= TryUploadSlabToDevice(host_buffer, buffers);
     ok &= TryUploadCurrentGenerationToDevice(current_generation, buffers);
     ok &= TryUploadAssemblyPlanToDevice(plan, buffers);
-    ok &= TryPrioritizeSlabAssemblyPlanForParentReleaseOnDevice(buffers);
+    ok &= TryApplyFinalChildPriorityToAssemblyPlanOnDevice(buffers);
     ok &= TryAssembleNextGenerationOnDevice(buffers, 401U, MakeDeterministicAssemblyConfig());
     if (!ok) {
         DeviceSlabRuntimeStatusCode status_code = DeviceSlabRuntimeStatusCode::kOk;
@@ -1065,7 +1065,7 @@ int main() {
         !TestDeviceSlabFreeListIsThreadSafeUnderWarpContention() ||
         !TestDeviceSlabRuntimeUploadsAndDownloadsBufferAndGenerationState() ||
         !TestDeviceSlabRuntimeReusesSweptAndReleasedSlotsDuringAssembly() ||
-        !TestDeviceAssemblyPlanPrioritisesChildrenThatFreeParents() ||
+        !TestDeviceAssemblyPlanAppliesFinalChildPriority() ||
         !TestDeviceSlabRuntimeRepacksAndAssemblesAfterActionCountGrowth() ||
         !TestDeviceSlabRuntimeRepackFailureDoesNotMutateBuffer() ||
         !TestDeviceSlabRuntimeAssemblesChildBatchConcurrently() ||

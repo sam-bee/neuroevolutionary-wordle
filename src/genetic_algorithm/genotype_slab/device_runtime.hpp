@@ -98,7 +98,7 @@ bool TryDownloadNextGenerationFromDevice(const DeviceSlabRuntimeBuffers &buffers
 
 bool TryUploadAssemblyPlanToDevice(const SlabAssemblyPlan &plan, DeviceSlabRuntimeBuffers &buffers);
 
-bool TryPrioritizeSlabAssemblyPlanForParentReleaseOnDevice(DeviceSlabRuntimeBuffers &buffers);
+bool TryApplyFinalChildPriorityToAssemblyPlanOnDevice(DeviceSlabRuntimeBuffers &buffers);
 
 bool TryPrepareSlabForExpandedActionCountOnDevice(DeviceSlabRuntimeBuffers &buffers, std::size_t next_action_count);
 

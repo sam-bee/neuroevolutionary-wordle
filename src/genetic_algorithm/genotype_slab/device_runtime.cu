@@ -137,8 +137,8 @@ MapInjectionStatus(const DeviceOutputEmbeddingInjectionStatusCode status_code) n
     return DeviceSlabRuntimeStatusCode::kOutputEmbeddingInjectionFailed;
 }
 
-__device__ int ParentReleasePriorityScore(const SlabParentPair &parent_pair,
-                                          const std::uint32_t *remaining_parent_references) noexcept {
+__device__ int FinalChildPriorityScore(const SlabParentPair &parent_pair,
+                                       const std::uint32_t *remaining_parent_references) noexcept {
     if (remaining_parent_references == nullptr) {
         return -1;
     }
@@ -155,10 +155,10 @@ __device__ int ParentReleasePriorityScore(const SlabParentPair &parent_pair,
     return priority;
 }
 
-__global__ void PrioritizeAssemblyPlanForParentReleaseKernel(SlabParentPair *parent_pairs,
-                                                             const std::size_t current_generation_size,
-                                                             const std::size_t child_count,
-                                                             std::uint32_t *parent_reference_counts, int *status) {
+__global__ void ApplyFinalChildPriorityToAssemblyPlanKernel(SlabParentPair *parent_pairs,
+                                                            const std::size_t current_generation_size,
+                                                            const std::size_t child_count,
+                                                            std::uint32_t *parent_reference_counts, int *status) {
     if ((blockIdx.x != 0) || (threadIdx.x != 0)) {
         return;
     }
@@ -191,7 +191,7 @@ __global__ void PrioritizeAssemblyPlanForParentReleaseKernel(SlabParentPair *par
         for (std::size_t candidate_child_index = ordered_child_index; candidate_child_index < child_count;
              ++candidate_child_index) {
             const int priority =
-                ParentReleasePriorityScore(parent_pairs[candidate_child_index], parent_reference_counts);
+                FinalChildPriorityScore(parent_pairs[candidate_child_index], parent_reference_counts);
             if (priority > best_priority) {
                 best_priority = priority;
                 chosen_child_index = candidate_child_index;
@@ -797,7 +797,7 @@ bool TryUploadAssemblyPlanToDevice(const SlabAssemblyPlan &plan, DeviceSlabRunti
                                 plan.child_count * sizeof(SlabParentPair), cudaMemcpyHostToDevice));
 }
 
-bool TryPrioritizeSlabAssemblyPlanForParentReleaseOnDevice(DeviceSlabRuntimeBuffers &buffers) {
+bool TryApplyFinalChildPriorityToAssemblyPlanOnDevice(DeviceSlabRuntimeBuffers &buffers) {
     if ((buffers.current_generation_size == 0) || (buffers.planned_child_count == 0) ||
         (buffers.current_generation_size > buffers.max_generation_size)) {
         (void)WriteDeviceStatus(buffers, DeviceSlabRuntimeStatusCode::kInvalidAssemblyPlan);
@@ -812,9 +812,9 @@ bool TryPrioritizeSlabAssemblyPlanForParentReleaseOnDevice(DeviceSlabRuntimeBuff
         return false;
     }
 
-    PrioritizeAssemblyPlanForParentReleaseKernel<<<1, 1>>>(buffers.assembly_parent_pairs,
-                                                           buffers.current_generation_size, buffers.planned_child_count,
-                                                           buffers.parent_reference_counts, buffers.status);
+    ApplyFinalChildPriorityToAssemblyPlanKernel<<<1, 1>>>(buffers.assembly_parent_pairs,
+                                                          buffers.current_generation_size, buffers.planned_child_count,
+                                                          buffers.parent_reference_counts, buffers.status);
     if (!CheckCuda(cudaGetLastError()) || !CheckCuda(cudaDeviceSynchronize())) {
         return false;
     }
