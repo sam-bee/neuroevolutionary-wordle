@@ -8,8 +8,8 @@
 #include <string_view>
 
 #include "common/float16.hpp"
-#include "genetic_algorithm/device/dynamic_runtime.hpp"
 #include "genetic_algorithm/genetic_algorithm.hpp"
+#include "genetic_algorithm/genome/dynamic_layout.hpp"
 #include "training_folder/training_data.hpp"
 
 namespace {
@@ -31,13 +31,15 @@ using neuroevolution::genetic_algorithm::buffer_device::TryEvaluateCurrentGenera
 using neuroevolution::genetic_algorithm::buffer_device::TryReadDeviceBufferGARuntimeStatus;
 using neuroevolution::genetic_algorithm::buffer_device::TryReadPopulationFitnessSummaryFromDevice;
 using neuroevolution::genetic_algorithm::buffer_device::TryUploadCurrentBufferPopulationToDevice;
-using neuroevolution::genetic_algorithm::dynamic_device::GenomePolicyModelParameters;
-using neuroevolution::genetic_algorithm::dynamic_device::GenomeTailRows;
-using neuroevolution::genetic_algorithm::dynamic_device::HostGenomeBytesAt;
-using neuroevolution::genetic_algorithm::dynamic_device::HostPopulation;
-using neuroevolution::genetic_algorithm::dynamic_device::TrainableActionEmbeddingTail;
-using neuroevolution::genetic_algorithm::dynamic_device::TryInitializeRandomHostPopulation;
+using neuroevolution::genetic_algorithm::genome::GenomePolicyModelParameters;
+using neuroevolution::genetic_algorithm::genome::GenomeTailRows;
+using neuroevolution::genetic_algorithm::genome::HostGenomeBytesAt;
+using neuroevolution::genetic_algorithm::genome::HostPopulation;
+using neuroevolution::genetic_algorithm::genome::TrainableActionEmbeddingTail;
+using neuroevolution::genetic_algorithm::genome::TryInitializeRandomHostPopulation;
 using neuroevolution::genetic_algorithm::genotype_buffer::BufferGeneration;
+using neuroevolution::genetic_algorithm::genotype_buffer::BufferSlotCountForByteBudget;
+using neuroevolution::genetic_algorithm::genotype_buffer::ComputeBufferSlotStrideBytes;
 using neuroevolution::genetic_algorithm::genotype_buffer::HostBufferSlotBytesAt;
 using neuroevolution::genetic_algorithm::genotype_buffer::HostGenotypeBuffer;
 using neuroevolution::genetic_algorithm::genotype_buffer::TryAllocateBufferSlot;
@@ -132,6 +134,13 @@ RuntimeWordCounts MakeRuntimeWordCounts() {
     return runtime_word_counts;
 }
 
+RuntimeWordCounts MakeRuntimeWordCounts(const std::size_t action_count) {
+    RuntimeWordCounts runtime_word_counts{};
+    runtime_word_counts.training_word_count = action_count;
+    runtime_word_counts.action_space_word_count = action_count;
+    return runtime_word_counts;
+}
+
 GenerationAssemblyConfig MakeAssemblyConfig() {
     GenerationAssemblyConfig config{};
     config.parent_selection.tournament_size = 3;
@@ -182,6 +191,10 @@ void CopyGenomeAcrossPopulation(HostPopulation &population, const std::size_t so
 bool InitializeTrainingCatalog(TrainingWordCatalog &training_word_catalog) {
     training_word_catalog = LoadTrainingWordCatalogFromActionSpace();
     return UploadTrainingWordCatalogToDeviceConstantMemory(training_word_catalog);
+}
+
+std::size_t ComputeGenerationByteBudgetBytes(const DeviceBufferGARuntimeConfig &runtime_config) {
+    return runtime_config.max_generation_size * ComputeBufferSlotStrideBytes(runtime_config.action_count);
 }
 
 bool TestBufferRuntimeEvaluatesAndSummarizesCurrentGeneration() {
@@ -364,6 +377,14 @@ bool TestBufferRuntimeGrowsActionCountWithBufferRepacking() {
     runtime_config.slot_count = 6;
     runtime_config.action_count = kActionCount;
     runtime_config.max_generation_size = 3;
+    const std::size_t next_action_count = kActionCount + kInjectedWordCount;
+    const std::size_t expected_next_generation_size = BufferSlotCountForByteBudget(
+        ComputeGenerationByteBudgetBytes(runtime_config), next_action_count, runtime_config.max_generation_size);
+    ok &= ExpectTrue(expected_next_generation_size == 2,
+                     "Expected the fixed generation byte budget to shrink the grown generation to two children");
+    if (!ok) {
+        return false;
+    }
 
     DeviceBufferGARuntimeBuffers buffers{};
     ok &= TryCreateDeviceBufferGARuntimeBuffers(buffers, runtime_config);
@@ -379,9 +400,12 @@ bool TestBufferRuntimeGrowsActionCountWithBufferRepacking() {
     }
 
     PopulationFitnessSummary summary{};
+    PopulationFitnessSummary child_summary{};
     HostGenotypeBuffer downloaded_buffer{};
     BufferGeneration downloaded_generation{};
     ok &= TryReadPopulationFitnessSummaryFromDevice(buffers, summary);
+    ok &= TryEvaluateCurrentGenerationFitnessOnDevice(buffers, MakeRuntimeWordCounts(next_action_count));
+    ok &= TryReadPopulationFitnessSummaryFromDevice(buffers, child_summary);
     ok &= TryDownloadBufferFromDevice(buffers, downloaded_buffer);
     ok &= TryDownloadCurrentGenerationFromDevice(buffers, downloaded_generation);
     neuroevolution::genetic_algorithm::buffer_device::DestroyDeviceBufferGARuntimeBuffers(buffers);
@@ -393,10 +417,16 @@ bool TestBufferRuntimeGrowsActionCountWithBufferRepacking() {
         ExpectTrue(summary.generation_index == 8, "Expected summary to still describe the evaluated parent generation");
     ok &= ExpectTrue(downloaded_generation.generation_index == 9,
                      "Expected a successful growth step to increment the generation index");
-    ok &= ExpectTrue(downloaded_generation.active_individual_count == 2,
-                     "Expected growth to shrink the next generation to the conservative repacked child capacity");
-    ok &= ExpectTrue(downloaded_buffer.layout.action_count == (kActionCount + kInjectedWordCount),
+    ok &= ExpectTrue(downloaded_generation.active_individual_count == expected_next_generation_size,
+                     "Expected growth to size the next generation from the fixed generation byte budget");
+    ok &= ExpectTrue(downloaded_buffer.layout.action_count == next_action_count,
                      "Expected repacking to expand the buffer action count before child assembly");
+    ok &= ExpectTrue(child_summary.generation_index == 9,
+                     "Expected child evaluation to report the grown current generation index");
+    ok &= ExpectTrue(child_summary.population_size == expected_next_generation_size,
+                     "Expected child evaluation to report the budget-sized grown population");
+    ok &= ExpectTrue(child_summary.action_count == next_action_count,
+                     "Expected child evaluation to report the grown action count");
 
     for (std::size_t individual_index = 0; individual_index < downloaded_generation.active_individual_count;
          ++individual_index) {
@@ -412,6 +442,66 @@ bool TestBufferRuntimeGrowsActionCountWithBufferRepacking() {
         }
     }
 
+    return ok;
+}
+
+bool TestBufferRuntimeRejectsGrowthWhenGenerationBudgetCannotFitOneChild() {
+    TrainingWordCatalog training_word_catalog{};
+    if (!InitializeTrainingCatalog(training_word_catalog)) {
+        std::cerr << "FAIL: could not upload training-word catalog to device constant memory\n";
+        return false;
+    }
+
+    HostPopulation host_population{};
+    bool ok = TryInitializeRandomHostPopulation(host_population, 1, kActionCount, 7U);
+    HostGenotypeBuffer host_buffer{};
+    BufferGeneration current_generation{};
+    ok &= PopulateBufferGenerationFromHostPopulation(host_population, 2, 0, host_buffer, current_generation);
+    if (!ok) {
+        std::cerr << "FAIL: could not build budget-rejection fixtures\n";
+        return false;
+    }
+
+    DeviceBufferGARuntimeConfig runtime_config{};
+    runtime_config.slot_count = 2;
+    runtime_config.action_count = kActionCount;
+    runtime_config.max_generation_size = 1;
+    const std::size_t next_action_count = kActionCount + 1;
+    const std::size_t expected_next_generation_size = BufferSlotCountForByteBudget(
+        ComputeGenerationByteBudgetBytes(runtime_config), next_action_count, runtime_config.max_generation_size);
+    ok &= ExpectTrue(expected_next_generation_size == 0,
+                     "Expected the fixed generation byte budget to reject a larger genotype that cannot fit one child");
+    if (!ok) {
+        return false;
+    }
+
+    PendingOutputEmbeddingInjection pending_output_embedding_injection{};
+    pending_output_embedding_injection.enabled = true;
+    pending_output_embedding_injection.first_catalog_word_index = kActionCount;
+    pending_output_embedding_injection.injection_count = 1;
+
+    DeviceBufferGARuntimeBuffers buffers{};
+    ok &= TryCreateDeviceBufferGARuntimeBuffers(buffers, runtime_config);
+    ok &= TryUploadCurrentBufferPopulationToDevice(host_buffer, current_generation, buffers);
+    if (!ok) {
+        neuroevolution::genetic_algorithm::buffer_device::DestroyDeviceBufferGARuntimeBuffers(buffers);
+        return false;
+    }
+
+    ok &= ExpectTrue(!TryAdvanceGenerationOnDevice(buffers, 9U, MakeRuntimeWordCounts(), MakeAssemblyConfig(),
+                                                   pending_output_embedding_injection),
+                     "Expected growth assembly to fail when the fixed generation byte budget cannot fit one child");
+
+    DeviceBufferGARuntimeStatusCode status_code = DeviceBufferGARuntimeStatusCode::kOk;
+    ok &= TryReadDeviceBufferGARuntimeStatus(buffers, status_code);
+    neuroevolution::genetic_algorithm::buffer_device::DestroyDeviceBufferGARuntimeBuffers(buffers);
+    if (!ok) {
+        return false;
+    }
+
+    ok &= ExpectTrue(status_code == DeviceBufferGARuntimeStatusCode::kInvalidAssemblyConfig,
+                     "Expected impossible growth under the fixed generation byte budget to report invalid assembly "
+                     "config");
     return ok;
 }
 
@@ -469,6 +559,7 @@ int main() {
 
     if (!TestBufferRuntimeEvaluatesAndSummarizesCurrentGeneration() || !TestBufferRuntimeAdvancesOneGeneration() ||
         !TestBufferRuntimeGrowsActionCountWithBufferRepacking() ||
+        !TestBufferRuntimeRejectsGrowthWhenGenerationBudgetCannotFitOneChild() ||
         !TestBufferRuntimeFailsCleanlyWhenTheBufferIsTooSmall()) {
         return 1;
     }

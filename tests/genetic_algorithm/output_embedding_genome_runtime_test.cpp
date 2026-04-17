@@ -75,7 +75,8 @@ bool TestMaterializationUsesRuntimeActiveCount() {
     action_words[3] = MakeInvalidWord();
 
     FixedBuffer<ActionEmbedding, 4> action_embeddings{};
-    const bool default_materialize_ok = TryMaterializeActionEmbeddings(genome.output_embedding, action_words, action_embeddings);
+    const bool default_materialize_ok =
+        TryMaterializeActionEmbeddings(genome.output_embedding, action_words, action_embeddings);
     const bool too_many_materialize_ok =
         TryMaterializeActionEmbeddings(genome.output_embedding, action_words, action_embeddings, 3);
 

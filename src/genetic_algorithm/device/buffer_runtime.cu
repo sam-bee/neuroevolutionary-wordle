@@ -4,6 +4,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <utility>
 
 #include "genetic_algorithm/device/evaluation_ops.cuh"
@@ -237,33 +238,34 @@ IsValidPendingOutputEmbeddingInjection(const PendingOutputEmbeddingInjection &pe
             (pending_output_embedding_injection.first_catalog_word_index == current_action_count));
 }
 
+inline bool TryComputeGenerationByteBudgetBytes(const std::size_t action_count, const std::size_t generation_size,
+                                                std::size_t &generation_byte_budget_bytes_out) {
+    generation_byte_budget_bytes_out = 0;
+
+    const std::size_t slot_stride_bytes = genotype_buffer::ComputeBufferSlotStrideBytes(action_count);
+    if ((slot_stride_bytes == 0) || (generation_size > (std::numeric_limits<std::size_t>::max() / slot_stride_bytes))) {
+        return false;
+    }
+
+    generation_byte_budget_bytes_out = generation_size * slot_stride_bytes;
+    return generation_byte_budget_bytes_out > 0;
+}
+
 inline bool TryPlanNextGenerationShape(const DeviceBufferGARuntimeBuffers &buffers,
                                        const PendingOutputEmbeddingInjection &pending_output_embedding_injection,
                                        std::size_t &next_action_count_out, std::size_t &next_generation_size_out) {
     next_action_count_out = buffers.genotype_buffer.buffer_layout.action_count;
-    next_generation_size_out = buffers.genotype_buffer.current_generation_size;
     if (!IsValidPendingOutputEmbeddingInjection(pending_output_embedding_injection,
                                                 buffers.genotype_buffer.buffer_layout.action_count)) {
         return false;
     }
 
-    if (!pending_output_embedding_injection.enabled) {
-        return next_generation_size_out > 0;
+    if (pending_output_embedding_injection.enabled) {
+        next_action_count_out += pending_output_embedding_injection.injection_count;
     }
 
-    next_action_count_out += pending_output_embedding_injection.injection_count;
-    genotype_buffer::GenotypeBufferLayout next_layout{};
-    if (!genotype_buffer::TryCreateExpandedBufferLayout(buffers.genotype_buffer.buffer_layout, next_action_count_out,
-                                                        next_layout) ||
-        (next_layout.slot_count <= 1)) {
-        return false;
-    }
-
-    next_generation_size_out = (next_layout.slot_count - 1) / 2;
-    if (next_generation_size_out > buffers.max_generation_size) {
-        next_generation_size_out = buffers.max_generation_size;
-    }
-
+    next_generation_size_out = genotype_buffer::BufferSlotCountForByteBudget(
+        buffers.generation_byte_budget_bytes, next_action_count_out, buffers.max_generation_size);
     return next_generation_size_out > 0;
 }
 
@@ -273,6 +275,11 @@ bool TryCreateDeviceBufferGARuntimeBuffers(DeviceBufferGARuntimeBuffers &buffers
                                            const DeviceBufferGARuntimeConfig &config) {
     buffers = {};
     if (!IsValidDeviceBufferGARuntimeConfig(config)) {
+        return false;
+    }
+
+    if (!TryComputeGenerationByteBudgetBytes(config.action_count, config.max_generation_size,
+                                             buffers.generation_byte_budget_bytes)) {
         return false;
     }
 

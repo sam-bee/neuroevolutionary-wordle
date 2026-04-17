@@ -28,7 +28,7 @@ ActiveOutputEmbeddingCount(const OutputEmbeddingGenome<ActionCapacity> &genome) 
 
 template <std::size_t ActionCapacity>
 inline NEUROEVOLUTION_HOST_DEVICE bool TryResizeOutputEmbeddingGenome(OutputEmbeddingGenome<ActionCapacity> &genome,
-                                                                     const std::size_t active_count) noexcept {
+                                                                      const std::size_t active_count) noexcept {
     if (active_count > ActionCapacity) {
         return false;
     }
@@ -53,7 +53,8 @@ inline NEUROEVOLUTION_HOST_DEVICE bool TryMaterializeActionEmbeddings(
     const common::FixedBuffer<wordle::Word, ActionCapacity> &action_words,
     common::FixedBuffer<model::output_embedding::ActionEmbedding, ActionCapacity> &action_embeddings,
     const std::size_t action_count) noexcept {
-    if (!IsValidOutputEmbeddingGenome(genome) || (action_count > ActionCapacity) || (action_count > genome.active_count)) {
+    if (!IsValidOutputEmbeddingGenome(genome) || (action_count > ActionCapacity) ||
+        (action_count > genome.active_count)) {
         return false;
     }
 

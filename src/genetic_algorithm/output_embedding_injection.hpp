@@ -29,7 +29,8 @@ TrySeedOutputEmbeddingTailFromHintGrids(const model::policy_model::PolicyModelPa
 
     for (std::size_t grid_index = 0; grid_index < wordle::kHintGridGroupSize; ++grid_index) {
         model::policy_model::PolicyVector policy_vector{};
-        if (!model::policy_model::TryForwardPolicyModel(policy_model, hint_grid_group.grids[grid_index], policy_vector)) {
+        if (!model::policy_model::TryForwardPolicyModel(policy_model, hint_grid_group.grids[grid_index],
+                                                        policy_vector)) {
             return false;
         }
 

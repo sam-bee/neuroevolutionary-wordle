@@ -74,7 +74,8 @@ bool TryLoadTrainingWordCatalogFromActionSpace(const std::filesystem::path &acti
 TrainingWordCatalog LoadTrainingWordCatalogFromActionSpace(const std::filesystem::path &action_space_path) {
     TrainingWordCatalog catalog{};
     if (!TryLoadTrainingWordCatalogFromActionSpace(action_space_path, catalog)) {
-        throw std::runtime_error("Could not load the training-word catalog from the configured action-space word list.");
+        throw std::runtime_error(
+            "Could not load the training-word catalog from the configured action-space word list.");
     }
 
     return catalog;

@@ -15,7 +15,8 @@ bool UploadTrainingWordCatalogToDeviceConstantMemory(const TrainingWordCatalog &
         return false;
     }
 
-    const cudaError_t copy_error = cudaMemcpyToSymbol(kDeviceTrainingWordCatalog, &catalog, sizeof(TrainingWordCatalog));
+    const cudaError_t copy_error =
+        cudaMemcpyToSymbol(kDeviceTrainingWordCatalog, &catalog, sizeof(TrainingWordCatalog));
     return copy_error == cudaSuccess;
 }
 

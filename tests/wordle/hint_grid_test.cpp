@@ -106,8 +106,8 @@ bool ExpectSlotZero(const ModelInputStateVector &actual, const std::size_t slot_
 
     for (std::size_t value_index = 0; value_index < kEncoderOutputSize; ++value_index) {
         if (actual[slot_offset + value_index] != 0.0f) {
-            std::cerr << "FAIL: " << label << " slot " << slot_index << " value " << value_index
-                      << " expected 0, got " << actual[slot_offset + value_index] << '\n';
+            std::cerr << "FAIL: " << label << " slot " << slot_index << " value " << value_index << " expected 0, got "
+                      << actual[slot_offset + value_index] << '\n';
             ok = false;
         }
     }
@@ -124,8 +124,8 @@ bool ExpectGridEncodesAsDecisionState(const SharedEncoderGoldenFixture &fixture,
                      "Encoded virgin flag should match grid occupancy");
 
     for (std::size_t slot_index = 0; slot_index < grid.turn_count; ++slot_index) {
-        ok &= ExpectSlotEquals(encoded_state, ForwardOccupiedTurn(fixture.parameters, grid.turns[slot_index]), slot_index,
-                               label);
+        ok &= ExpectSlotEquals(encoded_state, ForwardOccupiedTurn(fixture.parameters, grid.turns[slot_index]),
+                               slot_index, label);
     }
 
     for (std::size_t slot_index = grid.turn_count; slot_index < kModelInputTurnCount; ++slot_index) {
@@ -169,8 +169,10 @@ bool TestBuildCyclicHintGridSupportsRepeatedLettersWithFewerAllYellowTurns() {
     ok &= ExpectTrue(grid.turn_count == 2, "Repeated-letter cyclic hint grid should skip non-all-yellow rotations");
     ok &= ExpectWordEquals(grid.turns[0].guess, RotateWordLeft(solution, 2), "First repeated-letter rotation guess");
     ok &= ExpectWordEquals(grid.turns[1].guess, RotateWordLeft(solution, 3), "Second repeated-letter rotation guess");
-    ok &= ExpectTrue(IsAllYellowFeedback(grid.turns[0].feedback), "First repeated-letter feedback should be all yellow");
-    ok &= ExpectTrue(IsAllYellowFeedback(grid.turns[1].feedback), "Second repeated-letter feedback should be all yellow");
+    ok &=
+        ExpectTrue(IsAllYellowFeedback(grid.turns[0].feedback), "First repeated-letter feedback should be all yellow");
+    ok &=
+        ExpectTrue(IsAllYellowFeedback(grid.turns[1].feedback), "Second repeated-letter feedback should be all yellow");
     return ok;
 }
 

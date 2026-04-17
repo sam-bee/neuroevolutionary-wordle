@@ -91,8 +91,8 @@ bool ExpectTailEquals(const TrainableActionEmbeddingTail &actual, const Trainabl
                       const std::string_view label_prefix) {
     bool ok = true;
 
-    for (std::size_t feature_index = 0; feature_index < neuroevolution::model::output_embedding::kTrainableFeatureDimension;
-         ++feature_index) {
+    for (std::size_t feature_index = 0;
+         feature_index < neuroevolution::model::output_embedding::kTrainableFeatureDimension; ++feature_index) {
         ok &= ExpectNear(ToFloat(actual[feature_index]), ToFloat(expected[feature_index]),
                          std::string(label_prefix) + " feature " + std::to_string(feature_index));
     }
@@ -142,8 +142,8 @@ bool ComputeExpectedInjectedTail(const ModelGenome<ActionCapacity> &genome, cons
     }
 
     constexpr float kReciprocalHintGridCount = 1.0f / static_cast<float>(neuroevolution::wordle::kHintGridGroupSize);
-    for (std::size_t feature_index = 0; feature_index < neuroevolution::model::output_embedding::kTrainableFeatureDimension;
-         ++feature_index) {
+    for (std::size_t feature_index = 0;
+         feature_index < neuroevolution::model::output_embedding::kTrainableFeatureDimension; ++feature_index) {
         tail_out[feature_index] = ToFloat16(feature_sums[feature_index] * kReciprocalHintGridCount);
     }
 
@@ -170,9 +170,9 @@ bool RunInjectionKernel(const ModelGenome<ActionCapacity> &input_genome, const W
     ok &= CheckCuda(cudaMalloc(&device_status, sizeof(int)), "allocating device status");
 
     if (ok) {
-        ok &= CheckCuda(cudaMemcpy(device_genome, &input_genome, sizeof(ModelGenome<ActionCapacity>),
-                                   cudaMemcpyHostToDevice),
-                        "copying genome to device");
+        ok &= CheckCuda(
+            cudaMemcpy(device_genome, &input_genome, sizeof(ModelGenome<ActionCapacity>), cudaMemcpyHostToDevice),
+            "copying genome to device");
         ok &= CheckCuda(cudaMemset(device_status, 0, sizeof(int)), "clearing device status");
     }
 
@@ -183,9 +183,9 @@ bool RunInjectionKernel(const ModelGenome<ActionCapacity> &input_genome, const W
     }
 
     if (ok) {
-        ok &= CheckCuda(cudaMemcpy(&output_genome, device_genome, sizeof(ModelGenome<ActionCapacity>),
-                                   cudaMemcpyDeviceToHost),
-                        "copying injected genome to host");
+        ok &= CheckCuda(
+            cudaMemcpy(&output_genome, device_genome, sizeof(ModelGenome<ActionCapacity>), cudaMemcpyDeviceToHost),
+            "copying injected genome to host");
         ok &= CheckCuda(cudaMemcpy(&status_out, device_status, sizeof(int), cudaMemcpyDeviceToHost),
                         "copying injection status to host");
     }
@@ -220,7 +220,8 @@ bool TestDeviceInjectionAppendsExpectedTail() {
     ok &= ExpectTrue(status == kStatusSuccess, "Expected device injection to report success");
     ok &= ExpectTrue(output_genome.output_embedding.active_count == 4,
                      "Expected successful injection to increment the active embedding count");
-    ok &= ExpectTailEquals(output_genome.output_embedding.trainable_tails[0], original_first_tail, "preserved first tail");
+    ok &= ExpectTailEquals(output_genome.output_embedding.trainable_tails[0], original_first_tail,
+                           "preserved first tail");
     ok &= ExpectTailEquals(output_genome.output_embedding.trainable_tails[1], original_second_tail,
                            "preserved second tail");
     ok &= ExpectTailEquals(output_genome.output_embedding.trainable_tails[2], original_third_tail,

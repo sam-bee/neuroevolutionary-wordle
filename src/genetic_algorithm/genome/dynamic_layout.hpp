@@ -48,8 +48,8 @@ constexpr NEUROEVOLUTION_HOST_DEVICE std::size_t DynamicGenomeTailOffsetBytes() 
     return RoundUpBytes(sizeof(PolicyModelParameters), alignof(TrainableActionEmbeddingTail));
 }
 
-constexpr NEUROEVOLUTION_HOST_DEVICE std::size_t ComputeDynamicGenomeStrideBytes(
-    const std::size_t action_count) noexcept {
+constexpr NEUROEVOLUTION_HOST_DEVICE std::size_t
+ComputeDynamicGenomeStrideBytes(const std::size_t action_count) noexcept {
     return (action_count == 0)
                ? 0
                : RoundUpBytes(DynamicGenomeTailOffsetBytes() + (action_count * sizeof(TrainableActionEmbeddingTail)),
@@ -72,8 +72,8 @@ PopulationSizeForGenotypeBudgetBytes(const std::size_t genotype_memory_budget_by
     return population_size_ceiling;
 }
 
-constexpr NEUROEVOLUTION_HOST_DEVICE bool IsValidDynamicPopulationLayout(
-    const DynamicPopulationLayout &layout) noexcept {
+constexpr NEUROEVOLUTION_HOST_DEVICE bool
+IsValidDynamicPopulationLayout(const DynamicPopulationLayout &layout) noexcept {
     return (layout.active_individual_count > 0) && (layout.action_count > 0) &&
            (layout.genome_stride_bytes == ComputeDynamicGenomeStrideBytes(layout.action_count)) &&
            (layout.genotype_bytes == (layout.active_individual_count * layout.genome_stride_bytes));
@@ -91,13 +91,13 @@ inline NEUROEVOLUTION_HOST_DEVICE const std::uint8_t *GenomeBytesAt(const std::u
     return population_genomes + (individual_index * layout.genome_stride_bytes);
 }
 
-inline NEUROEVOLUTION_HOST_DEVICE PolicyModelParameters &GenomePolicyModelParameters(
-    std::uint8_t *genome_bytes) noexcept {
+inline NEUROEVOLUTION_HOST_DEVICE PolicyModelParameters &
+GenomePolicyModelParameters(std::uint8_t *genome_bytes) noexcept {
     return *reinterpret_cast<PolicyModelParameters *>(genome_bytes);
 }
 
-inline NEUROEVOLUTION_HOST_DEVICE const PolicyModelParameters &GenomePolicyModelParameters(
-    const std::uint8_t *genome_bytes) noexcept {
+inline NEUROEVOLUTION_HOST_DEVICE const PolicyModelParameters &
+GenomePolicyModelParameters(const std::uint8_t *genome_bytes) noexcept {
     return *reinterpret_cast<const PolicyModelParameters *>(genome_bytes);
 }
 
@@ -105,8 +105,8 @@ inline NEUROEVOLUTION_HOST_DEVICE TrainableActionEmbeddingTail *GenomeTailRows(s
     return reinterpret_cast<TrainableActionEmbeddingTail *>(genome_bytes + DynamicGenomeTailOffsetBytes());
 }
 
-inline NEUROEVOLUTION_HOST_DEVICE const TrainableActionEmbeddingTail *GenomeTailRows(
-    const std::uint8_t *genome_bytes) noexcept {
+inline NEUROEVOLUTION_HOST_DEVICE const TrainableActionEmbeddingTail *
+GenomeTailRows(const std::uint8_t *genome_bytes) noexcept {
     return reinterpret_cast<const TrainableActionEmbeddingTail *>(genome_bytes + DynamicGenomeTailOffsetBytes());
 }
 
@@ -121,8 +121,8 @@ inline const std::uint8_t *HostGenomeBytesAt(const HostPopulation &population,
 
 bool TryAllocateHostGenomeStorage(HostPopulation &population);
 
-bool TryInitializeRandomHostPopulation(
-    HostPopulation &population, std::size_t population_size, std::size_t action_count, std::uint32_t seed,
-    const PopulationInitializationConfig &config = {});
+bool TryInitializeRandomHostPopulation(HostPopulation &population, std::size_t population_size,
+                                       std::size_t action_count, std::uint32_t seed,
+                                       const PopulationInitializationConfig &config = {});
 
 } // namespace neuroevolution::genetic_algorithm::genome

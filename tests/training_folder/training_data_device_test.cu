@@ -138,8 +138,8 @@ int main() {
     int *device_status = nullptr;
     bool ok = true;
 
-    ok &= CheckCuda(cudaMalloc(&device_catalog, sizeof(TrainingWordCatalog)),
-                    "allocating training-word catalog output");
+    ok &=
+        CheckCuda(cudaMalloc(&device_catalog, sizeof(TrainingWordCatalog)), "allocating training-word catalog output");
     ok &= CheckCuda(cudaMalloc(&device_status, sizeof(int)), "allocating training-data status output");
 
     if (ok) {

@@ -68,8 +68,7 @@ constexpr NEUROEVOLUTION_HOST_DEVICE std::size_t CountFeedbackTiles(const Feedba
 
 template <std::size_t Size>
 constexpr NEUROEVOLUTION_HOST_DEVICE bool ContainsWord(const common::FixedBuffer<Word, Size> &words,
-                                                       const std::size_t word_count,
-                                                       const Word &candidate) noexcept {
+                                                       const std::size_t word_count, const Word &candidate) noexcept {
     for (std::size_t word_index = 0; word_index < word_count; ++word_index) {
         if (words[word_index] == candidate) {
             return true;

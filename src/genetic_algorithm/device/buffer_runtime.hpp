@@ -48,6 +48,7 @@ struct DeviceBufferGARuntimeBuffers {
     PopulationFitnessSummary *summary = nullptr;
     int *status = nullptr;
     std::size_t max_generation_size = 0;
+    std::size_t generation_byte_budget_bytes = 0;
 };
 
 using PendingOutputEmbeddingInjection = genotype_buffer::device::PendingOutputEmbeddingInjection;

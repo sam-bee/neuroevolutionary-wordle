@@ -68,7 +68,8 @@ bool TryInitializeRandomHostPopulation(HostPopulation &population, const std::si
     }
 
     model::initialization::RandomEngine random_engine(seed);
-    for (std::size_t individual_index = 0; individual_index < population.layout.active_individual_count; ++individual_index) {
+    for (std::size_t individual_index = 0; individual_index < population.layout.active_individual_count;
+         ++individual_index) {
         std::uint8_t *genome_bytes = HostGenomeBytesAt(population, individual_index);
         model::initialization::InitializeRandomPolicyModelParameters(GenomePolicyModelParameters(genome_bytes),
                                                                      random_engine, config.parameter_initialization);
