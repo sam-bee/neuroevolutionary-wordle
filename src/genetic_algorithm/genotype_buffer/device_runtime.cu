@@ -138,6 +138,82 @@ MapInjectionStatus(const DeviceOutputEmbeddingInjectionStatusCode status_code) n
     return DeviceBufferRuntimeStatusCode::kOutputEmbeddingInjectionFailed;
 }
 
+__device__ int ParentReleasePriorityScore(const BufferParentPair &parent_pair,
+                                          const std::uint32_t *remaining_parent_references) noexcept {
+    if (remaining_parent_references == nullptr) {
+        return -1;
+    }
+
+    const bool self_parenting = parent_pair.first_parent_index == parent_pair.second_parent_index;
+    int priority = 0;
+    if (remaining_parent_references[parent_pair.first_parent_index] == (self_parenting ? 2U : 1U)) {
+        ++priority;
+    }
+    if (!self_parenting && (remaining_parent_references[parent_pair.second_parent_index] == 1U)) {
+        ++priority;
+    }
+
+    return priority;
+}
+
+__global__ void PrioritizeAssemblyPlanForParentReleaseKernel(BufferParentPair *parent_pairs,
+                                                             const std::size_t current_generation_size,
+                                                             const std::size_t child_count,
+                                                             std::uint32_t *parent_reference_counts, int *status) {
+    if ((blockIdx.x != 0) || (threadIdx.x != 0)) {
+        return;
+    }
+
+    if ((parent_pairs == nullptr) || (parent_reference_counts == nullptr) || (current_generation_size == 0) ||
+        (child_count == 0)) {
+        SetFailureStatus(status, DeviceBufferRuntimeStatusCode::kInvalidAssemblyPlan);
+        return;
+    }
+
+    for (std::size_t parent_index = 0; parent_index < current_generation_size; ++parent_index) {
+        parent_reference_counts[parent_index] = 0U;
+    }
+
+    for (std::size_t child_index = 0; child_index < child_count; ++child_index) {
+        const BufferParentPair &parent_pair = parent_pairs[child_index];
+        if ((parent_pair.first_parent_index >= current_generation_size) ||
+            (parent_pair.second_parent_index >= current_generation_size)) {
+            SetFailureStatus(status, DeviceBufferRuntimeStatusCode::kInvalidParentIndex);
+            return;
+        }
+
+        ++parent_reference_counts[parent_pair.first_parent_index];
+        ++parent_reference_counts[parent_pair.second_parent_index];
+    }
+
+    for (std::size_t ordered_child_index = 0; ordered_child_index < child_count; ++ordered_child_index) {
+        std::size_t chosen_child_index = ordered_child_index;
+        int best_priority = -1;
+        for (std::size_t candidate_child_index = ordered_child_index; candidate_child_index < child_count;
+             ++candidate_child_index) {
+            const int priority =
+                ParentReleasePriorityScore(parent_pairs[candidate_child_index], parent_reference_counts);
+            if (priority > best_priority) {
+                best_priority = priority;
+                chosen_child_index = candidate_child_index;
+                if (priority == 2) {
+                    break;
+                }
+            }
+        }
+
+        if (chosen_child_index != ordered_child_index) {
+            const BufferParentPair temporary = parent_pairs[ordered_child_index];
+            parent_pairs[ordered_child_index] = parent_pairs[chosen_child_index];
+            parent_pairs[chosen_child_index] = temporary;
+        }
+
+        const BufferParentPair &selected_child = parent_pairs[ordered_child_index];
+        --parent_reference_counts[selected_child.first_parent_index];
+        --parent_reference_counts[selected_child.second_parent_index];
+    }
+}
+
 __global__ void ValidateAssemblyInputsKernel(
     std::uint8_t *buffer_storage, BufferSlotState *slot_states, std::uint32_t *free_slot_stack,
     std::uint32_t *free_slot_count, std::uint32_t *free_slot_lock, const GenotypeBufferLayout buffer_layout,
@@ -723,6 +799,33 @@ bool TryUploadAssemblyPlanToDevice(const BufferAssemblyPlan &plan, DeviceBufferR
     buffers.planned_child_count = plan.child_count;
     return CheckCuda(cudaMemcpy(buffers.assembly_parent_pairs, plan.parent_pairs.get(),
                                 plan.child_count * sizeof(BufferParentPair), cudaMemcpyHostToDevice));
+}
+
+bool TryPrioritizeAssemblyPlanForParentReleaseOnDevice(DeviceBufferRuntimeBuffers &buffers) {
+    if ((buffers.current_generation_size == 0) || (buffers.planned_child_count == 0) ||
+        (buffers.current_generation_size > buffers.max_generation_size)) {
+        (void)WriteDeviceStatus(buffers, DeviceBufferRuntimeStatusCode::kInvalidAssemblyPlan);
+        return false;
+    }
+
+    bool ok = true;
+    ok &= ResetDeviceStatus(buffers);
+    ok &=
+        CheckCuda(cudaMemset(buffers.parent_reference_counts, 0, buffers.max_generation_size * sizeof(std::uint32_t)));
+    if (!ok) {
+        return false;
+    }
+
+    PrioritizeAssemblyPlanForParentReleaseKernel<<<1, 1>>>(buffers.assembly_parent_pairs,
+                                                           buffers.current_generation_size, buffers.planned_child_count,
+                                                           buffers.parent_reference_counts, buffers.status);
+    if (!CheckCuda(cudaGetLastError()) || !CheckCuda(cudaDeviceSynchronize())) {
+        return false;
+    }
+
+    int status_value = DeviceStatusValue(DeviceBufferRuntimeStatusCode::kCudaFailure);
+    return ReadDeviceStatus(buffers, status_value) &&
+           (status_value == DeviceStatusValue(DeviceBufferRuntimeStatusCode::kOk));
 }
 
 bool TryPrepareBufferForExpandedActionCountOnDevice(DeviceBufferRuntimeBuffers &buffers,

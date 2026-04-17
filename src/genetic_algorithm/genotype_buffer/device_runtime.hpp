@@ -98,6 +98,8 @@ bool TryDownloadNextGenerationFromDevice(const DeviceBufferRuntimeBuffers &buffe
 
 bool TryUploadAssemblyPlanToDevice(const BufferAssemblyPlan &plan, DeviceBufferRuntimeBuffers &buffers);
 
+bool TryPrioritizeAssemblyPlanForParentReleaseOnDevice(DeviceBufferRuntimeBuffers &buffers);
+
 bool TryPrepareBufferForExpandedActionCountOnDevice(DeviceBufferRuntimeBuffers &buffers, std::size_t next_action_count);
 
 bool TryAssembleNextGenerationOnDevice(DeviceBufferRuntimeBuffers &buffers, std::uint32_t generation_seed,

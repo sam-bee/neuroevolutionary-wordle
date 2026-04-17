@@ -424,6 +424,17 @@ bool TryAdvanceGenerationOnDevice(DeviceBufferGARuntimeBuffers &buffers, const s
     }
 
     buffers.genotype_buffer.planned_child_count = next_generation_size;
+    if (!genotype_buffer::device::TryPrioritizeAssemblyPlanForParentReleaseOnDevice(buffers.genotype_buffer)) {
+        genotype_buffer::device::DeviceBufferRuntimeStatusCode buffer_status =
+            genotype_buffer::device::DeviceBufferRuntimeStatusCode::kCudaFailure;
+        if (genotype_buffer::device::TryReadDeviceBufferRuntimeStatus(buffers.genotype_buffer, buffer_status)) {
+            (void)WriteDeviceStatus(buffers, MapBufferRuntimeStatus(buffer_status));
+        } else {
+            (void)WriteDeviceStatus(buffers, DeviceBufferGARuntimeStatusCode::kCudaFailure);
+        }
+        return false;
+    }
+
     const std::size_t parent_action_count = buffers.genotype_buffer.buffer_layout.action_count;
     if (pending_output_embedding_injection.enabled &&
         !genotype_buffer::device::TryPrepareBufferForExpandedActionCountOnDevice(buffers.genotype_buffer,

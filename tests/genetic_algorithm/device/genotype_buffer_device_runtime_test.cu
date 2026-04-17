@@ -44,6 +44,7 @@ using neuroevolution::genetic_algorithm::genotype_buffer::device::TryDownloadBuf
 using neuroevolution::genetic_algorithm::genotype_buffer::device::TryDownloadCurrentGenerationFromDevice;
 using neuroevolution::genetic_algorithm::genotype_buffer::device::TryDownloadNextGenerationFromDevice;
 using neuroevolution::genetic_algorithm::genotype_buffer::device::TryPrepareBufferForExpandedActionCountOnDevice;
+using neuroevolution::genetic_algorithm::genotype_buffer::device::TryPrioritizeAssemblyPlanForParentReleaseOnDevice;
 using neuroevolution::genetic_algorithm::genotype_buffer::device::TryReadDeviceBufferRuntimeStatus;
 using neuroevolution::genetic_algorithm::genotype_buffer::device::TryUploadAssemblyPlanToDevice;
 using neuroevolution::genetic_algorithm::genotype_buffer::device::TryUploadBufferToDevice;
@@ -534,6 +535,107 @@ bool TestDeviceBufferRuntimeReusesSweptAndReleasedSlotsDuringAssembly() {
     return ok;
 }
 
+bool TestDeviceAssemblyPlanPrioritisesChildrenThatFreeParents() {
+    HostGenotypeBuffer host_buffer{};
+    BufferGeneration current_generation{};
+    bool ok = TryCreateHostGenotypeBuffer(host_buffer, 3, 4);
+    ok &= TryCreateBufferGeneration(current_generation, 2, 13);
+    if (!ok) {
+        std::cerr << "FAIL: could not allocate assembly-plan prioritisation fixtures\n";
+        return false;
+    }
+
+    std::uint32_t parent_slots[2]{};
+    for (std::size_t parent_index = 0; parent_index < current_generation.active_individual_count; ++parent_index) {
+        ok &= TryAllocateBufferSlot(host_buffer, parent_slots[parent_index]);
+        ok &= TrySetBufferGenerationSlot(current_generation, parent_index, parent_slots[parent_index]);
+    }
+    GenomePolicyModelParameters(HostBufferSlotBytesAt(host_buffer, parent_slots[0]))
+        .dense_trunk.hidden1_to_output.biases[0] = ToFloat16(11.0f);
+    GenomePolicyModelParameters(HostBufferSlotBytesAt(host_buffer, parent_slots[1]))
+        .dense_trunk.hidden1_to_output.biases[0] = ToFloat16(22.0f);
+    if (!ok) {
+        return false;
+    }
+
+    BufferAssemblyPlan plan{};
+    ok &= TryCreateBufferAssemblyPlan(plan, 2);
+    plan.parent_pairs[0] = {.first_parent_index = 0, .second_parent_index = 0};
+    plan.parent_pairs[1] = {.first_parent_index = 0, .second_parent_index = 1};
+
+    DeviceBufferRuntimeConfig runtime_config{};
+    runtime_config.slot_count = 3;
+    runtime_config.action_count = 4;
+    runtime_config.max_generation_size = 2;
+
+    DeviceBufferRuntimeBuffers failed_buffers{};
+    ok &= TryCreateDeviceBufferRuntimeBuffers(failed_buffers, runtime_config);
+    ok &= TryUploadBufferToDevice(host_buffer, failed_buffers);
+    ok &= TryUploadCurrentGenerationToDevice(current_generation, failed_buffers);
+    ok &= TryUploadAssemblyPlanToDevice(plan, failed_buffers);
+    if (!ok) {
+        DestroyDeviceBufferRuntimeBuffers(failed_buffers);
+        return false;
+    }
+
+    ok &= ExpectTrue(!TryAssembleNextGenerationOnDevice(failed_buffers, 401U, MakeDeterministicAssemblyConfig()),
+                     "Expected the unreordered assembly plan to fail when it frees parents too late");
+    DeviceBufferRuntimeStatusCode failed_status = DeviceBufferRuntimeStatusCode::kOk;
+    ok &= TryReadDeviceBufferRuntimeStatus(failed_buffers, failed_status);
+    DestroyDeviceBufferRuntimeBuffers(failed_buffers);
+    if (!ok) {
+        return false;
+    }
+
+    ok &= ExpectTrue(failed_status == DeviceBufferRuntimeStatusCode::kBufferFull,
+                     "Expected the unreordered late-release plan to report kBufferFull");
+
+    DeviceBufferRuntimeBuffers buffers{};
+    ok &= TryCreateDeviceBufferRuntimeBuffers(buffers, runtime_config);
+    ok &= TryUploadBufferToDevice(host_buffer, buffers);
+    ok &= TryUploadCurrentGenerationToDevice(current_generation, buffers);
+    ok &= TryUploadAssemblyPlanToDevice(plan, buffers);
+    ok &= TryPrioritizeAssemblyPlanForParentReleaseOnDevice(buffers);
+    ok &= TryAssembleNextGenerationOnDevice(buffers, 401U, MakeDeterministicAssemblyConfig());
+    if (!ok) {
+        DeviceBufferRuntimeStatusCode status_code = DeviceBufferRuntimeStatusCode::kOk;
+        (void)TryReadDeviceBufferRuntimeStatus(buffers, status_code);
+        std::cerr << "FAIL: prioritised assembly plan failed with status " << static_cast<int>(status_code) << '\n';
+        DestroyDeviceBufferRuntimeBuffers(buffers);
+        return false;
+    }
+
+    HostGenotypeBuffer downloaded_buffer{};
+    BufferGeneration downloaded_current_generation{};
+    BufferGeneration downloaded_next_generation{};
+    ok &= TryDownloadBufferFromDevice(buffers, downloaded_buffer);
+    ok &= TryDownloadCurrentGenerationFromDevice(buffers, downloaded_current_generation);
+    ok &= TryDownloadNextGenerationFromDevice(buffers, downloaded_next_generation);
+    DestroyDeviceBufferRuntimeBuffers(buffers);
+    if (!ok) {
+        return false;
+    }
+
+    ok &= ExpectTrue(downloaded_current_generation.slot_indices[0] == kInvalidBufferSlotIndex,
+                     "Expected prioritised assembly to release the first parent");
+    ok &= ExpectTrue(downloaded_current_generation.slot_indices[1] == kInvalidBufferSlotIndex,
+                     "Expected prioritised assembly to release the second parent");
+    ok &= ExpectTrue(downloaded_next_generation.generation_index == 14,
+                     "Expected prioritised assembly to advance the generation");
+    ok &= ExpectTrue(downloaded_buffer.free_slot_count == 1,
+                     "Expected prioritised assembly to finish with one free slot");
+    for (std::size_t child_index = 0; child_index < downloaded_next_generation.active_individual_count; ++child_index) {
+        const std::uint32_t child_slot = downloaded_next_generation.slot_indices[child_index];
+        ok &= ExpectTrue(child_slot != kInvalidBufferSlotIndex,
+                         "Expected prioritised assembly to materialise every child");
+        ok &= ExpectNear(ToFloat(GenomePolicyModelParameters(HostBufferSlotBytesAt(downloaded_buffer, child_slot))
+                                     .dense_trunk.hidden1_to_output.biases[0]),
+                         11.0f, "prioritised child bias copied from the first parent");
+    }
+
+    return ok;
+}
+
 bool TestDeviceBufferRuntimeRepacksAndAssemblesAfterActionCountGrowth() {
     constexpr std::size_t kInitialActionCount = 4;
     constexpr std::size_t kExpandedActionCount = 8;
@@ -966,6 +1068,7 @@ int main() {
         !TestDeviceBufferFreeListIsThreadSafeUnderWarpContention() ||
         !TestDeviceBufferRuntimeUploadsAndDownloadsBufferAndGenerationState() ||
         !TestDeviceBufferRuntimeReusesSweptAndReleasedSlotsDuringAssembly() ||
+        !TestDeviceAssemblyPlanPrioritisesChildrenThatFreeParents() ||
         !TestDeviceBufferRuntimeRepacksAndAssemblesAfterActionCountGrowth() ||
         !TestDeviceBufferRuntimeRepackFailureDoesNotMutateBuffer() ||
         !TestDeviceBufferRuntimeAssemblesChildBatchConcurrently() ||
