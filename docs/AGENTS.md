@@ -63,6 +63,8 @@ agent's job to fix it if, for example:
 Agents MUST NOT attempt to fix such problems. Your job is not to install things. Please escalate any such issues to the
 user, who will do the necessary systems administration for you.
 
+The same applies to editing files in the project. If it doesn't work, ask.
+
 If you need full build-and-test feedback as an agent, do not try `make agents-rebuild` inside the sandbox. Run
 `make agents-rebuild` outside the sandbox instead. GPU-backed testing is a normal and expected part of development on
 this project, and agents are allowed to use it.
