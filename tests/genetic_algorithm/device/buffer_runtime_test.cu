@@ -194,7 +194,19 @@ bool InitializeTrainingCatalog(TrainingWordCatalog &training_word_catalog) {
 }
 
 std::size_t ComputeGenerationByteBudgetBytes(const DeviceBufferGARuntimeConfig &runtime_config) {
-    return runtime_config.max_generation_size * ComputeBufferSlotStrideBytes(runtime_config.action_count);
+    return runtime_config.generation_byte_budget_bytes;
+}
+
+DeviceBufferGARuntimeConfig MakeRuntimeConfig(const std::size_t slot_count, const std::size_t generation_size,
+                                              const std::size_t action_count) {
+    const std::size_t slot_stride_bytes = ComputeBufferSlotStrideBytes(action_count);
+
+    DeviceBufferGARuntimeConfig runtime_config{};
+    runtime_config.genotype_buffer_byte_budget_bytes = slot_count * slot_stride_bytes;
+    runtime_config.generation_byte_budget_bytes = generation_size * slot_stride_bytes;
+    runtime_config.action_count = action_count;
+    runtime_config.population_size_ceiling = generation_size;
+    return runtime_config;
 }
 
 bool TestBufferRuntimeEvaluatesAndSummarizesCurrentGeneration() {
@@ -214,10 +226,7 @@ bool TestBufferRuntimeEvaluatesAndSummarizesCurrentGeneration() {
         return false;
     }
 
-    DeviceBufferGARuntimeConfig runtime_config{};
-    runtime_config.slot_count = 6;
-    runtime_config.action_count = kActionCount;
-    runtime_config.max_generation_size = 3;
+    const DeviceBufferGARuntimeConfig runtime_config = MakeRuntimeConfig(6, 3, kActionCount);
 
     DeviceBufferGARuntimeBuffers buffers{};
     ok &= TryCreateDeviceBufferGARuntimeBuffers(buffers, runtime_config);
@@ -280,10 +289,7 @@ bool TestBufferRuntimeAdvancesOneGeneration() {
         GenomePolicyModelParameters(HostGenomeBytesAt(host_population, 0)).dense_trunk.hidden1_to_output.biases[0]);
     const float expected_tail = ToFloat(GenomeTailRows(HostGenomeBytesAt(host_population, 0))[0][0]);
 
-    DeviceBufferGARuntimeConfig runtime_config{};
-    runtime_config.slot_count = 6;
-    runtime_config.action_count = kActionCount;
-    runtime_config.max_generation_size = 3;
+    const DeviceBufferGARuntimeConfig runtime_config = MakeRuntimeConfig(6, 3, kActionCount);
 
     DeviceBufferGARuntimeBuffers buffers{};
     ok &= TryCreateDeviceBufferGARuntimeBuffers(buffers, runtime_config);
@@ -373,13 +379,10 @@ bool TestBufferRuntimeGrowsActionCountWithBufferRepacking() {
         return false;
     }
 
-    DeviceBufferGARuntimeConfig runtime_config{};
-    runtime_config.slot_count = 6;
-    runtime_config.action_count = kActionCount;
-    runtime_config.max_generation_size = 3;
+    const DeviceBufferGARuntimeConfig runtime_config = MakeRuntimeConfig(6, 3, kActionCount);
     const std::size_t next_action_count = kActionCount + kInjectedWordCount;
     const std::size_t expected_next_generation_size = BufferSlotCountForByteBudget(
-        ComputeGenerationByteBudgetBytes(runtime_config), next_action_count, runtime_config.max_generation_size);
+        ComputeGenerationByteBudgetBytes(runtime_config), next_action_count, runtime_config.population_size_ceiling);
     ok &= ExpectTrue(expected_next_generation_size == 2,
                      "Expected the fixed generation byte budget to shrink the grown generation to two children");
     if (!ok) {
@@ -462,13 +465,10 @@ bool TestBufferRuntimeRejectsGrowthWhenGenerationBudgetCannotFitOneChild() {
         return false;
     }
 
-    DeviceBufferGARuntimeConfig runtime_config{};
-    runtime_config.slot_count = 2;
-    runtime_config.action_count = kActionCount;
-    runtime_config.max_generation_size = 1;
+    const DeviceBufferGARuntimeConfig runtime_config = MakeRuntimeConfig(2, 1, kActionCount);
     const std::size_t next_action_count = kActionCount + 1;
     const std::size_t expected_next_generation_size = BufferSlotCountForByteBudget(
-        ComputeGenerationByteBudgetBytes(runtime_config), next_action_count, runtime_config.max_generation_size);
+        ComputeGenerationByteBudgetBytes(runtime_config), next_action_count, runtime_config.population_size_ceiling);
     ok &= ExpectTrue(expected_next_generation_size == 0,
                      "Expected the fixed generation byte budget to reject a larger genotype that cannot fit one child");
     if (!ok) {
@@ -522,10 +522,7 @@ bool TestBufferRuntimeFailsCleanlyWhenTheBufferIsTooSmall() {
         return false;
     }
 
-    DeviceBufferGARuntimeConfig runtime_config{};
-    runtime_config.slot_count = 2;
-    runtime_config.action_count = kActionCount;
-    runtime_config.max_generation_size = 2;
+    const DeviceBufferGARuntimeConfig runtime_config = MakeRuntimeConfig(2, 2, kActionCount);
 
     DeviceBufferGARuntimeBuffers buffers{};
     ok &= TryCreateDeviceBufferGARuntimeBuffers(buffers, runtime_config);

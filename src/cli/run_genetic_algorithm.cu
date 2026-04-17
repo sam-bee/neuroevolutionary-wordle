@@ -55,9 +55,10 @@ using neuroevolution::training_folder::UploadTrainingWordCatalogToDeviceConstant
 using neuroevolution::training_folder::WordCountSchedule;
 
 constexpr std::size_t kDefaultGenerationCount = 3;
-constexpr std::size_t kDefaultPopulationSizeTarget = 100;
 constexpr int kSelectedVisibleDeviceIndex = 0;
 constexpr double kBytesPerVramGiB = 1024.0 * 1024.0 * 1024.0;
+constexpr double kDefaultGenotypeBufferBudgetGiB = 6.0;
+constexpr double kDefaultBufferToGenerationRatio = 1.4;
 
 struct CliConfig {
     std::size_t generation_count = kDefaultGenerationCount;
@@ -68,6 +69,8 @@ struct CliConfig {
     std::size_t word_count_step_period_generations = 1;
     double genotype_vram_gb = 0.0;
     bool genotype_vram_gb_was_provided = false;
+    double generation_vram_gb = 0.0;
+    bool generation_vram_gb_was_provided = false;
     std::uint32_t seed = 0;
     bool seed_was_provided = false;
 };
@@ -80,19 +83,21 @@ enum class ArgumentParseResult {
 
 void PrintUsage() {
     std::cout << "Usage: run_genetic_algorithm [--seed N] [--generations N] [--population-size N] "
-                 "[--genotype-vram-gb F] [--initial-word-count N] [--word-count-step N] "
+                 "[--genotype-vram-gb F] [--generation-vram-gb F] [--initial-word-count N] [--word-count-step N] "
                  "[--word-count-step-period N]\n"
               << "If --population-size is omitted, the program does not apply an extra population ceiling.\n"
-              << "If both --population-size and --genotype-vram-gb are omitted, the program uses "
-              << kDefaultPopulationSizeTarget
-              << " as the default starting-population target when deriving the initial fixed-width buffer budget.\n"
               << "The shared training/action schedule defaults to initial_word_count="
               << neuroevolution::training_folder::kDefaultInitialActiveWordCount
               << ", word_count_step=0, word_count_step_period_generations=1.\n"
               << "Positive word-count growth is handled by buffer compaction/repacking, so later generations may "
                  "shrink population size as the output embedding grows.\n"
-              << "If --genotype-vram-gb is omitted, the program uses exactly enough genotype bytes to fit the "
-                 "requested initial population plus matching child-slot capacity at the starting action count.\n"
+              << "If --genotype-vram-gb is omitted, the program uses a default whole-buffer budget of "
+              << kDefaultGenotypeBufferBudgetGiB << " GiB.\n"
+              << "If --generation-vram-gb is omitted, the program derives a single-generation budget from the whole "
+                 "buffer budget using a default slab-to-generation ratio of "
+              << kDefaultBufferToGenerationRatio
+              << ". If --population-size is provided without --generation-vram-gb, the initial generation budget is "
+                 "sized to that population at the starting action count.\n"
               << "The VRAM budget flag is interpreted in binary GiB-style units (" << kBytesPerVramGiB
               << " bytes per unit).\n"
               << "If --seed is omitted, the program uses the current time in microseconds.\n";
@@ -167,22 +172,28 @@ ArgumentParseResult TryParseArguments(const int argc, char **argv, CliConfig &co
         }
 
         if ((argument == "--seed") || (argument == "--generations") || (argument == "--population-size") ||
-            (argument == "--genotype-vram-gb") || (argument == "--initial-word-count") ||
-            (argument == "--word-count-step") || (argument == "--word-count-step-period")) {
+            (argument == "--genotype-vram-gb") || (argument == "--generation-vram-gb") ||
+            (argument == "--initial-word-count") || (argument == "--word-count-step") ||
+            (argument == "--word-count-step-period")) {
             if ((arg_index + 1) >= argc) {
                 std::cerr << "Missing value for " << argument << '\n';
                 return ArgumentParseResult::kFailure;
             }
 
-            if (argument == "--genotype-vram-gb") {
+            if ((argument == "--genotype-vram-gb") || (argument == "--generation-vram-gb")) {
                 double parsed_value = 0.0;
                 if (!TryParsePositiveReal(argv[arg_index + 1], parsed_value)) {
                     std::cerr << "Invalid numeric value for " << argument << '\n';
                     return ArgumentParseResult::kFailure;
                 }
 
-                config.genotype_vram_gb = parsed_value;
-                config.genotype_vram_gb_was_provided = true;
+                if (argument == "--genotype-vram-gb") {
+                    config.genotype_vram_gb = parsed_value;
+                    config.genotype_vram_gb_was_provided = true;
+                } else {
+                    config.generation_vram_gb = parsed_value;
+                    config.generation_vram_gb_was_provided = true;
+                }
             } else {
                 std::uint64_t parsed_value = 0;
                 if (!TryParseUnsigned(argv[arg_index + 1], parsed_value)) {
@@ -264,35 +275,52 @@ GenerationAssemblyConfig MakeAssemblyConfig() {
     return config;
 }
 
-bool TryComputeGenotypeBudgetBytes(const CliConfig &cli_config, const std::size_t initial_action_count,
-                                   std::size_t &budget_bytes_out) {
-    if (initial_action_count == 0) {
-        return false;
-    }
-
-    if (!cli_config.genotype_vram_gb_was_provided) {
-        const std::size_t starting_population_target =
-            cli_config.population_size_was_provided ? cli_config.population_size_ceiling : kDefaultPopulationSizeTarget;
-        const std::size_t slot_stride_bytes = ComputeBufferSlotStrideBytes(initial_action_count);
-        if ((slot_stride_bytes == 0) || (starting_population_target > (std::numeric_limits<std::size_t>::max() / 2))) {
-            return false;
-        }
-
-        const std::size_t required_slot_count = starting_population_target * 2;
-        if (required_slot_count > (std::numeric_limits<std::size_t>::max() / slot_stride_bytes)) {
-            return false;
-        }
-
-        budget_bytes_out = required_slot_count * slot_stride_bytes;
-        return true;
-    }
-
-    const double budget_bytes = cli_config.genotype_vram_gb * kBytesPerVramGiB;
+bool TryComputeVramBudgetBytesFromGiB(const double gib_value, std::size_t &budget_bytes_out) {
+    budget_bytes_out = 0;
+    const double budget_bytes = gib_value * kBytesPerVramGiB;
     if ((budget_bytes < 1.0) || (budget_bytes > static_cast<double>(std::numeric_limits<std::size_t>::max()))) {
         return false;
     }
 
     budget_bytes_out = static_cast<std::size_t>(budget_bytes);
+    return budget_bytes_out > 0;
+}
+
+bool TryComputeTotalGenotypeBudgetBytes(const CliConfig &cli_config, std::size_t &budget_bytes_out) {
+    const double configured_budget_gib =
+        cli_config.genotype_vram_gb_was_provided ? cli_config.genotype_vram_gb : kDefaultGenotypeBufferBudgetGiB;
+    return TryComputeVramBudgetBytesFromGiB(configured_budget_gib, budget_bytes_out);
+}
+
+bool TryComputeGenerationBudgetBytes(const CliConfig &cli_config, const std::size_t initial_action_count,
+                                     const std::size_t total_budget_bytes, std::size_t &budget_bytes_out) {
+    budget_bytes_out = 0;
+    if ((initial_action_count == 0) || (total_budget_bytes == 0)) {
+        return false;
+    }
+
+    if (cli_config.generation_vram_gb_was_provided) {
+        return TryComputeVramBudgetBytesFromGiB(cli_config.generation_vram_gb, budget_bytes_out);
+    }
+
+    if (cli_config.population_size_was_provided) {
+        const std::size_t slot_stride_bytes = ComputeBufferSlotStrideBytes(initial_action_count);
+        if ((slot_stride_bytes == 0) ||
+            (cli_config.population_size_ceiling > (std::numeric_limits<std::size_t>::max() / slot_stride_bytes))) {
+            return false;
+        }
+
+        budget_bytes_out = cli_config.population_size_ceiling * slot_stride_bytes;
+        return budget_bytes_out > 0;
+    }
+
+    const double generation_budget_bytes = static_cast<double>(total_budget_bytes) / kDefaultBufferToGenerationRatio;
+    if ((generation_budget_bytes < 1.0) ||
+        (generation_budget_bytes > static_cast<double>(std::numeric_limits<std::size_t>::max()))) {
+        return false;
+    }
+
+    budget_bytes_out = static_cast<std::size_t>(generation_budget_bytes);
     return budget_bytes_out > 0;
 }
 
@@ -384,9 +412,20 @@ int main(int argc, char **argv) {
         runtime_word_counts.action_space_word_count = initial_active_word_count;
 
         std::size_t genotype_memory_budget_bytes = 0;
-        if (!TryComputeGenotypeBudgetBytes(cli_config, runtime_word_counts.action_space_word_count,
-                                           genotype_memory_budget_bytes)) {
-            std::cerr << "Could not derive a valid genotype VRAM budget from the command line.\n";
+        if (!TryComputeTotalGenotypeBudgetBytes(cli_config, genotype_memory_budget_bytes)) {
+            std::cerr << "Could not derive a valid total genotype VRAM budget from the command line.\n";
+            return 1;
+        }
+
+        std::size_t generation_memory_budget_bytes = 0;
+        if (!TryComputeGenerationBudgetBytes(cli_config, runtime_word_counts.action_space_word_count,
+                                             genotype_memory_budget_bytes, generation_memory_budget_bytes)) {
+            std::cerr << "Could not derive a valid generation VRAM budget from the command line.\n";
+            return 1;
+        }
+
+        if (generation_memory_budget_bytes > genotype_memory_budget_bytes) {
+            std::cerr << "The requested generation VRAM budget exceeds the total genotype VRAM budget.\n";
             return 1;
         }
 
@@ -397,20 +436,28 @@ int main(int argc, char **argv) {
             return 1;
         }
 
-        const std::size_t guaranteed_population_capacity = buffer_slot_count / 2;
-        if (guaranteed_population_capacity == 0) {
-            std::cerr << "The requested genotype VRAM budget does not leave room for both current and child slots.\n";
+        const std::size_t generation_population_capacity =
+            BufferSlotCountForByteBudget(generation_memory_budget_bytes, runtime_word_counts.action_space_word_count);
+        if (generation_population_capacity == 0) {
+            std::cerr << "The requested generation VRAM budget is too small for a fixed-width generation.\n";
+            return 1;
+        }
+
+        if (buffer_slot_count <= generation_population_capacity) {
+            std::cerr
+                << "The requested total genotype VRAM budget does not leave any slab slack beyond one "
+                   "generation. Increase --genotype-vram-gb or reduce --generation-vram-gb / --population-size.\n";
             return 1;
         }
 
         const std::size_t initial_population_size = cli_config.population_size_was_provided
                                                         ? cli_config.population_size_ceiling
-                                                        : guaranteed_population_capacity;
-        if (initial_population_size > guaranteed_population_capacity) {
-            std::cerr << "The requested genotype VRAM budget is too small to guarantee a population of "
+                                                        : generation_population_capacity;
+        if (initial_population_size > generation_population_capacity) {
+            std::cerr << "The requested generation VRAM budget is too small to guarantee a population of "
                       << initial_population_size
-                      << " individuals in the fixed-width buffer. Increase "
-                         "--genotype-vram-gb or lower --population-size.\n";
+                      << " individuals at the starting action count. Increase --generation-vram-gb or lower "
+                         "--population-size.\n";
             return 1;
         }
 
@@ -430,9 +477,10 @@ int main(int argc, char **argv) {
         }
 
         DeviceBufferGARuntimeConfig runtime_config{};
-        runtime_config.slot_count = buffer_slot_count;
+        runtime_config.genotype_buffer_byte_budget_bytes = genotype_memory_budget_bytes;
+        runtime_config.generation_byte_budget_bytes = generation_memory_budget_bytes;
         runtime_config.action_count = runtime_word_counts.action_space_word_count;
-        runtime_config.max_generation_size = initial_population_size;
+        runtime_config.population_size_ceiling = initial_population_size;
 
         DeviceBufferGARuntimeBuffers buffers{};
         if (!TryCreateDeviceBufferGARuntimeBuffers(buffers, runtime_config)) {
@@ -451,8 +499,12 @@ int main(int argc, char **argv) {
         std::cout << "Running device GA demo with initial_population=" << initial_population_size
                   << ", population_ceiling=" << PopulationCeilingLabel(cli_config.population_size_ceiling)
                   << ", buffer_slot_count=" << buffer_slot_count
+                  << ", generation_population_capacity=" << generation_population_capacity
                   << ", action_count=" << runtime_word_counts.action_space_word_count
                   << ", genome_stride_bytes=" << host_buffer.layout.slot_stride_bytes
+                  << ", generation_vram_budget_bytes=" << generation_memory_budget_bytes
+                  << ", generation_vram_budget_gib="
+                  << (static_cast<double>(generation_memory_budget_bytes) / kBytesPerVramGiB)
                   << ", genotype_vram_budget_bytes=" << genotype_memory_budget_bytes << ", genotype_vram_budget_gib="
                   << (static_cast<double>(genotype_memory_budget_bytes) / kBytesPerVramGiB)
                   << ", generations=" << cli_config.generation_count << ", seed=" << cli_config.seed

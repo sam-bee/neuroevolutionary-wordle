@@ -534,7 +534,9 @@ set_tests_properties(output_embedding_injection_test PROPERTIES
     RESOURCE_LOCK cuda_device
 )
 
-add_test(NAME run_genetic_algorithm_smoke_test COMMAND run_genetic_algorithm --seed 7 --generations 2 --population-size 6)
+add_test(NAME run_genetic_algorithm_smoke_test
+    COMMAND run_genetic_algorithm --seed 7 --generations 2 --population-size 6 --genotype-vram-gb 0.01
+)
 set_tests_properties(run_genetic_algorithm_smoke_test PROPERTIES
     LABELS "gpu;integration"
     RESOURCE_LOCK cuda_device

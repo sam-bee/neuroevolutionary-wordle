@@ -251,6 +251,15 @@ inline bool TryComputeGenerationByteBudgetBytes(const std::size_t action_count, 
     return generation_byte_budget_bytes_out > 0;
 }
 
+inline std::size_t RuntimeGenerationCapacity(const DeviceBufferGARuntimeConfig &config) noexcept {
+    return genotype_buffer::BufferSlotCountForByteBudget(config.generation_byte_budget_bytes, config.action_count,
+                                                         config.population_size_ceiling);
+}
+
+inline std::size_t RuntimeSlabSlotCount(const DeviceBufferGARuntimeConfig &config) noexcept {
+    return genotype_buffer::BufferSlotCountForByteBudget(config.genotype_buffer_byte_budget_bytes, config.action_count);
+}
+
 inline bool TryPlanNextGenerationShape(const DeviceBufferGARuntimeBuffers &buffers,
                                        const PendingOutputEmbeddingInjection &pending_output_embedding_injection,
                                        std::size_t &next_action_count_out, std::size_t &next_generation_size_out) {
@@ -278,20 +287,23 @@ bool TryCreateDeviceBufferGARuntimeBuffers(DeviceBufferGARuntimeBuffers &buffers
         return false;
     }
 
-    if (!TryComputeGenerationByteBudgetBytes(config.action_count, config.max_generation_size,
+    const std::size_t slot_count = RuntimeSlabSlotCount(config);
+    const std::size_t max_generation_size = RuntimeGenerationCapacity(config);
+    if ((slot_count < max_generation_size) ||
+        !TryComputeGenerationByteBudgetBytes(config.action_count, max_generation_size,
                                              buffers.generation_byte_budget_bytes)) {
         return false;
     }
 
     genotype_buffer::device::DeviceBufferRuntimeConfig buffer_config{};
-    buffer_config.slot_count = config.slot_count;
+    buffer_config.slot_count = slot_count;
     buffer_config.action_count = config.action_count;
-    buffer_config.max_generation_size = config.max_generation_size;
+    buffer_config.max_generation_size = max_generation_size;
     if (!genotype_buffer::device::TryCreateDeviceBufferRuntimeBuffers(buffers.genotype_buffer, buffer_config)) {
         return false;
     }
 
-    buffers.max_generation_size = config.max_generation_size;
+    buffers.max_generation_size = max_generation_size;
     bool ok = true;
     ok &= CheckCuda(cudaMalloc(&buffers.summary, sizeof(PopulationFitnessSummary)));
     ok &= CheckCuda(cudaMalloc(&buffers.status, sizeof(int)));

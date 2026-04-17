@@ -33,14 +33,19 @@ enum class DeviceBufferGARuntimeStatusCode : int {
 };
 
 struct DeviceBufferGARuntimeConfig {
-    std::size_t slot_count = 0;
+    std::size_t genotype_buffer_byte_budget_bytes = 0;
+    std::size_t generation_byte_budget_bytes = 0;
     std::size_t action_count = 0;
-    std::size_t max_generation_size = 0;
+    std::size_t population_size_ceiling = 0;
 };
 
 constexpr bool IsValidDeviceBufferGARuntimeConfig(const DeviceBufferGARuntimeConfig &config) noexcept {
-    return (config.slot_count >= config.max_generation_size) && (config.action_count > 0) &&
-           (config.max_generation_size > 0);
+    return (config.genotype_buffer_byte_budget_bytes >= config.generation_byte_budget_bytes) &&
+           (config.action_count > 0) &&
+           (genotype_buffer::BufferSlotCountForByteBudget(config.genotype_buffer_byte_budget_bytes,
+                                                          config.action_count) > 0) &&
+           (genotype_buffer::BufferSlotCountForByteBudget(config.generation_byte_budget_bytes, config.action_count,
+                                                          config.population_size_ceiling) > 0);
 }
 
 struct DeviceBufferGARuntimeBuffers {
