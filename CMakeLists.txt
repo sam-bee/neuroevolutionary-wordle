@@ -139,59 +139,59 @@ target_link_libraries(genetic_algorithm INTERFACE
     policy_model
 )
 
-add_library(genotype_buffer STATIC
-    src/genetic_algorithm/genotype_buffer/assembly.cpp
-    src/genetic_algorithm/genotype_buffer/buffer.cpp
+add_library(genotype_slab STATIC
+    src/genetic_algorithm/genotype_slab/assembly.cpp
+    src/genetic_algorithm/genotype_slab/slab_allocator.cpp
 )
 
-target_include_directories(genotype_buffer PUBLIC
+target_include_directories(genotype_slab PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/src
 )
 
-target_link_libraries(genotype_buffer PUBLIC
+target_link_libraries(genotype_slab PUBLIC
     genetic_algorithm
 )
 
-enable_project_warnings(genotype_buffer)
+enable_project_warnings(genotype_slab)
 
-add_library(genotype_buffer_device STATIC
-    src/genetic_algorithm/genotype_buffer/device_runtime.cu
+add_library(genotype_slab_device STATIC
+    src/genetic_algorithm/genotype_slab/device_runtime.cu
 )
 
-target_include_directories(genotype_buffer_device PUBLIC
+target_include_directories(genotype_slab_device PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/src
     ${CUDAToolkit_INCLUDE_DIRS}
 )
 
-target_link_libraries(genotype_buffer_device PUBLIC
-    genotype_buffer
+target_link_libraries(genotype_slab_device PUBLIC
+    genotype_slab
     training_folder
 )
 
-enable_project_warnings(genotype_buffer_device)
+enable_project_warnings(genotype_slab_device)
 
-set_target_properties(genotype_buffer_device PROPERTIES
+set_target_properties(genotype_slab_device PROPERTIES
     CUDA_SEPARABLE_COMPILATION ON
 )
 
-add_library(genetic_algorithm_buffer_device STATIC
+add_library(genetic_algorithm_slab_device STATIC
     src/genetic_algorithm/genome/dynamic_layout.cpp
-    src/genetic_algorithm/device/buffer_runtime.cu
+    src/genetic_algorithm/device/slab_runtime.cu
 )
 
-target_include_directories(genetic_algorithm_buffer_device PUBLIC
+target_include_directories(genetic_algorithm_slab_device PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/src
     ${CUDAToolkit_INCLUDE_DIRS}
 )
 
-target_link_libraries(genetic_algorithm_buffer_device PUBLIC
-    genotype_buffer_device
+target_link_libraries(genetic_algorithm_slab_device PUBLIC
+    genotype_slab_device
     training_folder
 )
 
-enable_project_warnings(genetic_algorithm_buffer_device)
+enable_project_warnings(genetic_algorithm_slab_device)
 
-set_target_properties(genetic_algorithm_buffer_device PROPERTIES
+set_target_properties(genetic_algorithm_slab_device PROPERTIES
     CUDA_SEPARABLE_COMPILATION ON
 )
 
@@ -200,7 +200,7 @@ add_executable(run_genetic_algorithm
 )
 
 target_link_libraries(run_genetic_algorithm PRIVATE
-    genetic_algorithm_buffer_device
+    genetic_algorithm_slab_device
 )
 
 enable_project_warnings(run_genetic_algorithm)
@@ -374,18 +374,18 @@ set_tests_properties(output_embedding_genome_runtime_test PROPERTIES
     LABELS "cpu;unit"
 )
 
-add_executable(genotype_buffer_test
-    tests/genetic_algorithm/genotype_buffer_test.cpp
+add_executable(genotype_slab_test
+    tests/genetic_algorithm/genotype_slab_test.cpp
 )
 
-target_link_libraries(genotype_buffer_test PRIVATE
-    genotype_buffer
+target_link_libraries(genotype_slab_test PRIVATE
+    genotype_slab
 )
 
-enable_project_warnings(genotype_buffer_test)
+enable_project_warnings(genotype_slab_test)
 
-add_test(NAME genotype_buffer_test COMMAND genotype_buffer_test)
-set_tests_properties(genotype_buffer_test PROPERTIES
+add_test(NAME genotype_slab_test COMMAND genotype_slab_test)
+set_tests_properties(genotype_slab_test PROPERTIES
     LABELS "cpu;unit"
 )
 
@@ -473,43 +473,43 @@ set_tests_properties(training_data_device_test PROPERTIES
     RESOURCE_LOCK cuda_device
 )
 
-add_executable(genotype_buffer_device_runtime_test
-    tests/genetic_algorithm/device/genotype_buffer_device_runtime_test.cu
+add_executable(genotype_slab_device_runtime_test
+    tests/genetic_algorithm/device/genotype_slab_device_runtime_test.cu
 )
 
-target_link_libraries(genotype_buffer_device_runtime_test PRIVATE
-    genotype_buffer_device
+target_link_libraries(genotype_slab_device_runtime_test PRIVATE
+    genotype_slab_device
 )
 
-enable_project_warnings(genotype_buffer_device_runtime_test)
+enable_project_warnings(genotype_slab_device_runtime_test)
 
-set_target_properties(genotype_buffer_device_runtime_test PROPERTIES
+set_target_properties(genotype_slab_device_runtime_test PROPERTIES
     CUDA_SEPARABLE_COMPILATION ON
 )
 
-add_test(NAME genotype_buffer_device_runtime_test COMMAND genotype_buffer_device_runtime_test)
-set_tests_properties(genotype_buffer_device_runtime_test PROPERTIES
+add_test(NAME genotype_slab_device_runtime_test COMMAND genotype_slab_device_runtime_test)
+set_tests_properties(genotype_slab_device_runtime_test PROPERTIES
     LABELS "gpu;integration"
     RESOURCE_LOCK cuda_device
 )
 
-add_executable(buffer_runtime_test
-    tests/genetic_algorithm/device/buffer_runtime_test.cu
+add_executable(slab_runtime_test
+    tests/genetic_algorithm/device/slab_runtime_test.cu
 )
 
-target_link_libraries(buffer_runtime_test PRIVATE
-    genetic_algorithm_buffer_device
+target_link_libraries(slab_runtime_test PRIVATE
+    genetic_algorithm_slab_device
     training_folder
 )
 
-enable_project_warnings(buffer_runtime_test)
+enable_project_warnings(slab_runtime_test)
 
-set_target_properties(buffer_runtime_test PROPERTIES
+set_target_properties(slab_runtime_test PROPERTIES
     CUDA_SEPARABLE_COMPILATION ON
 )
 
-add_test(NAME buffer_runtime_test COMMAND buffer_runtime_test)
-set_tests_properties(buffer_runtime_test PROPERTIES
+add_test(NAME slab_runtime_test COMMAND slab_runtime_test)
+set_tests_properties(slab_runtime_test PROPERTIES
     LABELS "gpu;integration"
     RESOURCE_LOCK cuda_device
 )

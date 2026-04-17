@@ -12,41 +12,41 @@
 #include <string>
 #include <string_view>
 
-#include "genetic_algorithm/device/buffer_runtime.hpp"
+#include "genetic_algorithm/device/slab_runtime.hpp"
 #include "genetic_algorithm/genome/dynamic_layout.hpp"
-#include "genetic_algorithm/genotype_buffer/buffer.hpp"
-#include "genetic_algorithm/genotype_buffer/generation.hpp"
+#include "genetic_algorithm/genotype_slab/generation.hpp"
+#include "genetic_algorithm/genotype_slab/slab_allocator.hpp"
 #include "training_folder/training_data.hpp"
 
 namespace {
 
 using neuroevolution::genetic_algorithm::GenerationAssemblyConfig;
-using neuroevolution::genetic_algorithm::buffer_device::DestroyDeviceBufferGARuntimeBuffers;
-using neuroevolution::genetic_algorithm::buffer_device::DeviceBufferGARuntimeBuffers;
-using neuroevolution::genetic_algorithm::buffer_device::DeviceBufferGARuntimeConfig;
-using neuroevolution::genetic_algorithm::buffer_device::DeviceBufferGARuntimeStatusCode;
-using neuroevolution::genetic_algorithm::buffer_device::DeviceBufferGARuntimeStatusCodeString;
-using neuroevolution::genetic_algorithm::buffer_device::PendingOutputEmbeddingInjection;
-using neuroevolution::genetic_algorithm::buffer_device::PopulationFitnessSummary;
-using neuroevolution::genetic_algorithm::buffer_device::RuntimeWordCounts;
-using neuroevolution::genetic_algorithm::buffer_device::TryAdvanceGenerationOnDevice;
-using neuroevolution::genetic_algorithm::buffer_device::TryCreateDeviceBufferGARuntimeBuffers;
-using neuroevolution::genetic_algorithm::buffer_device::TryEvaluateCurrentGenerationFitnessOnDevice;
-using neuroevolution::genetic_algorithm::buffer_device::TryReadDeviceBufferGARuntimeStatus;
-using neuroevolution::genetic_algorithm::buffer_device::TryReadPopulationFitnessSummaryFromDevice;
-using neuroevolution::genetic_algorithm::buffer_device::TryUploadCurrentBufferPopulationToDevice;
 using neuroevolution::genetic_algorithm::genome::HostGenomeBytesAt;
 using neuroevolution::genetic_algorithm::genome::HostPopulation;
 using neuroevolution::genetic_algorithm::genome::TryInitializeRandomHostPopulation;
-using neuroevolution::genetic_algorithm::genotype_buffer::BufferGeneration;
-using neuroevolution::genetic_algorithm::genotype_buffer::BufferSlotCountForByteBudget;
-using neuroevolution::genetic_algorithm::genotype_buffer::ComputeBufferSlotStrideBytes;
-using neuroevolution::genetic_algorithm::genotype_buffer::HostGenotypeBuffer;
-using neuroevolution::genetic_algorithm::genotype_buffer::TryAllocateBufferSlot;
-using neuroevolution::genetic_algorithm::genotype_buffer::TryCopyGenomeBytesIntoBufferSlot;
-using neuroevolution::genetic_algorithm::genotype_buffer::TryCreateBufferGeneration;
-using neuroevolution::genetic_algorithm::genotype_buffer::TryCreateHostGenotypeBuffer;
-using neuroevolution::genetic_algorithm::genotype_buffer::TrySetBufferGenerationSlot;
+using neuroevolution::genetic_algorithm::genotype_slab::ComputeSlabSlotStrideBytes;
+using neuroevolution::genetic_algorithm::genotype_slab::HostGenotypeSlab;
+using neuroevolution::genetic_algorithm::genotype_slab::SlabGeneration;
+using neuroevolution::genetic_algorithm::genotype_slab::SlabSlotCountForByteBudget;
+using neuroevolution::genetic_algorithm::genotype_slab::TryAllocateSlabSlot;
+using neuroevolution::genetic_algorithm::genotype_slab::TryCopyGenomeBytesIntoSlabSlot;
+using neuroevolution::genetic_algorithm::genotype_slab::TryCreateHostGenotypeSlab;
+using neuroevolution::genetic_algorithm::genotype_slab::TryCreateSlabGeneration;
+using neuroevolution::genetic_algorithm::genotype_slab::TrySetSlabGenerationSlot;
+using neuroevolution::genetic_algorithm::slab_device::DestroyDeviceSlabGARuntimeBuffers;
+using neuroevolution::genetic_algorithm::slab_device::DeviceSlabGARuntimeBuffers;
+using neuroevolution::genetic_algorithm::slab_device::DeviceSlabGARuntimeConfig;
+using neuroevolution::genetic_algorithm::slab_device::DeviceSlabGARuntimeStatusCode;
+using neuroevolution::genetic_algorithm::slab_device::DeviceSlabGARuntimeStatusCodeString;
+using neuroevolution::genetic_algorithm::slab_device::PendingOutputEmbeddingInjection;
+using neuroevolution::genetic_algorithm::slab_device::PopulationFitnessSummary;
+using neuroevolution::genetic_algorithm::slab_device::RuntimeWordCounts;
+using neuroevolution::genetic_algorithm::slab_device::TryAdvanceGenerationOnDevice;
+using neuroevolution::genetic_algorithm::slab_device::TryCreateDeviceSlabGARuntimeBuffers;
+using neuroevolution::genetic_algorithm::slab_device::TryEvaluateCurrentGenerationFitnessOnDevice;
+using neuroevolution::genetic_algorithm::slab_device::TryReadDeviceSlabGARuntimeStatus;
+using neuroevolution::genetic_algorithm::slab_device::TryReadPopulationFitnessSummaryFromDevice;
+using neuroevolution::genetic_algorithm::slab_device::TryUploadCurrentSlabPopulationToDevice;
 using neuroevolution::training_folder::DefaultActionSpacePath;
 using neuroevolution::training_folder::IsValidWordCountSchedule;
 using neuroevolution::training_folder::LoadTrainingWordCatalogFromActionSpace;
@@ -57,7 +57,7 @@ using neuroevolution::training_folder::WordCountSchedule;
 constexpr std::size_t kDefaultGenerationCount = 3;
 constexpr int kSelectedVisibleDeviceIndex = 0;
 constexpr double kBytesPerVramGiB = 1024.0 * 1024.0 * 1024.0;
-constexpr double kDefaultGenotypeBufferBudgetGiB = 6.0;
+constexpr double kDefaultGenotypeSlabBudgetGiB = 6.0;
 constexpr double kDefaultBufferToGenerationRatio = 1.4;
 
 struct CliConfig {
@@ -89,12 +89,12 @@ void PrintUsage() {
               << "The shared training/action schedule defaults to initial_word_count="
               << neuroevolution::training_folder::kDefaultInitialActiveWordCount
               << ", word_count_step=0, word_count_step_period_generations=1.\n"
-              << "Positive word-count growth is handled by buffer compaction/repacking, so later generations may "
+              << "Positive word-count growth is handled by slab compaction/repacking, so later generations may "
                  "shrink population size as the output embedding grows.\n"
-              << "If --genotype-vram-gb is omitted, the program uses a default whole-buffer budget of "
-              << kDefaultGenotypeBufferBudgetGiB << " GiB.\n"
+              << "If --genotype-vram-gb is omitted, the program uses a default whole-slab budget of "
+              << kDefaultGenotypeSlabBudgetGiB << " GiB.\n"
               << "If --generation-vram-gb is omitted, the program derives a single-generation budget from the whole "
-                 "buffer budget using a default slab-to-generation ratio of "
+                 "slab budget using a default slab-to-generation ratio of "
               << kDefaultBufferToGenerationRatio
               << ". If --population-size is provided without --generation-vram-gb, the initial generation budget is "
                  "sized to that population at the starting action count.\n"
@@ -254,10 +254,10 @@ ArgumentParseResult TryParseArguments(const int argc, char **argv, CliConfig &co
     return ArgumentParseResult::kSuccess;
 }
 
-bool ReportDeviceBufferRuntimeFailure(const DeviceBufferGARuntimeBuffers &buffers, const std::string_view action) {
-    DeviceBufferGARuntimeStatusCode status_code = DeviceBufferGARuntimeStatusCode::kCudaFailure;
-    if (TryReadDeviceBufferGARuntimeStatus(buffers, status_code)) {
-        std::cerr << action << " failed: " << DeviceBufferGARuntimeStatusCodeString(status_code) << '\n';
+bool ReportDeviceSlabRuntimeFailure(const DeviceSlabGARuntimeBuffers &buffers, const std::string_view action) {
+    DeviceSlabGARuntimeStatusCode status_code = DeviceSlabGARuntimeStatusCode::kCudaFailure;
+    if (TryReadDeviceSlabGARuntimeStatus(buffers, status_code)) {
+        std::cerr << action << " failed: " << DeviceSlabGARuntimeStatusCodeString(status_code) << '\n';
     } else {
         std::cerr << action << " failed and the device status could not be read.\n";
     }
@@ -288,7 +288,7 @@ bool TryComputeVramBudgetBytesFromGiB(const double gib_value, std::size_t &budge
 
 bool TryComputeTotalGenotypeBudgetBytes(const CliConfig &cli_config, std::size_t &budget_bytes_out) {
     const double configured_budget_gib =
-        cli_config.genotype_vram_gb_was_provided ? cli_config.genotype_vram_gb : kDefaultGenotypeBufferBudgetGiB;
+        cli_config.genotype_vram_gb_was_provided ? cli_config.genotype_vram_gb : kDefaultGenotypeSlabBudgetGiB;
     return TryComputeVramBudgetBytesFromGiB(configured_budget_gib, budget_bytes_out);
 }
 
@@ -304,7 +304,7 @@ bool TryComputeGenerationBudgetBytes(const CliConfig &cli_config, const std::siz
     }
 
     if (cli_config.population_size_was_provided) {
-        const std::size_t slot_stride_bytes = ComputeBufferSlotStrideBytes(initial_action_count);
+        const std::size_t slot_stride_bytes = ComputeSlabSlotStrideBytes(initial_action_count);
         if ((slot_stride_bytes == 0) ||
             (cli_config.population_size_ceiling > (std::numeric_limits<std::size_t>::max() / slot_stride_bytes))) {
             return false;
@@ -340,11 +340,11 @@ PendingOutputEmbeddingInjection MakePendingOutputEmbeddingInjection(const std::s
     return pending_output_embedding_injection;
 }
 
-bool TryPopulateBufferGenerationFromHostPopulation(const HostPopulation &population, const std::size_t slot_count,
-                                                   const std::size_t generation_index, HostGenotypeBuffer &buffer,
-                                                   BufferGeneration &generation) {
-    bool ok = TryCreateHostGenotypeBuffer(buffer, slot_count, population.layout.action_count);
-    ok &= TryCreateBufferGeneration(generation, population.layout.active_individual_count, generation_index);
+bool TryPopulateSlabGenerationFromHostPopulation(const HostPopulation &population, const std::size_t slot_count,
+                                                 const std::size_t generation_index, HostGenotypeSlab &buffer,
+                                                 SlabGeneration &generation) {
+    bool ok = TryCreateHostGenotypeSlab(buffer, slot_count, population.layout.action_count);
+    ok &= TryCreateSlabGeneration(generation, population.layout.active_individual_count, generation_index);
     if (!ok) {
         return false;
     }
@@ -352,10 +352,10 @@ bool TryPopulateBufferGenerationFromHostPopulation(const HostPopulation &populat
     for (std::size_t individual_index = 0; individual_index < population.layout.active_individual_count;
          ++individual_index) {
         std::uint32_t slot_index = 0;
-        ok &= TryAllocateBufferSlot(buffer, slot_index);
-        ok &= TrySetBufferGenerationSlot(generation, individual_index, slot_index);
-        ok &= TryCopyGenomeBytesIntoBufferSlot(buffer, slot_index, HostGenomeBytesAt(population, individual_index),
-                                               population.layout.genome_stride_bytes);
+        ok &= TryAllocateSlabSlot(buffer, slot_index);
+        ok &= TrySetSlabGenerationSlot(generation, individual_index, slot_index);
+        ok &= TryCopyGenomeBytesIntoSlabSlot(buffer, slot_index, HostGenomeBytesAt(population, individual_index),
+                                             population.layout.genome_stride_bytes);
     }
 
     return ok;
@@ -429,21 +429,21 @@ int main(int argc, char **argv) {
             return 1;
         }
 
-        const std::size_t buffer_slot_count =
-            BufferSlotCountForByteBudget(genotype_memory_budget_bytes, runtime_word_counts.action_space_word_count);
-        if (buffer_slot_count < 2) {
-            std::cerr << "The requested genotype VRAM budget is too small for a fixed-width buffer generation.\n";
+        const std::size_t slab_slot_count =
+            SlabSlotCountForByteBudget(genotype_memory_budget_bytes, runtime_word_counts.action_space_word_count);
+        if (slab_slot_count < 2) {
+            std::cerr << "The requested genotype VRAM budget is too small for a fixed-width slab generation.\n";
             return 1;
         }
 
         const std::size_t generation_population_capacity =
-            BufferSlotCountForByteBudget(generation_memory_budget_bytes, runtime_word_counts.action_space_word_count);
+            SlabSlotCountForByteBudget(generation_memory_budget_bytes, runtime_word_counts.action_space_word_count);
         if (generation_population_capacity == 0) {
             std::cerr << "The requested generation VRAM budget is too small for a fixed-width generation.\n";
             return 1;
         }
 
-        if (buffer_slot_count <= generation_population_capacity) {
+        if (slab_slot_count <= generation_population_capacity) {
             std::cerr
                 << "The requested total genotype VRAM budget does not leave any slab slack beyond one "
                    "generation. Increase --genotype-vram-gb or reduce --generation-vram-gb / --population-size.\n";
@@ -468,37 +468,37 @@ int main(int argc, char **argv) {
             return 1;
         }
 
-        HostGenotypeBuffer host_buffer{};
-        BufferGeneration current_generation{};
-        if (!TryPopulateBufferGenerationFromHostPopulation(population, buffer_slot_count, 0, host_buffer,
-                                                           current_generation)) {
-            std::cerr << "Could not populate the starting buffer generation.\n";
+        HostGenotypeSlab host_buffer{};
+        SlabGeneration current_generation{};
+        if (!TryPopulateSlabGenerationFromHostPopulation(population, slab_slot_count, 0, host_buffer,
+                                                         current_generation)) {
+            std::cerr << "Could not populate the starting slab generation.\n";
             return 1;
         }
 
-        DeviceBufferGARuntimeConfig runtime_config{};
-        runtime_config.genotype_buffer_byte_budget_bytes = genotype_memory_budget_bytes;
+        DeviceSlabGARuntimeConfig runtime_config{};
+        runtime_config.genotype_slab_byte_budget_bytes = genotype_memory_budget_bytes;
         runtime_config.generation_byte_budget_bytes = generation_memory_budget_bytes;
         runtime_config.action_count = runtime_word_counts.action_space_word_count;
         runtime_config.population_size_ceiling = initial_population_size;
 
-        DeviceBufferGARuntimeBuffers buffers{};
-        if (!TryCreateDeviceBufferGARuntimeBuffers(buffers, runtime_config)) {
-            std::cerr << "Could not allocate buffer-backed device-runtime buffers.\n";
+        DeviceSlabGARuntimeBuffers buffers{};
+        if (!TryCreateDeviceSlabGARuntimeBuffers(buffers, runtime_config)) {
+            std::cerr << "Could not allocate slab-backed device-runtime buffers.\n";
             return 1;
         }
 
         const GenerationAssemblyConfig assembly_config = MakeAssemblyConfig();
 
-        if (!TryUploadCurrentBufferPopulationToDevice(host_buffer, current_generation, buffers)) {
-            std::cerr << "Could not upload the initial buffer population to device memory.\n";
-            DestroyDeviceBufferGARuntimeBuffers(buffers);
+        if (!TryUploadCurrentSlabPopulationToDevice(host_buffer, current_generation, buffers)) {
+            std::cerr << "Could not upload the initial slab population to device memory.\n";
+            DestroyDeviceSlabGARuntimeBuffers(buffers);
             return 1;
         }
 
         std::cout << "Running device GA demo with initial_population=" << initial_population_size
                   << ", population_ceiling=" << PopulationCeilingLabel(cli_config.population_size_ceiling)
-                  << ", buffer_slot_count=" << buffer_slot_count
+                  << ", slab_slot_count=" << slab_slot_count
                   << ", generation_population_capacity=" << generation_population_capacity
                   << ", action_count=" << runtime_word_counts.action_space_word_count
                   << ", genome_stride_bytes=" << host_buffer.layout.slot_stride_bytes
@@ -523,8 +523,8 @@ int main(int argc, char **argv) {
             const bool is_last_generation = ((generation_step + 1) == cli_config.generation_count);
             if (is_last_generation) {
                 if (!TryEvaluateCurrentGenerationFitnessOnDevice(buffers, runtime_word_counts)) {
-                    (void)ReportDeviceBufferRuntimeFailure(buffers, "Population fitness evaluation");
-                    DestroyDeviceBufferGARuntimeBuffers(buffers);
+                    (void)ReportDeviceSlabRuntimeFailure(buffers, "Population fitness evaluation");
+                    DestroyDeviceSlabGARuntimeBuffers(buffers);
                     return 1;
                 }
             } else {
@@ -537,8 +537,8 @@ int main(int argc, char **argv) {
                     cli_config.seed + 2U + static_cast<std::uint32_t>(generation_step);
                 if (!TryAdvanceGenerationOnDevice(buffers, generation_seed, runtime_word_counts, assembly_config,
                                                   pending_output_embedding_injection)) {
-                    (void)ReportDeviceBufferRuntimeFailure(buffers, "Next-generation assembly");
-                    DestroyDeviceBufferGARuntimeBuffers(buffers);
+                    (void)ReportDeviceSlabRuntimeFailure(buffers, "Next-generation assembly");
+                    DestroyDeviceSlabGARuntimeBuffers(buffers);
                     return 1;
                 }
 
@@ -549,17 +549,17 @@ int main(int argc, char **argv) {
             PopulationFitnessSummary summary{};
             if (!TryReadPopulationFitnessSummaryFromDevice(buffers, summary)) {
                 std::cerr << "Could not read the population fitness summary back from device memory.\n";
-                DestroyDeviceBufferGARuntimeBuffers(buffers);
+                DestroyDeviceSlabGARuntimeBuffers(buffers);
                 return 1;
             }
 
             std::cout << "Generation " << summary.generation_index << ": best=" << summary.best_fitness
                       << ", average=" << summary.average_fitness << ", best_index=" << summary.best_index
                       << ", population=" << summary.population_size << ", action_count=" << summary.action_count
-                      << ", genome_stride_bytes=" << ComputeBufferSlotStrideBytes(summary.action_count) << '\n';
+                      << ", genome_stride_bytes=" << ComputeSlabSlotStrideBytes(summary.action_count) << '\n';
         }
 
-        DestroyDeviceBufferGARuntimeBuffers(buffers);
+        DestroyDeviceSlabGARuntimeBuffers(buffers);
         std::cout << "GA demo finished after " << cli_config.generation_count << " generations.\n";
         return 0;
     } catch (const std::exception &exception) {
