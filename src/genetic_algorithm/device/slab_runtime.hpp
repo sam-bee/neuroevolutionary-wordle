@@ -6,6 +6,7 @@
 #include "genetic_algorithm/device/runtime_common.hpp"
 #include "genetic_algorithm/generation_assembly.hpp"
 #include "genetic_algorithm/genotype_slab/device_runtime.hpp"
+#include "training_folder/training_data.hpp"
 
 namespace neuroevolution::genetic_algorithm::slab_device {
 
@@ -54,6 +55,8 @@ struct DeviceSlabGARuntimeBuffers {
     int *status = nullptr;
     std::size_t max_generation_size = 0;
     std::size_t generation_byte_budget_bytes = 0;
+    std::size_t host_failover_count = 0;
+    bool last_generation_used_host_failover = false;
 };
 
 using PendingOutputEmbeddingInjection = genotype_slab::device::PendingOutputEmbeddingInjection;
@@ -83,7 +86,8 @@ bool TryReadPopulationFitnessSummaryFromDevice(const DeviceSlabGARuntimeBuffers 
 bool TryAdvanceGenerationOnDevice(DeviceSlabGARuntimeBuffers &buffers, std::uint32_t generation_seed,
                                   const RuntimeWordCounts &runtime_word_counts,
                                   const GenerationAssemblyConfig &config = {},
-                                  const PendingOutputEmbeddingInjection &pending_output_embedding_injection = {});
+                                  const PendingOutputEmbeddingInjection &pending_output_embedding_injection = {},
+                                  const training_folder::TrainingWordCatalog *host_training_word_catalog = nullptr);
 
 void SwapDeviceSlabGenerationBuffers(DeviceSlabGARuntimeBuffers &buffers) noexcept;
 

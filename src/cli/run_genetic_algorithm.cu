@@ -536,10 +536,17 @@ int main(int argc, char **argv) {
                 const std::uint32_t generation_seed =
                     cli_config.seed + 2U + static_cast<std::uint32_t>(generation_step);
                 if (!TryAdvanceGenerationOnDevice(buffers, generation_seed, runtime_word_counts, assembly_config,
-                                                  pending_output_embedding_injection)) {
+                                                  pending_output_embedding_injection, &training_word_catalog)) {
                     (void)ReportDeviceSlabRuntimeFailure(buffers, "Next-generation assembly");
                     DestroyDeviceSlabGARuntimeBuffers(buffers);
                     return 1;
+                }
+
+                if (buffers.last_generation_used_host_failover) {
+                    std::cerr << "WARNING: genotype slab overflowed its device budget during generation "
+                              << (generation_step + 1)
+                              << "; assembled children via host failover. Consider increasing "
+                                 "--genotype-vram-gb or --generation-vram-gb if this becomes frequent.\n";
                 }
 
                 runtime_word_counts.training_word_count = next_scheduled_word_count;

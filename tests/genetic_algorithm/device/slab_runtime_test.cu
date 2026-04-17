@@ -392,7 +392,7 @@ bool TestSlabRuntimeGrowsActionCountWithSlabRepacking() {
     ok &= TryCreateDeviceSlabGARuntimeBuffers(buffers, runtime_config);
     ok &= TryUploadCurrentSlabPopulationToDevice(host_buffer, current_generation, buffers);
     ok &= TryAdvanceGenerationOnDevice(buffers, 31U, MakeRuntimeWordCounts(), MakeAssemblyConfig(),
-                                       pending_output_embedding_injection);
+                                       pending_output_embedding_injection, &training_word_catalog);
     if (!ok) {
         DeviceSlabGARuntimeStatusCode status_code = DeviceSlabGARuntimeStatusCode::kOk;
         (void)TryReadDeviceSlabGARuntimeStatus(buffers, status_code);
@@ -504,7 +504,7 @@ bool TestSlabRuntimeRejectsGrowthWhenGenerationBudgetCannotFitOneChild() {
     return ok;
 }
 
-bool TestSlabRuntimeFailsCleanlyWhenTheSlabIsTooSmall() {
+bool TestSlabRuntimeFallsBackToHostAssemblyWhenDeviceSlackIsExhausted() {
     TrainingWordCatalog training_word_catalog{};
     if (!InitializeTrainingCatalog(training_word_catalog)) {
         std::cerr << "FAIL: could not upload training-word catalog to device constant memory\n";
@@ -512,37 +512,75 @@ bool TestSlabRuntimeFailsCleanlyWhenTheSlabIsTooSmall() {
     }
 
     HostPopulation host_population{};
-    bool ok = TryInitializeRandomHostPopulation(host_population, 2, kActionCount, 11U);
+    bool ok = TryInitializeRandomHostPopulation(host_population, 2, kActionCount, 29U);
+    CopyGenomeAcrossPopulation(host_population, 0);
+
     HostGenotypeSlab host_buffer{};
     SlabGeneration current_generation{};
-    ok &= PopulateSlabGenerationFromHostPopulation(host_population, 2, 0, host_buffer, current_generation);
+    ok &= PopulateSlabGenerationFromHostPopulation(host_population, 2, 5, host_buffer, current_generation);
     if (!ok) {
-        std::cerr << "FAIL: could not build full-slab runtime fixtures\n";
+        std::cerr << "FAIL: could not build zero-slack spill fixtures\n";
         return false;
     }
+
+    const float expected_bias = ToFloat(
+        GenomePolicyModelParameters(HostGenomeBytesAt(host_population, 0)).dense_trunk.hidden1_to_output.biases[0]);
+    const float expected_tail = ToFloat(GenomeTailRows(HostGenomeBytesAt(host_population, 0))[0][0]);
 
     const DeviceSlabGARuntimeConfig runtime_config = MakeRuntimeConfig(2, 2, kActionCount);
 
     DeviceSlabGARuntimeBuffers buffers{};
     ok &= TryCreateDeviceSlabGARuntimeBuffers(buffers, runtime_config);
     ok &= TryUploadCurrentSlabPopulationToDevice(host_buffer, current_generation, buffers);
+    ok &= TryAdvanceGenerationOnDevice(buffers, 43U, MakeRuntimeWordCounts(), MakeAssemblyConfig());
     if (!ok) {
+        DeviceSlabGARuntimeStatusCode status_code = DeviceSlabGARuntimeStatusCode::kOk;
+        (void)TryReadDeviceSlabGARuntimeStatus(buffers, status_code);
+        std::cerr << "FAIL: zero-slack spill step failed with status " << static_cast<int>(status_code) << '\n';
         neuroevolution::genetic_algorithm::slab_device::DestroyDeviceSlabGARuntimeBuffers(buffers);
         return false;
     }
 
-    ok &= ExpectTrue(!TryAdvanceGenerationOnDevice(buffers, 23U, MakeRuntimeWordCounts(), MakeAssemblyConfig()),
-                     "Expected slab-backed generation stepping to fail when no child slot can be allocated");
-
-    DeviceSlabGARuntimeStatusCode status_code = DeviceSlabGARuntimeStatusCode::kOk;
-    ok &= TryReadDeviceSlabGARuntimeStatus(buffers, status_code);
+    PopulationFitnessSummary summary{};
+    HostGenotypeSlab downloaded_buffer{};
+    SlabGeneration downloaded_generation{};
+    ok &= TryReadPopulationFitnessSummaryFromDevice(buffers, summary);
+    ok &= TryDownloadSlabFromDevice(buffers, downloaded_buffer);
+    ok &= TryDownloadCurrentGenerationFromDevice(buffers, downloaded_generation);
+    ok &= ExpectTrue(buffers.last_generation_used_host_failover,
+                     "Expected zero device slack to force host failover for next-generation assembly");
+    ok &= ExpectTrue(buffers.host_failover_count == 1,
+                     "Expected the slab runtime to record exactly one host failover");
     neuroevolution::genetic_algorithm::slab_device::DestroyDeviceSlabGARuntimeBuffers(buffers);
     if (!ok) {
         return false;
     }
 
-    ok &= ExpectTrue(status_code == DeviceSlabGARuntimeStatusCode::kSlabFull,
-                     "Expected an undersized buffer to report kSlabFull during generation stepping");
+    ok &= ExpectTrue(summary.generation_index == 5,
+                     "Expected spill assembly to preserve the evaluated parent-generation summary");
+    ok &= ExpectTrue(downloaded_generation.generation_index == 6,
+                     "Expected spill assembly to increment the current generation index");
+    ok &= ExpectTrue(downloaded_buffer.free_slot_count == 0,
+                     "Expected the zero-slack slab to remain fully occupied after spill assembly");
+
+    for (std::size_t individual_index = 0; individual_index < downloaded_generation.active_individual_count;
+         ++individual_index) {
+        const std::uint32_t slot_index = downloaded_generation.slot_indices[individual_index];
+        ok &= ExpectTrue(slot_index != neuroevolution::genetic_algorithm::genotype_slab::kInvalidSlabSlotIndex,
+                         "Expected every spilled child handle to reference a live slab slot");
+        ok &= ExpectTrue(downloaded_generation.has_fitness[individual_index] == 0,
+                         "Expected spilled children to start unevaluated");
+        ok &= ExpectTrue(downloaded_generation.evaluation_counts[individual_index] == 0,
+                         "Expected spilled children to start with zero evaluation count");
+        ok &= ExpectNear(ToFloat(GenomePolicyModelParameters(HostSlabSlotBytesAt(downloaded_buffer, slot_index))
+                                     .dense_trunk.hidden1_to_output.biases[0]),
+                         expected_bias, "spilled child dense-trunk bias");
+        ok &= ExpectNear(ToFloat(GenomeTailRows(HostSlabSlotBytesAt(downloaded_buffer, slot_index))[0][0]),
+                         expected_tail, "spilled child trainable tail value");
+        ok &= ExpectTrue(downloaded_buffer.slot_states[slot_index].reference_count == 1,
+                         "Expected each spilled child slot to hold exactly one generation reference");
+    }
+
     return ok;
 }
 
@@ -556,7 +594,7 @@ int main() {
     if (!TestSlabRuntimeEvaluatesAndSummarizesCurrentGeneration() || !TestSlabRuntimeAdvancesOneGeneration() ||
         !TestSlabRuntimeGrowsActionCountWithSlabRepacking() ||
         !TestSlabRuntimeRejectsGrowthWhenGenerationBudgetCannotFitOneChild() ||
-        !TestSlabRuntimeFailsCleanlyWhenTheSlabIsTooSmall()) {
+        !TestSlabRuntimeFallsBackToHostAssemblyWhenDeviceSlackIsExhausted()) {
         return 1;
     }
 
