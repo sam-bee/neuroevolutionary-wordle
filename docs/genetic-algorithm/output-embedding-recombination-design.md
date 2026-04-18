@@ -42,8 +42,19 @@ For a given child row:
 The default and expected case is therefore whole-row single-parent inheritance.
 
 Arithmetic recombination here means that the child row is formed by blending the two parent rows coordinate-wise rather
-than by taking the entire row from one side unchanged. The exact blend formula can be fixed during implementation, but
-the intended family of operators is simple arithmetic mixing rather than crossover-point slicing.
+than by taking the entire row from one side unchanged.
+
+The intended form is:
+
+- sample a blend coefficient `lambda` from an **edge-favouring symmetric beta distribution**
+- map that sampled value into the restricted interval `[0.2, 0.8]`
+- build the child row as `lambda * parent_a + (1 - lambda) * parent_b`
+
+So even the arithmetic case still tends to stay closer to one parent than to a strict `50/50` midpoint, while never
+collapsing into an exact whole-row copy.
+
+The exact beta parameters can be fixed during implementation, but the intended family of operators is conservative
+edge-favouring arithmetic mixing rather than crossover-point slicing or permanently middle-favouring averaging.
 
 ## Why Not Crossover Points Within a Row
 
