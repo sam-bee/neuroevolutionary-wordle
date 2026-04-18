@@ -32,6 +32,8 @@ using device_selection_ops::TrySelectCellularParentPairDevice;
 using spatial::CellularGridShape;
 using spatial::FloorSquarePopulationSize;
 using spatial::TryMakeCellularGridShape;
+using training_folder::TrainingDataShardRuntimeSet;
+using training_folder::TryBuildTrainingDataShardRuntimeSet;
 
 constexpr std::size_t kSlabGARuntimeThreadBlockSize = 256;
 NEUROEVOLUTION_HOST_DEVICE constexpr int DeviceStatusValue(const DeviceSlabGARuntimeStatusCode status_code) {
@@ -64,6 +66,35 @@ inline bool IsCurrentGenerationCompatible(const DeviceSlabGARuntimeBuffers &buff
     return genotype_slab::IsValidGenotypeSlabLayout(buffers.genotype_slab.slab_layout) &&
            (buffers.max_generation_size > 0) && (buffers.genotype_slab.current_generation_size > 0) &&
            (buffers.genotype_slab.current_generation_size <= buffers.genotype_slab.max_generation_size);
+}
+
+inline bool TryUploadActiveTrainingShardsForCurrentGeneration(DeviceSlabGARuntimeBuffers &buffers,
+                                                              const RuntimeWordCounts &runtime_word_counts,
+                                                              CellularGridShape &current_grid_shape_out) {
+    current_grid_shape_out = {};
+    buffers.active_training_shard_count = 0;
+    if ((buffers.active_training_shards == nullptr) || (buffers.active_training_shard_capacity == 0) ||
+        !TryMakeCellularGridShape(buffers.genotype_slab.current_generation_size, current_grid_shape_out)) {
+        return false;
+    }
+
+    TrainingDataShardRuntimeSet runtime_set{};
+    if (!TryBuildTrainingDataShardRuntimeSet(
+            runtime_word_counts.training_word_schedule, runtime_word_counts.training_word_count,
+            buffers.genotype_slab.current_generation_index, current_grid_shape_out,
+            runtime_word_counts.shard_radius_growth_period_generations, runtime_set) ||
+        (runtime_set.shard_count == 0) || (runtime_set.shard_count > buffers.active_training_shard_capacity)) {
+        return false;
+    }
+
+    if (!CheckCuda(cudaMemcpy(buffers.active_training_shards, runtime_set.shards.values,
+                              runtime_set.shard_count * sizeof(training_folder::TrainingDataShardRuntime),
+                              cudaMemcpyHostToDevice))) {
+        return false;
+    }
+
+    buffers.active_training_shard_count = runtime_set.shard_count;
+    return true;
 }
 
 NEUROEVOLUTION_HOST_DEVICE constexpr DeviceSlabGARuntimeStatusCode
@@ -124,11 +155,15 @@ __global__ void EvaluateSlabGenerationFitnessKernel(
     const std::uint8_t *slab_storage, const genotype_slab::SlabSlotState *slot_states,
     const genotype_slab::GenotypeSlabLayout slab_layout, const std::uint32_t *current_slot_indices,
     const std::size_t current_generation_size, float *current_fitness, std::uint32_t *current_evaluation_counts,
-    std::uint8_t *current_has_fitness, const RuntimeWordCounts runtime_word_counts, int *status) {
+    std::uint8_t *current_has_fitness, std::uint32_t *current_local_training_word_counts,
+    const RuntimeWordCounts runtime_word_counts, const training_folder::TrainingDataShardRuntime *active_training_shards,
+    const std::size_t active_training_shard_count, const CellularGridShape current_grid_shape, int *status) {
     const std::size_t individual_index = (blockIdx.x * blockDim.x) + threadIdx.x;
     if (!genotype_slab::IsValidGenotypeSlabLayout(slab_layout) || (slab_storage == nullptr) ||
         (slot_states == nullptr) || (current_slot_indices == nullptr) || (current_fitness == nullptr) ||
-        (current_evaluation_counts == nullptr) || (current_has_fitness == nullptr) || (current_generation_size == 0)) {
+        (current_evaluation_counts == nullptr) || (current_has_fitness == nullptr) ||
+        (current_local_training_word_counts == nullptr) || (current_generation_size == 0) ||
+        (active_training_shards == nullptr) || (active_training_shard_count == 0)) {
         if ((blockIdx.x == 0) && (threadIdx.x == 0)) {
             SetFailureStatus(status, DeviceSlabGARuntimeStatusCode::kInvalidSlab);
         }
@@ -151,15 +186,19 @@ __global__ void EvaluateSlabGenerationFitnessKernel(
     }
 
     float fitness = 0.0f;
+    std::size_t local_training_word_count = 0;
     const DeviceGenomeEvaluationStatusCode evaluation_status =
         TryEvaluateGenomeFitness(genotype_slab::SlabSlotBytesAt(slab_storage, slab_layout, slot_index),
-                                 slab_layout.action_count, runtime_word_counts, fitness);
+                                 slab_layout.action_count, runtime_word_counts, active_training_shards,
+                                 active_training_shard_count, current_grid_shape, individual_index, fitness,
+                                 local_training_word_count);
     if (evaluation_status != DeviceGenomeEvaluationStatusCode::kOk) {
         SetFailureStatus(status, MapEvaluationStatus(evaluation_status));
         return;
     }
 
     current_fitness[individual_index] = fitness;
+    current_local_training_word_counts[individual_index] = static_cast<std::uint32_t>(local_training_word_count);
     ++current_evaluation_counts[individual_index];
     current_has_fitness[individual_index] = 1;
 }
@@ -528,9 +567,15 @@ bool TryCreateDeviceSlabGARuntimeBuffers(DeviceSlabGARuntimeBuffers &buffers, co
 
     buffers.max_generation_size = max_generation_size;
     buffers.host_spillover_byte_budget_bytes = config.host_spillover_byte_budget_bytes;
+    buffers.active_training_shard_capacity = training_folder::kTrainingWordCatalogCapacity;
     bool ok = true;
     ok &= CheckCuda(cudaMalloc(&buffers.summary, sizeof(PopulationFitnessSummary)));
     ok &= CheckCuda(cudaMalloc(&buffers.status, sizeof(int)));
+    ok &= CheckCuda(cudaMalloc(&buffers.active_training_shards,
+                               buffers.active_training_shard_capacity *
+                                   sizeof(training_folder::TrainingDataShardRuntime)));
+    ok &= CheckCuda(cudaMalloc(&buffers.current_local_training_word_counts,
+                               buffers.max_generation_size * sizeof(std::uint32_t)));
     if (!ok) {
         DestroyDeviceSlabGARuntimeBuffers(buffers);
         return false;
@@ -538,6 +583,11 @@ bool TryCreateDeviceSlabGARuntimeBuffers(DeviceSlabGARuntimeBuffers &buffers, co
 
     ok &= CheckCuda(cudaMemset(buffers.summary, 0, sizeof(PopulationFitnessSummary)));
     ok &= CheckCuda(cudaMemset(buffers.status, 0, sizeof(int)));
+    ok &= CheckCuda(cudaMemset(buffers.active_training_shards, 0,
+                               buffers.active_training_shard_capacity *
+                                   sizeof(training_folder::TrainingDataShardRuntime)));
+    ok &= CheckCuda(cudaMemset(buffers.current_local_training_word_counts, 0,
+                               buffers.max_generation_size * sizeof(std::uint32_t)));
     if (!ok) {
         DestroyDeviceSlabGARuntimeBuffers(buffers);
         return false;
@@ -550,6 +600,8 @@ void DestroyDeviceSlabGARuntimeBuffers(DeviceSlabGARuntimeBuffers &buffers) noex
     genotype_slab::device::DestroyDeviceSlabRuntimeBuffers(buffers.genotype_slab);
     cudaFree(buffers.summary);
     cudaFree(buffers.status);
+    cudaFree(buffers.active_training_shards);
+    cudaFree(buffers.current_local_training_word_counts);
     buffers = {};
 }
 
@@ -565,6 +617,12 @@ bool TryUploadCurrentSlabPopulationToDevice(const genotype_slab::HostGenotypeSla
     bool ok = true;
     ok &= CheckCuda(cudaMemset(buffers.summary, 0, sizeof(PopulationFitnessSummary)));
     ok &= CheckCuda(cudaMemset(buffers.status, 0, sizeof(int)));
+    ok &= CheckCuda(cudaMemset(buffers.current_local_training_word_counts, 0,
+                               buffers.max_generation_size * sizeof(std::uint32_t)));
+    ok &= CheckCuda(cudaMemset(buffers.active_training_shards, 0,
+                               buffers.active_training_shard_capacity *
+                                   sizeof(training_folder::TrainingDataShardRuntime)));
+    buffers.active_training_shard_count = 0;
     buffers.last_generation_used_host_spillover = false;
     return ok;
 }
@@ -590,6 +648,12 @@ bool TryEvaluateCurrentGenerationFitnessOnDevice(DeviceSlabGARuntimeBuffers &buf
         return false;
     }
 
+    CellularGridShape current_grid_shape{};
+    if (!TryUploadActiveTrainingShardsForCurrentGeneration(buffers, runtime_word_counts, current_grid_shape)) {
+        (void)WriteDeviceStatus(buffers, DeviceSlabGARuntimeStatusCode::kInvalidTrainingShard);
+        return false;
+    }
+
     bool ok = true;
     ok &= CheckCuda(cudaMemset(buffers.genotype_slab.current_fitness, 0,
                                buffers.genotype_slab.max_generation_size * sizeof(float)));
@@ -597,6 +661,8 @@ bool TryEvaluateCurrentGenerationFitnessOnDevice(DeviceSlabGARuntimeBuffers &buf
                                buffers.genotype_slab.max_generation_size * sizeof(std::uint32_t)));
     ok &= CheckCuda(cudaMemset(buffers.genotype_slab.current_has_fitness, 0,
                                buffers.genotype_slab.max_generation_size * sizeof(std::uint8_t)));
+    ok &= CheckCuda(cudaMemset(buffers.current_local_training_word_counts, 0,
+                               buffers.max_generation_size * sizeof(std::uint32_t)));
     if (!ok) {
         return false;
     }
@@ -608,7 +674,8 @@ bool TryEvaluateCurrentGenerationFitnessOnDevice(DeviceSlabGARuntimeBuffers &buf
         buffers.genotype_slab.slab_storage, buffers.genotype_slab.slot_states, buffers.genotype_slab.slab_layout,
         buffers.genotype_slab.current_slot_indices, buffers.genotype_slab.current_generation_size,
         buffers.genotype_slab.current_fitness, buffers.genotype_slab.current_evaluation_counts,
-        buffers.genotype_slab.current_has_fitness, runtime_word_counts, buffers.status);
+        buffers.genotype_slab.current_has_fitness, buffers.current_local_training_word_counts, runtime_word_counts,
+        buffers.active_training_shards, buffers.active_training_shard_count, current_grid_shape, buffers.status);
     if (!CheckCuda(cudaGetLastError()) || !CheckCuda(cudaDeviceSynchronize()) ||
         !KernelCompletedSuccessfully(buffers)) {
         return false;

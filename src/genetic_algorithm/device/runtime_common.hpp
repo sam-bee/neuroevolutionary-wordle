@@ -9,6 +9,9 @@ namespace neuroevolution::genetic_algorithm::device_common {
 struct RuntimeWordCounts {
     std::size_t training_word_count = training_folder::kDefaultInitialActiveWordCount;
     std::size_t action_space_word_count = training_folder::kDefaultInitialActiveWordCount;
+    training_folder::WordCountSchedule training_word_schedule{};
+    std::size_t shard_radius_growth_period_generations =
+        training_folder::kDefaultShardRadiusGrowthPeriodGenerations;
 };
 
 struct PopulationFitnessSummary {

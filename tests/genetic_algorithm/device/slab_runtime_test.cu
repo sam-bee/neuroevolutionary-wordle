@@ -61,6 +61,7 @@ using neuroevolution::genetic_algorithm::spatial::FloorSquarePopulationSize;
 using neuroevolution::genetic_algorithm::spatial::TryCollectCellularSecondParentCandidates;
 using neuroevolution::genetic_algorithm::spatial::TryMakeCellularGridShape;
 using neuroevolution::training_folder::LoadTrainingWordCatalogFromActionSpace;
+using neuroevolution::training_folder::DeterministicTrainingShardCenterCellIndex;
 using neuroevolution::training_folder::TrainingWordCatalog;
 using neuroevolution::training_folder::UploadTrainingWordCatalogToDeviceConstantMemory;
 
@@ -137,6 +138,9 @@ RuntimeWordCounts MakeRuntimeWordCounts() {
     RuntimeWordCounts runtime_word_counts{};
     runtime_word_counts.training_word_count = kActionCount;
     runtime_word_counts.action_space_word_count = kActionCount;
+    runtime_word_counts.training_word_schedule.initial_word_count = kActionCount;
+    runtime_word_counts.training_word_schedule.word_count_step = 0;
+    runtime_word_counts.training_word_schedule.word_count_step_period_generations = 1;
     return runtime_word_counts;
 }
 
@@ -144,6 +148,20 @@ RuntimeWordCounts MakeRuntimeWordCounts(const std::size_t action_count) {
     RuntimeWordCounts runtime_word_counts{};
     runtime_word_counts.training_word_count = action_count;
     runtime_word_counts.action_space_word_count = action_count;
+    runtime_word_counts.training_word_schedule.initial_word_count = action_count;
+    runtime_word_counts.training_word_schedule.word_count_step = 0;
+    runtime_word_counts.training_word_schedule.word_count_step_period_generations = 1;
+    return runtime_word_counts;
+}
+
+RuntimeWordCounts MakeSpatialShardRuntimeWordCounts(const std::size_t introduced_word_count,
+                                                    const std::size_t action_count) {
+    RuntimeWordCounts runtime_word_counts{};
+    runtime_word_counts.training_word_count = introduced_word_count;
+    runtime_word_counts.action_space_word_count = action_count;
+    runtime_word_counts.training_word_schedule.initial_word_count = kActionCount;
+    runtime_word_counts.training_word_schedule.word_count_step = introduced_word_count - kActionCount;
+    runtime_word_counts.training_word_schedule.word_count_step_period_generations = 1;
     return runtime_word_counts;
 }
 
@@ -422,6 +440,63 @@ bool TestSlabRuntimeBuildsCellularLocalAssemblyPlan() {
     return ok;
 }
 
+bool TestSlabRuntimeEvaluatesSpatialTrainingShardExposurePerCell() {
+    constexpr std::size_t kExpandedActionCount = kActionCount + 10;
+
+    TrainingWordCatalog training_word_catalog{};
+    if (!InitializeTrainingCatalog(training_word_catalog)) {
+        std::cerr << "FAIL: could not upload training-word catalog to device constant memory\n";
+        return false;
+    }
+
+    HostPopulation host_population{};
+    bool ok = TryInitializeRandomHostPopulation(host_population, 25, kExpandedActionCount, 151U);
+
+    HostGenotypeSlab host_buffer{};
+    SlabGeneration current_generation{};
+    ok &= PopulateSlabGenerationFromHostPopulation(host_population, 50, 1, host_buffer, current_generation);
+    if (!ok) {
+        std::cerr << "FAIL: could not build spatial-shard evaluation fixtures\n";
+        return false;
+    }
+
+    const DeviceSlabGARuntimeConfig runtime_config = MakeRuntimeConfig(50, 25, kExpandedActionCount);
+
+    DeviceSlabGARuntimeBuffers buffers{};
+    ok &= TryCreateDeviceSlabGARuntimeBuffers(buffers, runtime_config);
+    ok &= TryUploadCurrentSlabPopulationToDevice(host_buffer, current_generation, buffers);
+    ok &= TryEvaluateCurrentGenerationFitnessOnDevice(buffers,
+                                                     MakeSpatialShardRuntimeWordCounts(kExpandedActionCount,
+                                                                                       kExpandedActionCount));
+    if (!ok) {
+        DeviceSlabGARuntimeStatusCode status_code = DeviceSlabGARuntimeStatusCode::kOk;
+        (void)TryReadDeviceSlabGARuntimeStatus(buffers, status_code);
+        std::cerr << "FAIL: spatial-shard evaluation failed with status " << static_cast<int>(status_code) << '\n';
+        neuroevolution::genetic_algorithm::slab_device::DestroyDeviceSlabGARuntimeBuffers(buffers);
+        return false;
+    }
+
+    std::uint32_t local_training_word_counts[25]{};
+    ok &= CheckCuda(cudaMemcpy(local_training_word_counts, buffers.current_local_training_word_counts,
+                               sizeof(local_training_word_counts), cudaMemcpyDeviceToHost),
+                    "copying local training-word counts back to host");
+    neuroevolution::genetic_algorithm::slab_device::DestroyDeviceSlabGARuntimeBuffers(buffers);
+    if (!ok) {
+        return false;
+    }
+
+    const std::size_t shard_center_cell_index = DeterministicTrainingShardCenterCellIndex(0, 25);
+    for (std::size_t cell_index = 0; cell_index < 25; ++cell_index) {
+        const std::uint32_t expected_local_word_count =
+            (cell_index == shard_center_cell_index) ? static_cast<std::uint32_t>(kExpandedActionCount)
+                                                    : static_cast<std::uint32_t>(kActionCount);
+        ok &= ExpectTrue(local_training_word_counts[cell_index] == expected_local_word_count,
+                         "Expected only the shard-center cell to see the newly introduced local evaluation words");
+    }
+
+    return ok;
+}
+
 bool TestSlabRuntimeGrowsActionCountWithSlabRepacking() {
     constexpr std::size_t kInjectedWordCount = 3;
 
@@ -673,6 +748,7 @@ int main() {
 
     if (!TestSlabRuntimeEvaluatesAndSummarizesCurrentGeneration() || !TestSlabRuntimeAdvancesOneGeneration() ||
         !TestSlabRuntimeBuildsCellularLocalAssemblyPlan() ||
+        !TestSlabRuntimeEvaluatesSpatialTrainingShardExposurePerCell() ||
         !TestSlabRuntimeGrowsActionCountWithSlabRepacking() ||
         !TestSlabRuntimeRejectsGrowthWhenGenerationBudgetCannotFitOneChild() ||
         !TestSlabRuntimeAdvancesGenerationWithTightDeviceSlack()) {

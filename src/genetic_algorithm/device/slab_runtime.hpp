@@ -54,9 +54,13 @@ struct DeviceSlabGARuntimeBuffers {
     genotype_slab::device::DeviceSlabRuntimeBuffers genotype_slab{};
     PopulationFitnessSummary *summary = nullptr;
     int *status = nullptr;
+    training_folder::TrainingDataShardRuntime *active_training_shards = nullptr;
+    std::uint32_t *current_local_training_word_counts = nullptr;
     std::size_t max_generation_size = 0;
     std::size_t generation_byte_budget_bytes = 0;
     std::size_t host_spillover_byte_budget_bytes = 0;
+    std::size_t active_training_shard_capacity = 0;
+    std::size_t active_training_shard_count = 0;
     std::size_t host_spillover_count = 0;
     bool last_generation_used_host_spillover = false;
 };

@@ -71,6 +71,8 @@ struct CliConfig {
     std::size_t initial_word_count = neuroevolution::training_folder::kDefaultInitialActiveWordCount;
     std::size_t word_count_step = 0;
     std::size_t word_count_step_period_generations = 1;
+    std::size_t shard_radius_growth_period_generations =
+        neuroevolution::training_folder::kDefaultShardRadiusGrowthPeriodGenerations;
     double genotype_vram_gb = 0.0;
     bool genotype_vram_gb_was_provided = false;
     double generation_vram_gb = 0.0;
@@ -88,11 +90,14 @@ enum class ArgumentParseResult {
 void PrintUsage() {
     std::cout << "Usage: run_genetic_algorithm [--seed N] [--generations N] [--population-size N] "
                  "[--genotype-vram-gb F] [--generation-vram-gb F] [--initial-word-count N] [--word-count-step N] "
-                 "[--word-count-step-period N]\n"
+                 "[--word-count-step-period N] [--shard-radius-growth-period N]\n"
               << "If --population-size is omitted, the program does not apply an extra population ceiling.\n"
               << "The shared training/action schedule defaults to initial_word_count="
               << neuroevolution::training_folder::kDefaultInitialActiveWordCount
               << ", word_count_step=0, word_count_step_period_generations=1.\n"
+              << "Spatial training-data shards grow their evaluation radius every "
+              << neuroevolution::training_folder::kDefaultShardRadiusGrowthPeriodGenerations
+              << " generations by default.\n"
               << "Positive word-count growth is handled by slab compaction/repacking, so later generations may "
                  "shrink population size as the output embedding grows.\n"
               << "The startup population is floored to the largest square number that fits the configured budget so "
@@ -180,7 +185,7 @@ ArgumentParseResult TryParseArguments(const int argc, char **argv, CliConfig &co
         if ((argument == "--seed") || (argument == "--generations") || (argument == "--population-size") ||
             (argument == "--genotype-vram-gb") || (argument == "--generation-vram-gb") ||
             (argument == "--initial-word-count") || (argument == "--word-count-step") ||
-            (argument == "--word-count-step-period")) {
+            (argument == "--word-count-step-period") || (argument == "--shard-radius-growth-period")) {
             if ((arg_index + 1) >= argc) {
                 std::cerr << "Missing value for " << argument << '\n';
                 return ArgumentParseResult::kFailure;
@@ -241,11 +246,17 @@ ArgumentParseResult TryParseArguments(const int argc, char **argv, CliConfig &co
                     config.word_count_step = static_cast<std::size_t>(parsed_value);
                 } else {
                     if (parsed_value == 0) {
-                        std::cerr << "Word-count step period must be at least 1.\n";
+                        std::cerr << ((argument == "--word-count-step-period")
+                                          ? "Word-count step period must be at least 1.\n"
+                                          : "Shard radius growth period must be at least 1.\n");
                         return ArgumentParseResult::kFailure;
                     }
 
-                    config.word_count_step_period_generations = static_cast<std::size_t>(parsed_value);
+                    if (argument == "--word-count-step-period") {
+                        config.word_count_step_period_generations = static_cast<std::size_t>(parsed_value);
+                    } else {
+                        config.shard_radius_growth_period_generations = static_cast<std::size_t>(parsed_value);
+                    }
                 }
             }
 
@@ -416,6 +427,9 @@ int main(int argc, char **argv) {
         RuntimeWordCounts runtime_word_counts{};
         runtime_word_counts.training_word_count = initial_active_word_count;
         runtime_word_counts.action_space_word_count = initial_active_word_count;
+        runtime_word_counts.training_word_schedule = word_count_schedule;
+        runtime_word_counts.shard_radius_growth_period_generations =
+            cli_config.shard_radius_growth_period_generations;
 
         std::size_t genotype_memory_budget_bytes = 0;
         if (!TryComputeTotalGenotypeBudgetBytes(cli_config, genotype_memory_budget_bytes)) {
@@ -536,6 +550,8 @@ int main(int argc, char **argv) {
                   << ", schedule_word_count_step=" << word_count_schedule.word_count_step
                   << ", schedule_word_count_step_period_generations="
                   << word_count_schedule.word_count_step_period_generations
+                  << ", shard_radius_growth_period_generations="
+                  << runtime_word_counts.shard_radius_growth_period_generations
                   << ", training_source=" << training_data_path.filename().string()
                   << ", training_storage=constant_memory\n";
         std::cout << std::fixed << std::setprecision(4);
