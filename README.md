@@ -41,9 +41,10 @@ constant memory once at process start.
 During a run, `run_genetic_algorithm` uses a configurable active prefix of that catalog. By default it starts with the
 first 20 words and keeps that active prefix fixed unless `--word-count-step` is set. Training-word count and
 selectable action-space count are still kept equal. When the active prefix grows, newly activated output-embedding
-tails are injected during next-generation assembly. The fast path performs that assembly on device, but the runtime can
-fall back to host memory if the genotype slab cannot realize the step within its current device budget. Under a fixed
-genotype VRAM budget, the population may shrink as active action count grows.
+tails are injected during next-generation assembly. Recombination, mutation, and fitness evaluation are intended to
+stay on device. If transient slab pressure exceeds the configured device budget, already-assembled children may spill to
+temporary host-side slab storage and later be packed back into the on-device slab. Under a fixed genotype VRAM budget,
+the population may shrink as active action count grows.
 
 ## Why this exists
 
@@ -186,7 +187,7 @@ Immediate goals:
 
 - continue validating forward inference end-to-end
 - continue hardening the slab-backed genetic-algorithm runtime
-- continue refining growth handling, garbage collection, and host-failover behaviour
+- continue refining growth handling, garbage collection, and host-spillover behaviour
 - build out broader training-data and GA experiment handling
 - later explore reinforcement-learning ideas if they prove useful
 

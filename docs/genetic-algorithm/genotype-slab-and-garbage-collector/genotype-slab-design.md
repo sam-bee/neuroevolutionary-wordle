@@ -13,7 +13,7 @@ For the original design work that motivated this implementation direction, see t
 The implementation for this design lives mainly under:
 
 - `src/genetic_algorithm/device/`
-  Runtime orchestration, fitness evaluation, parent-pair planning, and wrapper-level host failover.
+  Runtime orchestration, fitness evaluation, parent-pair planning, and wrapper-level spill orchestration.
 - `src/genetic_algorithm/genotype_slab/`
   The slab data structure itself, slot allocation, device assembly, reference counting, and growth repacking.
 - `src/genetic_algorithm/genome/`
@@ -38,6 +38,7 @@ The slab exists to support a GPU-first genetic algorithm where:
 - parent and child generations must briefly coexist
 - genotype width can grow as the active Wordle action space grows
 - the common path should stay on device
+- even spill behavior should extend memory capacity rather than reimplement breeding on host
 - memory use should be expressed in byte budgets rather than only in population counts
 
 The current design explicitly prioritises correctness and bounded behaviour over maximum concurrency.
@@ -158,32 +159,59 @@ The runtime sizes generations and the slab from byte budgets rather than only fr
 
 The key ideas are:
 
-- a whole-slab byte budget
-- a single-generation byte budget
+- a population byte budget
+- an on-device slab byte budget
+- a host spillover byte budget
 - a slot width derived from the current action count
-- population size derived from `generation_budget / slot_stride`
-- slab slot count derived from `slab_budget / slot_stride`
+- population size derived from `population_budget / slot_stride`
+- device slab slot count derived from `device_slab_budget / slot_stride`
 
 This means population can shrink as genotype width grows, while the configured memory budget remains fixed.
 
-## Host Failover
+The current target ratios are:
 
-If the device slab cannot realize the next generation within its current budget, the wrapper runtime can fail over to
-host memory.
+- on-device slab byte budget = `1.5 * population byte budget`
+- host spillover byte budget = `0.5 * population byte budget`
 
-The failover path is also stop-the-world and generation-scoped:
+So a spill event temporarily raises total available slab storage to `2.0 * population byte budget`, while keeping the
+steady-state device slab smaller.
+
+## Host Spillover
+
+If the device slab cannot realize the next generation within its current budget, the runtime can spill already-assembled
+children to host memory.
+
+This spillover is intended to provide extra slot storage only. It is not intended to create a second host-side GA
+implementation.
+
+In particular, the host side does not need:
+
+- a garbage collector
+- widening or slot-size growth logic
+- recombination logic
+- mutation logic
+- fitness-evaluation logic
+- host-only GA code written purely so it can be unit tested without a GPU
+
+The intended spill path is generation-scoped:
 
 1. preserve the evaluated parent-generation summary
-2. download the current slab and current generation
-3. allocate a temporary host spill slab large enough for referenced parents plus planned children
-4. assemble the next generation on host
-5. repack the finished child generation into the target device-budget slab layout
-6. upload the finished child generation back to device
+2. allocate a temporary fixed-width host spill slab using the configured spillover budget
+3. move any children already assembled in the on-device slab into that host spill slab
+4. continue child assembly on device
+5. continue ordinary parent reference-counting and parent reclamation on device
+6. once the full child generation exists and the parent generation has been garbage-collected, pack the spilled children
+   back into the on-device slab
+7. free the temporary host spill slab
 
-This keeps the fast path GPU-first while still allowing the generation step to complete when transient device pressure
-would otherwise make it impossible.
+So during spill:
 
-The CLI emits a loud warning when this happens so repeated spills are visible.
+- recombination stays on device
+- mutation stays on device
+- parent garbage collection stays on device
+- host memory is used only as temporary child-slot storage
+
+The CLI should still emit a loud warning when this happens so repeated spills are visible.
 
 ## Current Limitations
 
@@ -193,7 +221,8 @@ Notably:
 
 - there is no same-width compaction pass because it is unnecessary for fixed-width slots
 - widening repack is stop-the-world
-- host failover is an escape hatch, not the intended steady-state path
+- host spillover is an escape hatch, not the intended steady-state path
+- spillover is intended to extend slab capacity only, not to mirror CUDA breeding logic on host
 - there is no background collector
 - there is no tracing collector for long-lived object graphs beyond the current reference-counted generation-turnover
   logic
@@ -206,7 +235,7 @@ For the present milestone, the slab design is intended to be:
 - byte-budget driven
 - reference-counted for ordinary parent reclamation
 - stop-the-world for genotype-width growth
-- able to spill to host memory when unavoidable
+- able to spill child-slot storage to host memory when unavoidable without moving breeding or evaluation off device
 
 That is the current design baseline from which later optimisation or more advanced garbage-collection behaviour can be
 added.
