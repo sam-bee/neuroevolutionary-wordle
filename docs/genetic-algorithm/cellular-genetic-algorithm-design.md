@@ -130,16 +130,6 @@ Reasons:
 
 Roulette-wheel selection is still a plausible experimental variant later, but it is not the recommended first version.
 
-The main disadvantages of roulette-wheel / fitness-proportionate selection here are:
-
-- it can lead to **premature convergence** when one individual is much fitter than the rest
-- it can suffer **diminished selection pressure** when local fitness values are very similar
-- it is sensitive to **fitness scaling / transformation effects**
-- it requires explicit local probability normalization for each mating event
-
-Those are acceptable tradeoffs in some settings, but for a small breeding neighbourhood they are not an obvious win
-over local tournament selection.
-
 ## Breeding Radius
 
 The breeding radius should be interpreted as a **local neighbourhood radius on the toroidal grid**.
@@ -153,16 +143,6 @@ That means the focal cell can mate with the 8 surrounding cells:
 
 - north, south, east, west
 - the 4 diagonals
-
-The naming here comes from cellular-automata terminology:
-
-- the **Moore neighbourhood** is named after **Edward F. Moore**
-- the **von Neumann neighbourhood** is named after **John von Neumann**
-
-In practice:
-
-- **Moore / Chebyshev radius 1** means the 8 surrounding cells
-- **von Neumann / NEWS radius 1** means only north, east, west, and south
 
 This is a sensible default because:
 
@@ -242,9 +222,3 @@ For now, the most conservative and academically standard option is the fixed-cel
   https://ri.conicet.gov.ar/bitstream/11336/154756/2/CONICET_Digital_Nro.8b67ee4d-ae65-4371-9102-e9481c04ef8d_A.pdf
 - Tomassini, M. *Spatially Structured Evolutionary Algorithms: Artificial Evolution in Space and Time* (2005):
   https://link.springer.com/book/10.1007/3-540-29938-6
-- Fitness-proportionate selection drawbacks summary:
-  https://cs-mst.gitlab.io/index/Classes/EvolutionaryComputation/Content/FitnessSelection.html
-- Moore neighbourhood:
-  https://en.wikipedia.org/wiki/Moore_neighborhood
-- von Neumann neighbourhood:
-  https://en.wikipedia.org/wiki/Von_Neumann_neighborhood
