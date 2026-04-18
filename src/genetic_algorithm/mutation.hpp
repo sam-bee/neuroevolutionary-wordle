@@ -7,6 +7,7 @@
 #include "common/cuda_compat.hpp"
 #include "common/float16.hpp"
 #include "genetic_algorithm/genome.hpp"
+#include "genetic_algorithm/output_tail_ops.hpp"
 
 namespace neuroevolution::genetic_algorithm {
 
@@ -15,11 +16,13 @@ using MutationRandomEngine = std::mt19937;
 struct MutationConfig {
     float mutation_probability = 0.02f;
     float mutation_sigma = 0.05f;
+    float output_tail_row_scale_mutation_probability = output_tail_ops::kDefaultRowScaleMutationProbability;
 };
 
 constexpr NEUROEVOLUTION_HOST_DEVICE bool IsValidMutationConfig(const MutationConfig &config) noexcept {
     return (config.mutation_probability >= 0.0f) && (config.mutation_probability <= 1.0f) &&
-           (config.mutation_sigma >= 0.0f);
+           (config.mutation_sigma >= 0.0f) && (config.output_tail_row_scale_mutation_probability >= 0.0f) &&
+           (config.output_tail_row_scale_mutation_probability <= 1.0f);
 }
 
 namespace detail {
@@ -49,6 +52,32 @@ inline void MutateFixedBuffer(common::FixedBuffer<common::Float16, Size> &buffer
     for (std::size_t index = 0; index < Size; ++index) {
         MutateParameterScalar(buffer[index], random_engine, config);
     }
+}
+
+inline bool ShouldScaleOutputTailRow(MutationRandomEngine &random_engine, const MutationConfig &config) {
+    std::bernoulli_distribution distribution(config.output_tail_row_scale_mutation_probability);
+    return distribution(random_engine);
+}
+
+template <std::size_t Size>
+inline void MaybeScaleOutputTailRow(common::FixedBuffer<common::Float16, Size> &buffer,
+                                    MutationRandomEngine &random_engine, const MutationConfig &config) {
+    if (!ShouldScaleOutputTailRow(random_engine, config)) {
+        return;
+    }
+
+    std::bernoulli_distribution distribution(0.5f);
+    const float scale = output_tail_ops::RowScaleFactor(distribution(random_engine));
+    for (std::size_t index = 0; index < Size; ++index) {
+        buffer[index] = common::ToFloat16(common::ToFloat(buffer[index]) * scale);
+    }
+}
+
+template <std::size_t Size>
+inline void MutateOutputTailRow(common::FixedBuffer<common::Float16, Size> &buffer,
+                                MutationRandomEngine &random_engine, const MutationConfig &config) {
+    MutateFixedBuffer(buffer, random_engine, config);
+    MaybeScaleOutputTailRow(buffer, random_engine, config);
 }
 
 template <std::size_t InputSize, std::size_t OutputSize>
@@ -89,7 +118,7 @@ inline bool TryMutateOutputEmbeddingGenome(OutputEmbeddingGenome<ActionCapacity>
     }
 
     for (std::size_t action_index = 0; action_index < genome.active_count; ++action_index) {
-        detail::MutateFixedBuffer(genome.trainable_tails[action_index], random_engine, config);
+        detail::MutateOutputTailRow(genome.trainable_tails[action_index], random_engine, config);
     }
 
     return true;

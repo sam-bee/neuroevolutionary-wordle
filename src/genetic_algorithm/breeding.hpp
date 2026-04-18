@@ -6,7 +6,9 @@
 
 #include "common/cuda_compat.hpp"
 #include "common/fixed_buffer.hpp"
+#include "common/float16.hpp"
 #include "genetic_algorithm/genome.hpp"
+#include "genetic_algorithm/output_tail_ops.hpp"
 #include "genetic_algorithm/selection.hpp"
 
 namespace neuroevolution::genetic_algorithm {
@@ -15,10 +17,14 @@ using BreedingRandomEngine = std::mt19937;
 
 struct BreedingConfig {
     float first_parent_probability = 0.5f;
+    float output_tail_row_arithmetic_recombination_probability =
+        output_tail_ops::kDefaultRowArithmeticRecombinationProbability;
 };
 
 constexpr NEUROEVOLUTION_HOST_DEVICE bool IsValidBreedingConfig(const BreedingConfig &config) noexcept {
-    return (config.first_parent_probability >= 0.0f) && (config.first_parent_probability <= 1.0f);
+    return (config.first_parent_probability >= 0.0f) && (config.first_parent_probability <= 1.0f) &&
+           (config.output_tail_row_arithmetic_recombination_probability >= 0.0f) &&
+           (config.output_tail_row_arithmetic_recombination_probability <= 1.0f);
 }
 
 namespace detail {
@@ -37,6 +43,37 @@ inline void BreedFixedBuffer(const common::FixedBuffer<Scalar, Size> &first_pare
                              const BreedingConfig &config) {
     for (std::size_t index = 0; index < Size; ++index) {
         child[index] = SelectParentScalar(first_parent[index], second_parent[index], random_engine, config);
+    }
+}
+
+inline bool ShouldUseOutputTailRowArithmeticRecombination(BreedingRandomEngine &random_engine,
+                                                          const BreedingConfig &config) {
+    std::bernoulli_distribution distribution(config.output_tail_row_arithmetic_recombination_probability);
+    return distribution(random_engine);
+}
+
+inline float SampleOutputTailRowBlendLambda(BreedingRandomEngine &random_engine) {
+    std::uniform_real_distribution<float> distribution(0.0f, 1.0f);
+    return output_tail_ops::MapArcsineUnitSampleToBlendLambda(distribution(random_engine));
+}
+
+template <std::size_t Size>
+inline void BreedOutputTailRow(const common::FixedBuffer<common::Float16, Size> &first_parent,
+                               const common::FixedBuffer<common::Float16, Size> &second_parent,
+                               common::FixedBuffer<common::Float16, Size> &child,
+                               BreedingRandomEngine &random_engine, const BreedingConfig &config) {
+    if (!ShouldUseOutputTailRowArithmeticRecombination(random_engine, config)) {
+        std::bernoulli_distribution distribution(config.first_parent_probability);
+        child = distribution(random_engine) ? first_parent : second_parent;
+        return;
+    }
+
+    const float lambda = SampleOutputTailRowBlendLambda(random_engine);
+    const float other_lambda = 1.0f - lambda;
+    for (std::size_t index = 0; index < Size; ++index) {
+        const float blended_value =
+            (lambda * common::ToFloat(first_parent[index])) + (other_lambda * common::ToFloat(second_parent[index]));
+        child[index] = common::ToFloat16(blended_value);
     }
 }
 
@@ -96,9 +133,9 @@ inline void BreedOutputEmbeddingGenome(const OutputEmbeddingGenome<ActionCapacit
     child.active_count = shared_active_count;
 
     for (std::size_t action_index = 0; action_index < shared_active_count; ++action_index) {
-        detail::BreedFixedBuffer(first_parent.trainable_tails[action_index],
-                                 second_parent.trainable_tails[action_index], child.trainable_tails[action_index],
-                                 random_engine, config);
+        detail::BreedOutputTailRow(first_parent.trainable_tails[action_index],
+                                   second_parent.trainable_tails[action_index], child.trainable_tails[action_index],
+                                   random_engine, config);
     }
 
     for (std::size_t action_index = shared_active_count; action_index < ActionCapacity; ++action_index) {

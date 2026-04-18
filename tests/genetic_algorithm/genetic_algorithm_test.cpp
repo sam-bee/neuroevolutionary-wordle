@@ -334,9 +334,11 @@ bool TestBreedingCanProduceChildGenomeFromEitherParentOrPopulationPair() {
 
     BreedingConfig first_parent_only_config{};
     first_parent_only_config.first_parent_probability = 1.0f;
+    first_parent_only_config.output_tail_row_arithmetic_recombination_probability = 0.0f;
 
     BreedingConfig second_parent_only_config{};
     second_parent_only_config.first_parent_probability = 0.0f;
+    second_parent_only_config.output_tail_row_arithmetic_recombination_probability = 0.0f;
 
     BreedingConfig invalid_config{};
     invalid_config.first_parent_probability = 1.5f;
@@ -418,14 +420,17 @@ bool TestMutationCanBeDisabledOrApplySeededNoise() {
     MutationConfig zero_probability_config{};
     zero_probability_config.mutation_probability = 0.0f;
     zero_probability_config.mutation_sigma = 1.0f;
+    zero_probability_config.output_tail_row_scale_mutation_probability = 0.0f;
 
     MutationConfig zero_sigma_config{};
     zero_sigma_config.mutation_probability = 1.0f;
     zero_sigma_config.mutation_sigma = 0.0f;
+    zero_sigma_config.output_tail_row_scale_mutation_probability = 0.0f;
 
     MutationConfig active_config{};
     active_config.mutation_probability = 1.0f;
     active_config.mutation_sigma = 0.5f;
+    active_config.output_tail_row_scale_mutation_probability = 0.0f;
 
     MutationConfig invalid_config{};
     invalid_config.mutation_probability = 1.5f;
