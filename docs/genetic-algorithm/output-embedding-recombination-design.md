@@ -75,16 +75,17 @@ In addition to per-value mutation, each output-tail row should have a separate r
 
 For each row:
 
-- apply this mutation with the same mutation-rate probability used elsewhere in the genotype
-- when it triggers, scale the row magnitude by either **+5%** or **-5%**
+- give this mutation its own separate probability, rather than tying it to the per-value mutation rate
+- start with a low default probability of **0.5%** for a given child row
+- when it triggers, scale the row magnitude by either **+2%** or **-2%**
 
 In effect, the whole 38-value row is multiplied by either:
 
-- `1.05`
-- `0.95`
+- `1.02`
+- `0.98`
 
 This is intended to give the GA a cheap way to strengthen or weaken an action word's learned trainable signature
-without requiring many separate coordinate-level mutations to line up.
+without requiring many separate coordinate-level mutations to line up, while still keeping the effect small and rare.
 
 ## Intended Behavioural Effect
 
