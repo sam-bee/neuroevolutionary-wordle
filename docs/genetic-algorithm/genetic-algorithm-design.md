@@ -94,6 +94,12 @@ each child genome is assembled from fine-grained choices between the two parents
 
 The mutation model is probabilistic Gaussian noise applied to parameters, not a bit-flip scheme.
 
+At present that statement is true across the whole genotype. However, the intended design direction is to let
+different genotype components use different recombination policies when that better matches their structure. In
+particular, the trainable output-embedding tails are planned to move toward mostly row-level inheritance with rare
+arithmetic recombination; see
+[`output-embedding-recombination-design.md`](output-embedding-recombination-design.md).
+
 ## Fitness Evaluation
 
 Fitness is based on simulated Wordle play.
