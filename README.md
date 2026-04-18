@@ -93,8 +93,8 @@ For implementation detail on the neural network itself, see:
 
 - [`docs/neural-net-design.md`](docs/neural-net-design/neural-net-design.md)
 - [accompanying design diagram](docs/neural-net-design/neural-net-design-diagram.png)
-- [`docs/genetic-algorithm/genotype-slab-design.md`](docs/genetic-algorithm/genotype-slab-design.md) for the shared
-  genotype slab and slab allocator design
+- [`docs/genetic-algorithm/genotype-slab-and-garbage-collector/genotype-slab-design.md`](docs/genetic-algorithm/genotype-slab-and-garbage-collector/genotype-slab-design.md)
+  for the shared genotype slab and slab allocator design
 
 That document is intended to be concrete enough for CUDA implementation of the model structure, while deliberately
 staying focused on the policy model rather than the wider genetic algorithm, reinforcement learning, and training-loop

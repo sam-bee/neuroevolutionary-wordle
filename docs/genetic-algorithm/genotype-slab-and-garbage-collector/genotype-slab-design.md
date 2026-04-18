@@ -5,6 +5,9 @@ This document describes the current shared genotype-slab design used by the gene
 It is intended as a design overview for the storage layer and its garbage-collection behaviour. It does not attempt to
 fully specify parent selection, fitness policy, or the wider training loop.
 
+For the original design work that motivated this implementation direction, see the blog post
+["Neuroevolutionary Wordle, Garbage Collection, and the Older Generation"](https://sam-burns.com/posts/neuroevolutionary-wordle-garbage-collection-and-the-older-generation/).
+
 ## Relevant Source Layout
 
 The implementation for this design lives mainly under:
