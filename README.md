@@ -32,7 +32,8 @@ More detailed design information lives under the [`docs/`](docs/) folder. In par
 
 - [`docs/neural-net-design/`](docs/neural-net-design/) covers the policy-model structure
 - [`docs/data/`](docs/data/) covers the curated Wordle wordlists
-- [`docs/genetic-algorithm/`](docs/genetic-algorithm/) covers slab-backed GA runtime design
+- [`docs/genetic-algorithm/`](docs/genetic-algorithm/) covers GA design, slab-backed runtime design, and garbage
+  collection
 
 The current GA demo uploads the full 4,739-word action catalog from `data/action-space-randomised.txt` to GPU
 constant memory once at process start.
@@ -93,6 +94,8 @@ For implementation detail on the neural network itself, see:
 
 - [`docs/neural-net-design.md`](docs/neural-net-design/neural-net-design.md)
 - [accompanying design diagram](docs/neural-net-design/neural-net-design-diagram.png)
+- [`docs/genetic-algorithm/genetic-algorithm-design.md`](docs/genetic-algorithm/genetic-algorithm-design.md) for the
+  overall character of the genetic algorithm
 - [`docs/genetic-algorithm/genotype-slab-and-garbage-collector/genotype-slab-design.md`](docs/genetic-algorithm/genotype-slab-and-garbage-collector/genotype-slab-design.md)
   for the shared genotype slab and slab allocator design
 
@@ -109,7 +112,7 @@ The current documentation tree is organised as:
 - [`docs/neural-net-design/`](docs/neural-net-design/)
   Policy-model structure and related diagrams.
 - [`docs/genetic-algorithm/`](docs/genetic-algorithm/)
-  Slab-backed GA runtime and memory-management design.
+  High-level GA design plus slab-backed runtime and memory-management design.
 
 The current genetic-algorithm source tree is organised as:
 
