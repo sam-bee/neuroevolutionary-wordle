@@ -670,16 +670,6 @@ bool TryAdvanceGenerationOnDevice(DeviceSlabGARuntimeBuffers &buffers, const std
     }
 
     buffers.genotype_slab.planned_child_count = next_generation_size;
-    if (!genotype_slab::device::TryApplyFinalChildPriorityToAssemblyPlanOnDevice(buffers.genotype_slab)) {
-        genotype_slab::device::DeviceSlabRuntimeStatusCode slab_status =
-            genotype_slab::device::DeviceSlabRuntimeStatusCode::kCudaFailure;
-        if (genotype_slab::device::TryReadDeviceSlabRuntimeStatus(buffers.genotype_slab, slab_status)) {
-            (void)WriteDeviceStatus(buffers, MapSlabRuntimeStatus(slab_status));
-        } else {
-            (void)WriteDeviceStatus(buffers, DeviceSlabGARuntimeStatusCode::kCudaFailure);
-        }
-        return false;
-    }
 
     const std::size_t parent_action_count = buffers.genotype_slab.slab_layout.action_count;
     if (pending_output_embedding_injection.enabled &&

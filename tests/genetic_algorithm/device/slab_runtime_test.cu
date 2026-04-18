@@ -30,11 +30,14 @@ using neuroevolution::genetic_algorithm::genome::TryInitializeRandomHostPopulati
 using neuroevolution::genetic_algorithm::genotype_slab::ComputeSlabSlotStrideBytes;
 using neuroevolution::genetic_algorithm::genotype_slab::HostGenotypeSlab;
 using neuroevolution::genetic_algorithm::genotype_slab::HostSlabSlotBytesAt;
+using neuroevolution::genetic_algorithm::genotype_slab::SlabAssemblyPlan;
+using neuroevolution::genetic_algorithm::genotype_slab::SlabParentPair;
 using neuroevolution::genetic_algorithm::genotype_slab::SlabGeneration;
 using neuroevolution::genetic_algorithm::genotype_slab::SlabSlotCountForByteBudget;
 using neuroevolution::genetic_algorithm::genotype_slab::TryAllocateSlabSlot;
 using neuroevolution::genetic_algorithm::genotype_slab::TryCopyGenomeBytesIntoSlabSlot;
 using neuroevolution::genetic_algorithm::genotype_slab::TryCreateHostGenotypeSlab;
+using neuroevolution::genetic_algorithm::genotype_slab::TryCreateSlabAssemblyPlan;
 using neuroevolution::genetic_algorithm::genotype_slab::TryCreateSlabGeneration;
 using neuroevolution::genetic_algorithm::genotype_slab::TrySetSlabGenerationSlot;
 using neuroevolution::genetic_algorithm::slab_device::DeviceSlabGARuntimeBuffers;
@@ -51,7 +54,12 @@ using neuroevolution::genetic_algorithm::slab_device::TryEvaluateCurrentGenerati
 using neuroevolution::genetic_algorithm::slab_device::TryReadDeviceSlabGARuntimeStatus;
 using neuroevolution::genetic_algorithm::slab_device::TryReadPopulationFitnessSummaryFromDevice;
 using neuroevolution::genetic_algorithm::slab_device::TryUploadCurrentSlabPopulationToDevice;
+using neuroevolution::genetic_algorithm::spatial::CellularGridShape;
+using neuroevolution::genetic_algorithm::spatial::CellularNeighborList;
+using neuroevolution::genetic_algorithm::spatial::ContainsNeighborIndex;
 using neuroevolution::genetic_algorithm::spatial::FloorSquarePopulationSize;
+using neuroevolution::genetic_algorithm::spatial::TryCollectCellularSecondParentCandidates;
+using neuroevolution::genetic_algorithm::spatial::TryMakeCellularGridShape;
 using neuroevolution::training_folder::LoadTrainingWordCatalogFromActionSpace;
 using neuroevolution::training_folder::TrainingWordCatalog;
 using neuroevolution::training_folder::UploadTrainingWordCatalogToDeviceConstantMemory;
@@ -209,6 +217,17 @@ DeviceSlabGARuntimeConfig MakeRuntimeConfig(const std::size_t slot_count, const 
     return runtime_config;
 }
 
+bool TryDownloadAssemblyPlanFromDevice(const DeviceSlabGARuntimeBuffers &buffers, const std::size_t child_count,
+                                       SlabAssemblyPlan &plan) {
+    if (!TryCreateSlabAssemblyPlan(plan, child_count)) {
+        return false;
+    }
+
+    return CheckCuda(cudaMemcpy(plan.parent_pairs.get(), buffers.genotype_slab.assembly_parent_pairs,
+                                child_count * sizeof(SlabParentPair), cudaMemcpyDeviceToHost),
+                     "downloading slab assembly plan");
+}
+
 bool TestSlabRuntimeEvaluatesAndSummarizesCurrentGeneration() {
     TrainingWordCatalog training_word_catalog{};
     if (!InitializeTrainingCatalog(training_word_catalog)) {
@@ -337,6 +356,67 @@ bool TestSlabRuntimeAdvancesOneGeneration() {
                          expected_tail, "child trainable tail value");
         ok &= ExpectTrue(downloaded_buffer.slot_states[slot_index].reference_count == 1,
                          "Expected each child slot to hold exactly one generation reference");
+    }
+
+    return ok;
+}
+
+bool TestSlabRuntimeBuildsCellularLocalAssemblyPlan() {
+    TrainingWordCatalog training_word_catalog{};
+    if (!InitializeTrainingCatalog(training_word_catalog)) {
+        std::cerr << "FAIL: could not upload training-word catalog to device constant memory\n";
+        return false;
+    }
+
+    HostPopulation host_population{};
+    bool ok = TryInitializeRandomHostPopulation(host_population, 25, kActionCount, 123U);
+
+    HostGenotypeSlab host_buffer{};
+    SlabGeneration current_generation{};
+    ok &= PopulateSlabGenerationFromHostPopulation(host_population, 50, 6, host_buffer, current_generation);
+    if (!ok) {
+        std::cerr << "FAIL: could not build cellular-plan fixtures\n";
+        return false;
+    }
+
+    const DeviceSlabGARuntimeConfig runtime_config = MakeRuntimeConfig(50, 25, kActionCount);
+
+    DeviceSlabGARuntimeBuffers buffers{};
+    ok &= TryCreateDeviceSlabGARuntimeBuffers(buffers, runtime_config);
+    ok &= TryUploadCurrentSlabPopulationToDevice(host_buffer, current_generation, buffers);
+    ok &= TryAdvanceGenerationOnDevice(buffers, 47U, MakeRuntimeWordCounts(), MakeAssemblyConfig());
+    if (!ok) {
+        DeviceSlabGARuntimeStatusCode status_code = DeviceSlabGARuntimeStatusCode::kOk;
+        (void)TryReadDeviceSlabGARuntimeStatus(buffers, status_code);
+        std::cerr << "FAIL: cellular-plan generation step failed with status " << static_cast<int>(status_code)
+                  << '\n';
+        neuroevolution::genetic_algorithm::slab_device::DestroyDeviceSlabGARuntimeBuffers(buffers);
+        return false;
+    }
+
+    SlabAssemblyPlan downloaded_plan{};
+    ok &= TryDownloadAssemblyPlanFromDevice(buffers, 25, downloaded_plan);
+    neuroevolution::genetic_algorithm::slab_device::DestroyDeviceSlabGARuntimeBuffers(buffers);
+    if (!ok) {
+        return false;
+    }
+
+    CellularGridShape shape{};
+    ok &= TryMakeCellularGridShape(25, shape);
+    if (!ok) {
+        return false;
+    }
+
+    for (std::size_t child_index = 0; child_index < downloaded_plan.child_count; ++child_index) {
+        const SlabParentPair &parent_pair = downloaded_plan.parent_pairs[child_index];
+        ok &= ExpectTrue(parent_pair.first_parent_index == child_index,
+                         "Expected each cellular child to inherit its focal cell occupant as the first parent");
+
+        CellularNeighborList neighbors{};
+        ok &= TryCollectCellularSecondParentCandidates(shape, child_index, neighbors);
+        ok &= ExpectTrue(ContainsNeighborIndex(neighbors, parent_pair.second_parent_index),
+                         "Expected each cellular child to choose its second parent from the local radius-two "
+                         "neighborhood");
     }
 
     return ok;
@@ -592,6 +672,7 @@ int main() {
     }
 
     if (!TestSlabRuntimeEvaluatesAndSummarizesCurrentGeneration() || !TestSlabRuntimeAdvancesOneGeneration() ||
+        !TestSlabRuntimeBuildsCellularLocalAssemblyPlan() ||
         !TestSlabRuntimeGrowsActionCountWithSlabRepacking() ||
         !TestSlabRuntimeRejectsGrowthWhenGenerationBudgetCannotFitOneChild() ||
         !TestSlabRuntimeAdvancesGenerationWithTightDeviceSlack()) {

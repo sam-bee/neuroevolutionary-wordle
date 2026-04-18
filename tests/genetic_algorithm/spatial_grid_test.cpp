@@ -17,6 +17,7 @@ using neuroevolution::genetic_algorithm::spatial::GridRowFromIndex;
 using neuroevolution::genetic_algorithm::spatial::IsValidCellularGridShape;
 using neuroevolution::genetic_algorithm::spatial::TryCollectCellularSecondParentCandidates;
 using neuroevolution::genetic_algorithm::spatial::TryMakeCellularGridShape;
+using neuroevolution::genetic_algorithm::spatial::TryProjectCellIndexBetweenSquareGrids;
 using neuroevolution::genetic_algorithm::spatial::WrapToroidalCoordinate;
 
 bool ExpectTrue(const bool condition, const std::string_view message) {
@@ -96,6 +97,24 @@ bool TestRadiusTwoMooreNeighborhoodDeduplicatesOnSmallToroidalGrids() {
     return ok;
 }
 
+bool TestGridProjectionMapsShrunkenChildCellsAcrossTheCurrentGrid() {
+    CellularGridShape source_shape{};
+    CellularGridShape target_shape{};
+    bool ok = true;
+    ok &= TryMakeCellularGridShape(25, source_shape);
+    ok &= TryMakeCellularGridShape(9, target_shape);
+
+    std::size_t source_cell_index = 0;
+    ok &= TryProjectCellIndexBetweenSquareGrids(source_shape, target_shape, 0, source_cell_index);
+    ok &= ExpectTrue(source_cell_index == 0, "Expected the top-left child cell to project to the top-left parent");
+    ok &= TryProjectCellIndexBetweenSquareGrids(source_shape, target_shape, 4, source_cell_index);
+    ok &= ExpectTrue(source_cell_index == 12, "Expected the center child cell to project to the center parent");
+    ok &= TryProjectCellIndexBetweenSquareGrids(source_shape, target_shape, 8, source_cell_index);
+    ok &= ExpectTrue(source_cell_index == 24,
+                     "Expected the bottom-right child cell to project to the bottom-right parent");
+    return ok;
+}
+
 } // namespace
 
 int main() {
@@ -116,6 +135,10 @@ int main() {
     }
 
     if (!TestRadiusTwoMooreNeighborhoodDeduplicatesOnSmallToroidalGrids()) {
+        return 1;
+    }
+
+    if (!TestGridProjectionMapsShrunkenChildCellsAcrossTheCurrentGrid()) {
         return 1;
     }
 

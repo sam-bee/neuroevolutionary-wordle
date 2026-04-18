@@ -178,8 +178,14 @@ TryProjectCellIndexBetweenSquareGrids(const CellularGridShape &source_shape, con
 
     const std::size_t target_row = GridRowFromIndex(target_shape, target_cell_index);
     const std::size_t target_column = GridColumnFromIndex(target_shape, target_cell_index);
-    const std::size_t source_row = (target_row * source_shape.side_length) / target_shape.side_length;
-    const std::size_t source_column = (target_column * source_shape.side_length) / target_shape.side_length;
+    const std::size_t source_row = (target_shape.side_length == 1)
+                                       ? (source_shape.side_length / 2)
+                                       : ((target_row * (source_shape.side_length - 1)) /
+                                          (target_shape.side_length - 1));
+    const std::size_t source_column = (target_shape.side_length == 1)
+                                          ? (source_shape.side_length / 2)
+                                          : ((target_column * (source_shape.side_length - 1)) /
+                                             (target_shape.side_length - 1));
     source_cell_index_out = GridIndexFromRowColumn(source_shape, source_row, source_column);
     return source_cell_index_out < source_shape.cell_count;
 }
