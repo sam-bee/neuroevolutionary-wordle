@@ -8,6 +8,7 @@
 #include <string_view>
 
 #include "common/float16.hpp"
+#include "genetic_algorithm/device/evaluation_ops.cuh"
 #include "genetic_algorithm/genetic_algorithm.hpp"
 #include "genetic_algorithm/genome/dynamic_layout.hpp"
 #include "training_folder/training_data.hpp"
@@ -17,6 +18,8 @@ namespace {
 using neuroevolution::common::ToFloat;
 using neuroevolution::genetic_algorithm::GenerationAssemblyConfig;
 using neuroevolution::genetic_algorithm::TrySeedOutputEmbeddingTailFromHintGrids;
+using neuroevolution::genetic_algorithm::device_evaluation_ops::MaximumPossibleFitness;
+using neuroevolution::genetic_algorithm::device_evaluation_ops::NormalizeFitnessForSelection;
 using neuroevolution::genetic_algorithm::genome::GenomePolicyModelParameters;
 using neuroevolution::genetic_algorithm::genome::GenomeTailRows;
 using neuroevolution::genetic_algorithm::genome::HostGenomeBytesAt;
@@ -54,13 +57,6 @@ using neuroevolution::training_folder::UploadTrainingWordCatalogToDeviceConstant
 constexpr int kSelectedVisibleDeviceIndex = 0;
 constexpr std::size_t kActionCount = neuroevolution::training_folder::kDefaultInitialActiveWordCount;
 constexpr float kTolerance = 1.0e-3f;
-constexpr float kMaximumEpisodeWinScore = 15.0f;
-constexpr float kEpisodesPerTrainingEntry = 3.0f;
-
-float MaximumPossibleFitness(const RuntimeWordCounts &runtime_word_counts) {
-    return kEpisodesPerTrainingEntry * kMaximumEpisodeWinScore *
-           static_cast<float>(runtime_word_counts.training_word_count);
-}
 
 bool CheckCuda(const cudaError_t error, const std::string_view action) {
     if (error != cudaSuccess) {
@@ -248,12 +244,13 @@ bool TestSlabRuntimeEvaluatesAndSummarizesCurrentGeneration() {
         return false;
     }
 
-    const float maximum_possible_fitness = MaximumPossibleFitness(MakeRuntimeWordCounts());
+    const RuntimeWordCounts runtime_word_counts = MakeRuntimeWordCounts();
+    const float minimum_possible_fitness = NormalizeFitnessForSelection(0.0f, runtime_word_counts);
     ok &= ExpectTrue(summary.population_size == 3, "Expected summary to report the current generation size");
     ok &= ExpectTrue(summary.action_count == kActionCount, "Expected summary to report the fixed action count");
     ok &= ExpectTrue(summary.generation_index == 4, "Expected summary to report the current generation index");
-    ok &= ExpectInRange(summary.best_fitness, 0.0f, maximum_possible_fitness, "summary best fitness");
-    ok &= ExpectInRange(summary.average_fitness, 0.0f, maximum_possible_fitness, "summary average fitness");
+    ok &= ExpectInRange(summary.best_fitness, minimum_possible_fitness, 1.0f, "summary best fitness");
+    ok &= ExpectInRange(summary.average_fitness, minimum_possible_fitness, 1.0f, "summary average fitness");
 
     for (std::size_t individual_index = 0; individual_index < downloaded_generation.active_individual_count;
          ++individual_index) {
@@ -261,7 +258,7 @@ bool TestSlabRuntimeEvaluatesAndSummarizesCurrentGeneration() {
                          "Expected evaluation to mark every current-generation individual as fitted");
         ok &= ExpectTrue(downloaded_generation.evaluation_counts[individual_index] == 1,
                          "Expected evaluation to increment the count for every current-generation individual");
-        ok &= ExpectInRange(downloaded_generation.fitness[individual_index], 0.0f, maximum_possible_fitness,
+        ok &= ExpectInRange(downloaded_generation.fitness[individual_index], minimum_possible_fitness, 1.0f,
                             "downloaded current-generation fitness");
     }
 

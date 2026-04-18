@@ -6,6 +6,7 @@
 #include "common/cuda_compat.hpp"
 #include "genetic_algorithm/device/runtime_common.hpp"
 #include "genetic_algorithm/genome/dynamic_layout.hpp"
+#include "genetic_algorithm/spatial/grid.hpp"
 #include "model/output_embedding/output_embedding.hpp"
 #include "model/policy_model/policy_model.hpp"
 #include "training_folder/training_data.hpp"
@@ -27,6 +28,9 @@ using neuroevolution::wordle::Word;
 using neuroevolution::wordle::WordleGrid;
 
 constexpr float kWinScoreBase = 10.0f;
+constexpr float kEpisodesPerTrainingWord = 3.0f;
+constexpr float kMaximumEpisodeScore =
+    kWinScoreBase + static_cast<float>(neuroevolution::wordle::kMaxTurnCount - 1U);
 
 enum class DeviceGenomeEvaluationStatusCode : int {
     kOk = 0,
@@ -41,6 +45,27 @@ IsValidRuntimeWordCounts(const TrainingWordCatalog &training_word_catalog,
                          const device_common::RuntimeWordCounts &runtime_word_counts) noexcept {
     return (runtime_word_counts.training_word_count <= training_word_catalog.word_count) &&
            (runtime_word_counts.action_space_word_count <= training_word_catalog.word_count);
+}
+
+constexpr NEUROEVOLUTION_HOST_DEVICE float
+MaximumPossibleFitness(const device_common::RuntimeWordCounts runtime_word_counts) noexcept {
+    return kEpisodesPerTrainingWord * kMaximumEpisodeScore * static_cast<float>(runtime_word_counts.training_word_count);
+}
+
+constexpr NEUROEVOLUTION_HOST_DEVICE float NormalizeFitnessForSelection(
+    const float raw_fitness, const device_common::RuntimeWordCounts runtime_word_counts) noexcept {
+    const float maximum_possible_fitness = MaximumPossibleFitness(runtime_word_counts);
+    if (maximum_possible_fitness <= 0.0f) {
+        return spatial::kPositiveSelectionFitnessFloor;
+    }
+
+    const float normalized_fitness = raw_fitness / maximum_possible_fitness;
+    if (normalized_fitness >= 1.0f) {
+        return 1.0f;
+    }
+
+    return (normalized_fitness > spatial::kPositiveSelectionFitnessFloor) ? normalized_fitness
+                                                                           : spatial::kPositiveSelectionFitnessFloor;
 }
 
 __device__ inline float ScoreDynamicActionEmbedding(const PolicyVector &policy_vector, const Word &action_word,
@@ -201,7 +226,7 @@ TryEvaluateGenomeFitness(const std::uint8_t *genome_bytes, const std::size_t gen
         }
     }
 
-    fitness_out = score_sum;
+    fitness_out = NormalizeFitnessForSelection(score_sum, runtime_word_counts);
     return DeviceGenomeEvaluationStatusCode::kOk;
 }
 
