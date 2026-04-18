@@ -44,11 +44,8 @@ number at startup.
 The intended rule is:
 
 1. derive or request a nominal population size as usual from the runtime budgets
-2. round that size to the **nearest square number**
+2. round that size **down** to the largest square number that does not exceed it
 3. lay the population out as an `N x N` grid
-
-If the mathematically nearest square would exceed the active memory budget, the runtime should choose the next lower
-square instead.
 
 So the cellular runtime would operate on:
 
@@ -127,11 +124,21 @@ The initial recommendation is **local tournament selection** for the second pare
 Reasons:
 
 - it matches the project’s current parent-selection style
-- it avoids having to normalize tiny local fitness distributions every mating event
+- it avoids having to normalize local fitness distributions every mating event
 - it gives bounded and understandable selection pressure
 - it is easy to implement efficiently on device
 
 Roulette-wheel selection is still a plausible experimental variant later, but it is not the recommended first version.
+
+The main disadvantages of roulette-wheel / fitness-proportionate selection here are:
+
+- it can lead to **premature convergence** when one individual is much fitter than the rest
+- it can suffer **diminished selection pressure** when local fitness values are very similar
+- it is sensitive to **fitness scaling / transformation effects**
+- it requires explicit local probability normalization for each mating event
+
+Those are acceptable tradeoffs in some settings, but for a small breeding neighbourhood they are not an obvious win
+over local tournament selection.
 
 ## Breeding Radius
 
@@ -146,6 +153,16 @@ That means the focal cell can mate with the 8 surrounding cells:
 
 - north, south, east, west
 - the 4 diagonals
+
+The naming here comes from cellular-automata terminology:
+
+- the **Moore neighbourhood** is named after **Edward F. Moore**
+- the **von Neumann neighbourhood** is named after **John von Neumann**
+
+In practice:
+
+- **Moore / Chebyshev radius 1** means the 8 surrounding cells
+- **von Neumann / NEWS radius 1** means only north, east, west, and south
 
 This is a sensible default because:
 
@@ -197,7 +214,7 @@ Spatial structure is meant to change mating and information diffusion, not to re
 If this feature is prototyped, the recommended first version is:
 
 - square toroidal grid
-- population size rounded to the nearest feasible square number at startup
+- population size rounded down to the nearest feasible square number at startup
 - one genotype per cell
 - first parent is the focal cell occupant
 - second parent chosen by **local tournament selection**
@@ -218,3 +235,16 @@ This first draft leaves several choices open for later discussion:
 - whether child placement should remain fixed at the focal cell or later allow local dispersal
 
 For now, the most conservative and academically standard option is the fixed-cell cellular-GA design described above.
+
+## References
+
+- Salto, C. and Alba, E. "Cellular Genetic Algorithms: Understanding the Behavior of Using Neighborhoods" (2019):
+  https://ri.conicet.gov.ar/bitstream/11336/154756/2/CONICET_Digital_Nro.8b67ee4d-ae65-4371-9102-e9481c04ef8d_A.pdf
+- Tomassini, M. *Spatially Structured Evolutionary Algorithms: Artificial Evolution in Space and Time* (2005):
+  https://link.springer.com/book/10.1007/3-540-29938-6
+- Fitness-proportionate selection drawbacks summary:
+  https://cs-mst.gitlab.io/index/Classes/EvolutionaryComputation/Content/FitnessSelection.html
+- Moore neighbourhood:
+  https://en.wikipedia.org/wiki/Moore_neighborhood
+- von Neumann neighbourhood:
+  https://en.wikipedia.org/wiki/Von_Neumann_neighborhood
