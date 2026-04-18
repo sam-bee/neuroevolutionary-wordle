@@ -27,7 +27,7 @@ The current action space is **4,739 valid 5-letter guesses**. It is smaller than
 all allowed solutions while biasing the action space toward common words derived from subtitle-frequency data.
 
 More information on data is available at [`docs/data/data-docs.md`](docs/data/data-docs.md).
-The current active-prefix curriculum baseline is described in
+The current active-prefix baseline and intended spatial shard curriculum are described in
 [`docs/data/training-data-sharding-curriculum.md`](docs/data/training-data-sharding-curriculum.md).
 
 More detailed design information lives under the [`docs/`](docs/) folder. In particular:

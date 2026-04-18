@@ -27,8 +27,8 @@ solution is included in this file.
 `action-space-randomised.txt` contains the same curated action space in a randomized order. The current GA runtime
 uploads the full 4,739-word catalog from this file to GPU constant memory once at process start.
 
-`run_genetic_algorithm` then works against a configurable active prefix of that catalog. By default it starts with the
-first 20 words and keeps that active prefix fixed unless `--word-count-step` is set. Training-word count and
+`run_genetic_algorithm` currently works against a configurable active prefix of that catalog. By default it starts with
+the first 20 words and keeps that active prefix fixed unless `--word-count-step` is set. Training-word count and
 selectable action-space count are still kept equal. When the active prefix grows, newly activated output-embedding
 tails are injected during next-generation assembly. The fast path performs that assembly on device, but the runtime can
 fall back to host memory if the genotype slab cannot realize the step within its current device budget.
@@ -38,5 +38,5 @@ fall back to host memory if the genotype slab cannot realize the step within its
 If more information about the data is needed, see the [blog post on curating the
 data](https://sam-burns.com/posts/neuroevolutionary-wordle-wordlists/).
 
-For the current runtime curriculum over the randomized action catalog, see
+For the current baseline curriculum and the intended spatial training-data shard design, see
 [`training-data-sharding-curriculum.md`](training-data-sharding-curriculum.md).
