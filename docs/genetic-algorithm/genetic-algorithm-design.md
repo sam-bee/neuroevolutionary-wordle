@@ -125,6 +125,9 @@ Overall fitness is the sum of those episode scores across the current shard.
 
 So the fitness function is closer to an aggregate task-performance score than to a conventional machine-learning loss.
 
+For the exact currently implemented scoring scheme, see
+[`current-fitness-evaluation.md`](current-fitness-evaluation.md).
+
 ## Training and Action Space
 
 The GA currently works against an active prefix of the curated Wordle action catalog.

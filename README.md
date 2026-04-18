@@ -97,6 +97,8 @@ For implementation detail on the neural network itself, see:
 - [accompanying design diagram](docs/neural-net-design/neural-net-design-diagram.png)
 - [`docs/genetic-algorithm/genetic-algorithm-design.md`](docs/genetic-algorithm/genetic-algorithm-design.md) for the
   overall character of the genetic algorithm
+- [`docs/genetic-algorithm/current-fitness-evaluation.md`](docs/genetic-algorithm/current-fitness-evaluation.md) for
+  the current implemented fitness function
 - [`docs/genetic-algorithm/output-embedding-recombination-design.md`](docs/genetic-algorithm/output-embedding-recombination-design.md)
   for the planned output-tail recombination policy
 - [`docs/genetic-algorithm/cellular-genetic-algorithm-design.md`](docs/genetic-algorithm/cellular-genetic-algorithm-design.md)
