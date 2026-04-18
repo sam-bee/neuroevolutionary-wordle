@@ -183,20 +183,20 @@ Spatial structure is meant to change mating and information diffusion, not to re
 
 ## Fitness Range
 
-This experimental design assumes a fitness function whose output is normalized to the closed interval:
+This experimental design assumes a fitness function whose output is normalized to a bounded floating-point interval:
 
-- `0.0` to `1.0`
+- `epsilon` to `1.0`
 
 The intent is to make local roulette-wheel parent selection straightforward.
 
 That means:
 
-- `0.0` represents the worst possible attainable fitness
+- `epsilon` is a very small positive floor above zero
 - `1.0` represents the theoretical ceiling for the current evaluation scheme
 - intermediate values represent normalized task performance
 
 The normalization should be defined by dividing the raw fitness score by the maximum theoretically possible score for
-the current evaluation setup.
+the current evaluation setup, then clamping the result to a small positive minimum.
 
 ## Recommended First Draft Summary
 
@@ -220,7 +220,7 @@ This first draft leaves several choices open for later discussion:
 - whether radius should remain fixed or become configurable
 - whether Moore neighbourhood is preferable to von Neumann / NEWS
 - whether the second parent may be the focal parent itself
-- how to handle the degenerate case where all 24 local fitness values are exactly zero
+- what exact epsilon value should be used for the positive fitness floor
 - whether local replacement should later become asynchronous
 - whether child placement should remain fixed at the focal cell or later allow local dispersal
 
