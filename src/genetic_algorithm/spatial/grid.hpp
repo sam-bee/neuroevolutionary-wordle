@@ -167,4 +167,21 @@ TryCollectCellularSecondParentCandidates(const CellularGridShape &shape, const s
     return TryCollectMooreRadiusNeighbors(shape, focal_cell_index, kCellularBreedingRadius, neighbors_out);
 }
 
+constexpr NEUROEVOLUTION_HOST_DEVICE bool
+TryProjectCellIndexBetweenSquareGrids(const CellularGridShape &source_shape, const CellularGridShape &target_shape,
+                                      const std::size_t target_cell_index, std::size_t &source_cell_index_out) noexcept {
+    source_cell_index_out = 0;
+    if (!IsValidCellularGridShape(source_shape) || !IsValidCellularGridShape(target_shape) ||
+        (target_cell_index >= target_shape.cell_count)) {
+        return false;
+    }
+
+    const std::size_t target_row = GridRowFromIndex(target_shape, target_cell_index);
+    const std::size_t target_column = GridColumnFromIndex(target_shape, target_cell_index);
+    const std::size_t source_row = (target_row * source_shape.side_length) / target_shape.side_length;
+    const std::size_t source_column = (target_column * source_shape.side_length) / target_shape.side_length;
+    source_cell_index_out = GridIndexFromRowColumn(source_shape, source_row, source_column);
+    return source_cell_index_out < source_shape.cell_count;
+}
+
 } // namespace neuroevolution::genetic_algorithm::spatial

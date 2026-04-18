@@ -17,6 +17,7 @@
 #include "genetic_algorithm/genome/dynamic_layout.hpp"
 #include "genetic_algorithm/genotype_slab/reference_counter.hpp"
 #include "genetic_algorithm/output_embedding_injection.hpp"
+#include "genetic_algorithm/spatial/grid.hpp"
 
 namespace neuroevolution::genetic_algorithm::slab_device {
 
@@ -27,7 +28,10 @@ using device_evaluation_ops::TryEvaluateGenomeFitness;
 using device_genome_ops::DeviceRandomState;
 using device_genome_ops::MakeDeviceRandomState;
 using device_selection_ops::IsBetterFitness;
-using device_selection_ops::TrySelectParentPairDevice;
+using device_selection_ops::TrySelectCellularParentPairDevice;
+using spatial::CellularGridShape;
+using spatial::FloorSquarePopulationSize;
+using spatial::TryMakeCellularGridShape;
 
 constexpr std::size_t kSlabGARuntimeThreadBlockSize = 256;
 NEUROEVOLUTION_HOST_DEVICE constexpr int DeviceStatusValue(const DeviceSlabGARuntimeStatusCode status_code) {
@@ -217,6 +221,16 @@ __global__ void BuildSlabAssemblyPlanKernel(const float *current_fitness, const 
         return;
     }
 
+    CellularGridShape current_grid_shape{};
+    CellularGridShape next_grid_shape{};
+    if (!TryMakeCellularGridShape(current_generation_size, current_grid_shape) ||
+        !TryMakeCellularGridShape(child_count, next_grid_shape)) {
+        if ((blockIdx.x == 0) && (threadIdx.x == 0)) {
+            SetFailureStatus(status, DeviceSlabGARuntimeStatusCode::kInvalidAssemblyConfig);
+        }
+        return;
+    }
+
     if (child_index >= child_count) {
         return;
     }
@@ -225,8 +239,8 @@ __global__ void BuildSlabAssemblyPlanKernel(const float *current_fitness, const 
         planning_seed, static_cast<std::uint32_t>(child_index + (current_generation_index * 8191U)));
 
     ParentPair parent_pair{};
-    if (!TrySelectParentPairDevice(current_fitness, current_has_fitness, current_generation_size, random_state, config,
-                                   parent_pair)) {
+    if (!TrySelectCellularParentPairDevice(current_fitness, current_has_fitness, current_grid_shape, next_grid_shape,
+                                           child_index, random_state, config, parent_pair)) {
         SetFailureStatus(status, DeviceSlabGARuntimeStatusCode::kParentSelectionFailed);
         return;
     }
@@ -484,6 +498,7 @@ inline bool TryPlanNextGenerationShape(const DeviceSlabGARuntimeBuffers &buffers
 
     next_generation_size_out = genotype_slab::SlabSlotCountForByteBudget(
         buffers.generation_byte_budget_bytes, next_action_count_out, buffers.max_generation_size);
+    next_generation_size_out = FloorSquarePopulationSize(next_generation_size_out);
     return next_generation_size_out > 0;
 }
 

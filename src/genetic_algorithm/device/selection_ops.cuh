@@ -5,11 +5,17 @@
 
 #include "genetic_algorithm/device/genome_ops.cuh"
 #include "genetic_algorithm/selection.hpp"
+#include "genetic_algorithm/spatial/grid.hpp"
 
 namespace neuroevolution::genetic_algorithm::device_selection_ops {
 
 using device_genome_ops::DeviceRandomState;
+using device_genome_ops::NextUniform01;
 using device_genome_ops::SampleIndex;
+using spatial::CellularGridShape;
+using spatial::CellularNeighborList;
+using spatial::TryCollectCellularSecondParentCandidates;
+using spatial::TryProjectCellIndexBetweenSquareGrids;
 
 __device__ inline bool IsBetterFitness(const float candidate_fitness, const std::size_t candidate_index,
                                        const float reference_fitness, const std::size_t reference_index) {
@@ -95,6 +101,81 @@ __device__ inline bool TrySelectParentPairDevice(const float *fitness_values, co
         config.allow_self_parenting ? kNoIndividualIndex : parent_pair.first_parent_index;
     return TrySelectParentIndexDevice(fitness_values, has_fitness_flags, active_population_size, random_state, config,
                                       parent_pair.second_parent_index, excluded_index);
+}
+
+__device__ inline bool
+TrySelectRouletteIndexFromCandidates(const float *fitness_values, const std::uint8_t *has_fitness_flags,
+                                     const CellularNeighborList &candidate_indices, DeviceRandomState &random_state,
+                                     std::size_t &selected_parent_index) {
+    float total_fitness = 0.0f;
+    bool found_candidate = false;
+    std::size_t fallback_index = 0;
+
+    for (std::size_t candidate_offset = 0; candidate_offset < candidate_indices.count; ++candidate_offset) {
+        const std::size_t candidate_index = candidate_indices.indices[candidate_offset];
+        if (has_fitness_flags[candidate_index] == 0) {
+            continue;
+        }
+
+        total_fitness += fitness_values[candidate_index];
+        fallback_index = candidate_index;
+        found_candidate = true;
+    }
+
+    if (!found_candidate || (total_fitness <= 0.0f)) {
+        return false;
+    }
+
+    const float threshold = NextUniform01(random_state) * total_fitness;
+    float cumulative_fitness = 0.0f;
+    for (std::size_t candidate_offset = 0; candidate_offset < candidate_indices.count; ++candidate_offset) {
+        const std::size_t candidate_index = candidate_indices.indices[candidate_offset];
+        if (has_fitness_flags[candidate_index] == 0) {
+            continue;
+        }
+
+        cumulative_fitness += fitness_values[candidate_index];
+        if (threshold <= cumulative_fitness) {
+            selected_parent_index = candidate_index;
+            return true;
+        }
+    }
+
+    selected_parent_index = fallback_index;
+    return true;
+}
+
+__device__ inline bool TrySelectCellularParentPairDevice(
+    const float *fitness_values, const std::uint8_t *has_fitness_flags, const CellularGridShape &current_grid_shape,
+    const CellularGridShape &next_grid_shape, const std::size_t child_index, DeviceRandomState &random_state,
+    const ParentSelectionConfig &config, ParentPair &parent_pair) {
+    if ((fitness_values == nullptr) || (has_fitness_flags == nullptr) || (child_index >= next_grid_shape.cell_count)) {
+        return false;
+    }
+
+    if (!TryProjectCellIndexBetweenSquareGrids(current_grid_shape, next_grid_shape, child_index,
+                                               parent_pair.first_parent_index) ||
+        (has_fitness_flags[parent_pair.first_parent_index] == 0)) {
+        return false;
+    }
+
+    CellularNeighborList candidate_indices{};
+    if (!TryCollectCellularSecondParentCandidates(current_grid_shape, parent_pair.first_parent_index,
+                                                  candidate_indices)) {
+        return false;
+    }
+
+    if (config.allow_self_parenting) {
+        if (candidate_indices.count >= spatial::kMaxCellularSecondParentCandidateCount) {
+            return false;
+        }
+
+        candidate_indices.indices[candidate_indices.count] = parent_pair.first_parent_index;
+        ++candidate_indices.count;
+    }
+
+    return TrySelectRouletteIndexFromCandidates(fitness_values, has_fitness_flags, candidate_indices, random_state,
+                                                parent_pair.second_parent_index);
 }
 
 } // namespace neuroevolution::genetic_algorithm::device_selection_ops
