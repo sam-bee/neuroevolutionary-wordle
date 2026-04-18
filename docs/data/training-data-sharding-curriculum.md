@@ -1,12 +1,12 @@
 # Training Data Sharding Curriculum
 
-This document records two things:
+This document records:
 
-- the **current** implemented training-data curriculum baseline
-- the **intended next design** for spatially aware training-data shards
+- the previous active-prefix curriculum baseline
+- the **current** implemented spatial training-data shard model
 
-The purpose of keeping both in one place is to make the transition explicit. The current runtime still uses the
-baseline model, but the design direction is now the spatial-shard model described below.
+The old baseline still matters, because the implemented shard model keeps the same phased action-space growth schedule
+while changing how those introduced words are exposed during fitness evaluation.
 
 ## Current Baseline
 
@@ -17,7 +17,7 @@ At process start:
 - the full catalog is loaded from `data/action-space-randomised.txt`
 - the full catalog is uploaded to GPU constant memory once
 
-During a run, the current GA does **not** switch between independent shard identities.
+During a run, the old baseline did **not** switch between independent shard identities.
 
 Instead, it uses a monotonic active prefix of that single randomized catalog. The relevant knobs are:
 
@@ -25,7 +25,7 @@ Instead, it uses a monotonic active prefix of that single randomized catalog. Th
 - `word_count_step`
 - `word_count_step_period_generations`
 
-In the current implementation:
+In that baseline implementation:
 
 - the active training-word count and active selectable action-space count are kept equal
 - later curriculum phases are created only by increasing the active prefix length
@@ -35,13 +35,12 @@ So the current meaning of “shard” is only a loose one:
 
 - the effective shard is just “the first `N` words of the randomized catalog”
 
-That baseline matters because the next design deliberately changes the semantics of sharding without giving up the
+That baseline matters because the current design deliberately changes the semantics of sharding without giving up the
 existing idea that action-space growth widens the genotype.
 
-## Intended Next Design
+## Current Spatial Shard Design
 
-The next design should move away from “one expanding active prefix” and toward **spatially aware training-data
-shards**.
+The runtime now moves away from “one expanding active prefix” and toward **spatially aware training-data shards**.
 
 The core idea is:
 
@@ -50,11 +49,12 @@ The core idea is:
 - each shard has an effective radius on that grid
 - the shard affects fitness evaluation only for organisms whose cells lie within that radius
 
-So the training-data curriculum becomes a spatial diffusion process rather than a global count step.
+So the training-data curriculum is now a spatial diffusion process layered on top of the existing phased word-count
+schedule.
 
 ## Relationship To The Cellular GA Grid
 
-Training-data shards should use the same conceptual grid system as the cellular GA.
+Training-data shards use the same conceptual grid system as the cellular GA.
 
 That means:
 
@@ -68,7 +68,7 @@ fitness evaluation.
 
 ## Shard Identity
 
-Under the intended design, a shard is a real object, not just a count.
+Under the current design, a shard is a real object, not just a count.
 
 Each shard has at least:
 
@@ -81,8 +81,8 @@ So unlike the current baseline, shards have identity, geometry, and temporal beh
 
 ## Action-Space Exposure
 
-When a new training-data shard is introduced, its words should be added to the action spaces of **all** organisms
-straight away.
+When a new training-data shard is introduced, its words are added to the action spaces of **all** organisms straight
+away.
 
 That means:
 
@@ -112,7 +112,7 @@ That is intentional.
 
 All shards contribute equal weight.
 
-The intended interpretation is:
+The implemented interpretation is:
 
 - if a word is present in the local union, it counts like any other active evaluation word
 - no shard gets special weighting just because it is newer, older, larger, or more local
@@ -129,8 +129,8 @@ not:
 
 ## Fitness Scale
 
-Even though different cells may be evaluated against different local unions of words, fitness should still be
-normalized onto a `0..1` scale.
+Even though different cells may be evaluated against different local unions of words, fitness is normalized onto a
+`0..1` scale.
 
 So the intended rule is:
 
@@ -142,7 +142,7 @@ the scoring system remains bounded and selection-friendly.
 
 ## Radius Semantics
 
-The intended shard coverage model is cellular and toroidal, matching the population grid.
+The shard coverage model is cellular and toroidal, matching the population grid.
 
 The radius should be interpreted in the same Moore / Chebyshev sense used elsewhere in the cellular design.
 
@@ -158,33 +158,27 @@ Once the radius is global, it stops growing.
 
 ## Radius Growth
 
-New shards should not become global immediately.
+New shards do not become global immediately.
 
-The intended growth pattern is:
+The growth pattern is:
 
 - shard is introduced at radius `0`
 - after the configured growth interval, radius becomes `1`
 - after the next growth interval, radius becomes `2`
 - growth continues outward until the shard is effectively global
 
-The current preferred default is:
+The current default is:
 
 - grow radius every `2` generations
 
-But this should be configurable rather than hard-coded.
-
-So the design should include something like:
-
-- a shard radius growth interval in generations
-
-with the current preferred default of `2`.
+This is configurable through the runtime.
 
 ## Global Foundation Shard
 
-The very first words used by the GA from the first generation onward should be treated as effectively global from the
+The very first words used by the GA from the first generation onward are treated as effectively global from the
 outset.
 
-So the intended curriculum is not “everything starts local”.
+So the implemented curriculum is not “everything starts local”.
 
 Instead:
 
@@ -204,11 +198,11 @@ This spatial-shard model has a few important consequences:
 - some organisms will be evaluated on more words than others
 - generation-wide summary fitness becomes a rough aggregate rather than a perfectly apples-to-apples statistic
 
-Those consequences are acceptable within the current direction of the design.
+Those consequences are part of the current runtime behavior.
 
-## Summary Of The Intended Model
+## Summary Of The Implemented Model
 
-The intended next sharding model is:
+The implemented sharding model is:
 
 - one shared global action-space catalog
 - initial foundation words globally active from the outset

@@ -27,11 +27,13 @@ solution is included in this file.
 `action-space-randomised.txt` contains the same curated action space in a randomized order. The current GA runtime
 uploads the full 4,739-word catalog from this file to GPU constant memory once at process start.
 
-`run_genetic_algorithm` currently works against a configurable active prefix of that catalog. By default it starts with
-the first 20 words and keeps that active prefix fixed unless `--word-count-step` is set. Training-word count and
-selectable action-space count are still kept equal. When the active prefix grows, newly activated output-embedding
-tails are injected during next-generation assembly. The fast path performs that assembly on device, but the runtime can
-fall back to host memory if the genotype slab cannot realize the step within its current device budget.
+`run_genetic_algorithm` now introduces words from the top of that catalog on a configurable phased schedule. The
+initial foundation words are globally active from generation 0, later phases become spatial training-data shards on the
+cellular grid, and each organism is evaluated against the equal-weight union of the in-range shards for its cell.
+Training-word count and selectable action-space count are still kept equal, so output-embedding growth remains global.
+When the active prefix grows, newly activated output-embedding tails are injected during next-generation assembly. The
+fast path performs that assembly on device, but the runtime can spill already-assembled children to temporary host-side
+slab storage if the genotype slab cannot realize the step within its current device budget.
 
 ## More Information on Data
 

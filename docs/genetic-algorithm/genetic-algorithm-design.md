@@ -130,16 +130,20 @@ For the exact currently implemented scoring scheme, see
 
 ## Training and Action Space
 
-The GA currently works against an active prefix of the curated Wordle action catalog.
+The GA currently works against a phased prefix of the curated Wordle action catalog, but fitness exposure is spatial
+rather than globally mixed.
 
-At any generation there are two closely related counts:
+At any generation there are two closely related global counts:
 
 - the active training-word count
 - the selectable action-space count
 
 At present those are kept equal in the runtime.
 
-By default the active prefix starts at 20 words and stays fixed unless a word-count growth schedule is configured.
+By default the foundation prefix starts at 20 words and stays fixed unless a word-count growth schedule is configured.
+When the schedule introduces more words, those new words are added to every organism's action space immediately, but
+their fitness influence diffuses through the cellular grid as spatial training-data shards rather than hitting the whole
+population at once.
 
 ## Genotype Growth
 
