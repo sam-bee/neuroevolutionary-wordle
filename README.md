@@ -28,13 +28,21 @@ all allowed solutions while biasing the action space toward common words derived
 
 More information on data is available at [`docs/data/data-docs.md`](docs/data/data-docs.md).
 
+More detailed design information lives under the [`docs/`](docs/) folder. In particular:
+
+- [`docs/neural-net-design/`](docs/neural-net-design/) covers the policy-model structure
+- [`docs/data/`](docs/data/) covers the curated Wordle wordlists
+- [`docs/genetic-algorithm/`](docs/genetic-algorithm/) covers slab-backed GA runtime design
+
 The current GA demo uploads the full 4,739-word action catalog from `data/action-space-randomised.txt` to GPU
 constant memory once at process start.
 
 During a run, `run_genetic_algorithm` uses a configurable active prefix of that catalog. By default it starts with the
-first 20 words, grows the active prefix by 1 word per generation, and keeps training-word count and selectable
-action-space count equal. Newly activated output-embedding tails are injected on-device during next-generation
-assembly. Under a fixed genotype VRAM budget, the population may shrink as active action count grows.
+first 20 words and keeps that active prefix fixed unless `--word-count-step` is set. Training-word count and
+selectable action-space count are still kept equal. When the active prefix grows, newly activated output-embedding
+tails are injected during next-generation assembly. The fast path performs that assembly on device, but the runtime can
+fall back to host memory if the genotype slab cannot realize the step within its current device budget. Under a fixed
+genotype VRAM budget, the population may shrink as active action count grows.
 
 ## Why this exists
 
@@ -85,10 +93,34 @@ For implementation detail on the neural network itself, see:
 
 - [`docs/neural-net-design.md`](docs/neural-net-design/neural-net-design.md)
 - [accompanying design diagram](docs/neural-net-design/neural-net-design-diagram.png)
+- [`docs/genetic-algorithm/genotype-slab-design.md`](docs/genetic-algorithm/genotype-slab-design.md) for the shared
+  genotype slab and slab allocator design
 
 That document is intended to be concrete enough for CUDA implementation of the model structure, while deliberately
 staying focused on the policy model rather than the wider genetic algorithm, reinforcement learning, and training-loop
 design.
+
+## Repository Layout
+
+The current documentation tree is organised as:
+
+- [`docs/data/`](docs/data/)
+  Data files, action-space notes, and training-word catalog context.
+- [`docs/neural-net-design/`](docs/neural-net-design/)
+  Policy-model structure and related diagrams.
+- [`docs/genetic-algorithm/`](docs/genetic-algorithm/)
+  Slab-backed GA runtime and memory-management design.
+
+The current genetic-algorithm source tree is organised as:
+
+- [`src/genetic_algorithm/device/`](src/genetic_algorithm/device/)
+  CUDA runtime orchestration, evaluation, selection, and wrapper-level slab stepping.
+- [`src/genetic_algorithm/genome/`](src/genetic_algorithm/genome/)
+  Dynamic genome layout and byte-interpretation helpers.
+- [`src/genetic_algorithm/genotype_slab/`](src/genetic_algorithm/genotype_slab/)
+  The genotype slab, slab allocator, device assembly, reference counting, and widening repacking.
+- [`src/genetic_algorithm/`](src/genetic_algorithm/)
+  Shared GA-level helpers such as breeding, mutation, selection, and population types.
 
 ## Build setup
 
@@ -143,13 +175,14 @@ binary directly, it will inherit whatever values your shell or profiling tool al
 
 ## Status
 
-This repository is currently at the **model implementation plus early genetic-algorithm** stage.
+This repository is currently at the **model implementation plus slab-backed genetic-algorithm runtime** stage.
 
 Immediate goals:
 
 - continue validating forward inference end-to-end
-- build out training-data handling for GA experiments
-- continue implementing and refining the genetic-algorithm runtime
+- continue hardening the slab-backed genetic-algorithm runtime
+- continue refining growth handling, garbage collection, and host-failover behaviour
+- build out broader training-data and GA experiment handling
 - later explore reinforcement-learning ideas if they prove useful
 
 Broader training design still comes later.

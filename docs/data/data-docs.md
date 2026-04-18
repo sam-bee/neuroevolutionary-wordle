@@ -28,9 +28,10 @@ solution is included in this file.
 uploads the full 4,739-word catalog from this file to GPU constant memory once at process start.
 
 `run_genetic_algorithm` then works against a configurable active prefix of that catalog. By default it starts with the
-first 20 words, grows the active prefix by 1 word per generation, and keeps training-word count and selectable
-action-space count equal for now. Newly activated output-embedding tails are injected on-device during next-generation
-assembly.
+first 20 words and keeps that active prefix fixed unless `--word-count-step` is set. Training-word count and
+selectable action-space count are still kept equal. When the active prefix grows, newly activated output-embedding
+tails are injected during next-generation assembly. The fast path performs that assembly on device, but the runtime can
+fall back to host memory if the genotype slab cannot realize the step within its current device budget.
 
 ## More Information on Data
 

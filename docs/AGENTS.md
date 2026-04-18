@@ -8,7 +8,8 @@ project, please see `docs/neural-net-design/neural-net-design.md` for more infor
 ## Tool Overview
 
 All there is to be said about this initially is that we are using CUDA. Target Nvidia Compute Compatibility level is
-12.0. Target hardware is an RTX 5070 Ti GPU with 16Gb of VRAM.
+12.0. Production workloads run on an RTX 5070 Ti GPU with 16Gb of VRAM. Some development work is also done on an RTX
+5050 with 8Gb of VRAM.
 
 For build-and-test feedback, prefer `make rebuild`. That is the project's best end-to-end verification command: it
 reformats the code, performs a clean rebuild, and runs the full test suite, including GPU-backed coverage.
