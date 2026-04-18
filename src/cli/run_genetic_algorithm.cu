@@ -14,6 +14,7 @@
 
 #include "genetic_algorithm/device/slab_runtime.hpp"
 #include "genetic_algorithm/genome/dynamic_layout.hpp"
+#include "genetic_algorithm/spatial/grid.hpp"
 #include "genetic_algorithm/genotype_slab/generation.hpp"
 #include "genetic_algorithm/genotype_slab/slab_allocator.hpp"
 #include "training_folder/training_data.hpp"
@@ -47,6 +48,9 @@ using neuroevolution::genetic_algorithm::slab_device::TryEvaluateCurrentGenerati
 using neuroevolution::genetic_algorithm::slab_device::TryReadDeviceSlabGARuntimeStatus;
 using neuroevolution::genetic_algorithm::slab_device::TryReadPopulationFitnessSummaryFromDevice;
 using neuroevolution::genetic_algorithm::slab_device::TryUploadCurrentSlabPopulationToDevice;
+using neuroevolution::genetic_algorithm::spatial::CellularGridShape;
+using neuroevolution::genetic_algorithm::spatial::FloorSquarePopulationSize;
+using neuroevolution::genetic_algorithm::spatial::TryMakeCellularGridShape;
 using neuroevolution::training_folder::DefaultActionSpacePath;
 using neuroevolution::training_folder::IsValidWordCountSchedule;
 using neuroevolution::training_folder::LoadTrainingWordCatalogFromActionSpace;
@@ -91,6 +95,8 @@ void PrintUsage() {
               << ", word_count_step=0, word_count_step_period_generations=1.\n"
               << "Positive word-count growth is handled by slab compaction/repacking, so later generations may "
                  "shrink population size as the output embedding grows.\n"
+              << "The startup population is floored to the largest square number that fits the configured budget so "
+                 "it can be laid out as a square cellular grid.\n"
               << "If --genotype-vram-gb is omitted, the program uses a default whole-slab budget of "
               << kDefaultGenotypeSlabBudgetGiB << " GiB.\n"
               << "If --generation-vram-gb is omitted, the program derives a single-generation budget from the whole "
@@ -450,14 +456,26 @@ int main(int argc, char **argv) {
             return 1;
         }
 
-        const std::size_t initial_population_size = cli_config.population_size_was_provided
-                                                        ? cli_config.population_size_ceiling
-                                                        : generation_population_capacity;
-        if (initial_population_size > generation_population_capacity) {
+        const std::size_t requested_initial_population_size = cli_config.population_size_was_provided
+                                                                  ? cli_config.population_size_ceiling
+                                                                  : generation_population_capacity;
+        if (requested_initial_population_size > generation_population_capacity) {
             std::cerr << "The requested generation VRAM budget is too small to guarantee a population of "
-                      << initial_population_size
+                      << requested_initial_population_size
                       << " individuals at the starting action count. Increase --generation-vram-gb or lower "
                          "--population-size.\n";
+            return 1;
+        }
+
+        const std::size_t initial_population_size = FloorSquarePopulationSize(requested_initial_population_size);
+        if (initial_population_size == 0) {
+            std::cerr << "The requested startup population is too small to form a square cellular grid.\n";
+            return 1;
+        }
+
+        CellularGridShape initial_grid_shape{};
+        if (!TryMakeCellularGridShape(initial_population_size, initial_grid_shape)) {
+            std::cerr << "Could not derive a valid square cellular grid from the startup population size.\n";
             return 1;
         }
 
@@ -497,7 +515,9 @@ int main(int argc, char **argv) {
             return 1;
         }
 
-        std::cout << "Running device GA demo with initial_population=" << initial_population_size
+        std::cout << "Running device GA demo with requested_initial_population=" << requested_initial_population_size
+                  << ", initial_population=" << initial_population_size
+                  << ", initial_grid_side_length=" << initial_grid_shape.side_length
                   << ", population_ceiling=" << PopulationCeilingLabel(cli_config.population_size_ceiling)
                   << ", slab_slot_count=" << slab_slot_count
                   << ", generation_population_capacity=" << generation_population_capacity

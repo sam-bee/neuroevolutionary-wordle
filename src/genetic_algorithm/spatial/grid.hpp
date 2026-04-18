@@ -2,8 +2,6 @@
 
 #include <cstddef>
 #include <cstdint>
-#include <limits>
-
 #include "common/cuda_compat.hpp"
 #include "common/fixed_buffer.hpp"
 
@@ -13,6 +11,7 @@ constexpr std::size_t kCellularBreedingRadius = 2;
 constexpr std::size_t kMaxCellularSecondParentCandidateCount =
     ((2 * kCellularBreedingRadius) + 1) * ((2 * kCellularBreedingRadius) + 1) - 1;
 constexpr float kPositiveSelectionFitnessFloor = 1.40129846e-45f;
+constexpr std::size_t kMaxSizeT = static_cast<std::size_t>(-1);
 
 struct CellularGridShape {
     std::size_t side_length = 0;
@@ -26,7 +25,7 @@ struct CellularNeighborList {
 
 constexpr NEUROEVOLUTION_HOST_DEVICE bool IsValidCellularGridShape(const CellularGridShape &shape) noexcept {
     return (shape.side_length > 0) && (shape.cell_count > 0) &&
-           (shape.side_length <= (std::numeric_limits<std::size_t>::max() / shape.side_length)) &&
+           (shape.side_length <= (kMaxSizeT / shape.side_length)) &&
            ((shape.side_length * shape.side_length) == shape.cell_count);
 }
 
@@ -66,8 +65,7 @@ constexpr NEUROEVOLUTION_HOST_DEVICE bool TryMakeCellularGridShape(const std::si
     }
 
     const std::size_t side_length = FloorSquareRoot(cell_count);
-    if ((side_length == 0) || (side_length > (std::numeric_limits<std::size_t>::max() / side_length)) ||
-        ((side_length * side_length) != cell_count)) {
+    if ((side_length == 0) || (side_length > (kMaxSizeT / side_length)) || ((side_length * side_length) != cell_count)) {
         return false;
     }
 
