@@ -99,6 +99,8 @@ For implementation detail on the neural network itself, see:
   overall character of the genetic algorithm
 - [`docs/genetic-algorithm/output-embedding-recombination-design.md`](docs/genetic-algorithm/output-embedding-recombination-design.md)
   for the planned output-tail recombination policy
+- [`docs/genetic-algorithm/cellular-genetic-algorithm-design.md`](docs/genetic-algorithm/cellular-genetic-algorithm-design.md)
+  for an experimental cellular-GA / spatial-parent-selection design
 - [`docs/genetic-algorithm/genotype-slab-and-garbage-collector/genotype-slab-design.md`](docs/genetic-algorithm/genotype-slab-and-garbage-collector/genotype-slab-design.md)
   for the shared genotype slab and slab allocator design
 
