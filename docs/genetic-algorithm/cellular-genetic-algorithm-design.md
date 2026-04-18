@@ -107,28 +107,20 @@ The recommended first draft is:
 
 The recommended default local selector is:
 
-- **tournament selection**, not roulette-wheel selection
+- **roulette-wheel selection** within the local breeding neighbourhood
 
 More concretely:
 
 - collect the eligible neighbours inside the breeding radius
-- sample a small local tournament from those neighbours
-- choose the fittest tournament winner as the second parent
+- normalize local fitness values over those neighbours
+- sample the second parent from that local probability distribution
 
-This is the cleanest continuation of the current GA style, which already uses tournament selection.
+This intentionally differs from the project’s current global tournament-selection design.
 
 ### Why Tournament Instead of Roulette Wheel
 
-The initial recommendation is **local tournament selection** for the second parent.
-
-Reasons:
-
-- it matches the project’s current parent-selection style
-- it avoids having to normalize local fitness distributions every mating event
-- it gives bounded and understandable selection pressure
-- it is easy to implement efficiently on device
-
-Roulette-wheel selection is still a plausible experimental variant later, but it is not the recommended first version.
+The current experimental direction for this document is **local roulette-wheel selection** for the second parent,
+rather than tournament selection.
 
 ## Breeding Radius
 
@@ -136,19 +128,19 @@ The breeding radius should be interpreted as a **local neighbourhood radius on t
 
 The recommended first draft is:
 
-- **radius = 1**
+- **radius = 2**
 - **Chebyshev / Moore neighbourhood**
 
-That means the focal cell can mate with the 8 surrounding cells:
+That means the focal cell can mate with the 24 surrounding cells in the `5 x 5` Moore window around it:
 
-- north, south, east, west
-- the 4 diagonals
+- all cells within Chebyshev distance `<= 2`
+- excluding the focal cell itself
 
 This is a sensible default because:
 
 - it is standard in cellular-GA work
-- it is local enough to create meaningful spatial structure
-- it is not so restrictive that the population becomes isolated too quickly
+- it is still local enough to create meaningful spatial structure
+- it gives a broader mating pool than radius 1 while remaining spatially constrained
 
 If later experiments suggest the GA diffuses too slowly, the first thing to vary should be the radius.
 
@@ -189,6 +181,23 @@ This experimental design should still use **no elitism**.
 
 Spatial structure is meant to change mating and information diffusion, not to reintroduce elite carry-over.
 
+## Fitness Range
+
+This experimental design assumes a fitness function whose output is normalized to the closed interval:
+
+- `0.0` to `1.0`
+
+The intent is to make local roulette-wheel parent selection straightforward.
+
+That means:
+
+- `0.0` represents the worst possible attainable fitness
+- `1.0` represents the theoretical ceiling for the current evaluation scheme
+- intermediate values represent normalized task performance
+
+The normalization should be defined by dividing the raw fitness score by the maximum theoretically possible score for
+the current evaluation setup.
+
 ## Recommended First Draft Summary
 
 If this feature is prototyped, the recommended first version is:
@@ -197,9 +206,9 @@ If this feature is prototyped, the recommended first version is:
 - population size rounded down to the nearest feasible square number at startup
 - one genotype per cell
 - first parent is the focal cell occupant
-- second parent chosen by **local tournament selection**
-- breeding radius `1`
-- Chebyshev / Moore neighbourhood
+- second parent chosen by **local roulette-wheel selection**
+- breeding radius `2`
+- Chebyshev / Moore neighbourhood with 24 candidate second parents
 - child written to the same cell in the next-generation grid
 - synchronous generational replacement
 - no elitism
@@ -211,6 +220,7 @@ This first draft leaves several choices open for later discussion:
 - whether radius should remain fixed or become configurable
 - whether Moore neighbourhood is preferable to von Neumann / NEWS
 - whether the second parent may be the focal parent itself
+- how to handle the degenerate case where all 24 local fitness values are exactly zero
 - whether local replacement should later become asynchronous
 - whether child placement should remain fixed at the focal cell or later allow local dispersal
 
