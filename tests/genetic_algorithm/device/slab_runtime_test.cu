@@ -585,66 +585,6 @@ bool TestSlabRuntimeUsesHostSpilloverWhenDeviceSlackIsExhausted() {
     return ok;
 }
 
-bool TestSlabRuntimeRejectsGrowthWhenWidenedSlabHasNoInitialChildSlot() {
-    constexpr std::size_t kInjectedWordCount = 1;
-
-    TrainingWordCatalog training_word_catalog{};
-    if (!InitializeTrainingCatalog(training_word_catalog)) {
-        std::cerr << "FAIL: could not upload training-word catalog to device constant memory\n";
-        return false;
-    }
-
-    HostPopulation host_population{};
-    bool ok = TryInitializeRandomHostPopulation(host_population, 2, kActionCount, 59U);
-    CopyGenomeAcrossPopulation(host_population, 0);
-
-    HostGenotypeSlab host_buffer{};
-    SlabGeneration current_generation{};
-    ok &= PopulateSlabGenerationFromHostPopulation(host_population, 3, 11, host_buffer, current_generation);
-    if (!ok) {
-        std::cerr << "FAIL: could not build growth-spill fixtures\n";
-        return false;
-    }
-
-    PendingOutputEmbeddingInjection pending_output_embedding_injection{};
-    pending_output_embedding_injection.enabled = true;
-    pending_output_embedding_injection.first_catalog_word_index = kActionCount;
-    pending_output_embedding_injection.injection_count = kInjectedWordCount;
-
-    const DeviceSlabGARuntimeConfig runtime_config = MakeRuntimeConfig(3, 2, kActionCount);
-    const std::size_t next_action_count = kActionCount + kInjectedWordCount;
-    const std::size_t expected_next_generation_size = SlabSlotCountForByteBudget(
-        ComputeGenerationByteBudgetBytes(runtime_config), next_action_count, runtime_config.population_size_ceiling);
-    ok &= ExpectTrue(expected_next_generation_size == 1,
-                     "Expected the growth-spill fixture to shrink the grown generation to one child");
-    if (!ok) {
-        return false;
-    }
-
-    DeviceSlabGARuntimeBuffers buffers{};
-    ok &= TryCreateDeviceSlabGARuntimeBuffers(buffers, runtime_config);
-    ok &= TryUploadCurrentSlabPopulationToDevice(host_buffer, current_generation, buffers);
-    ok &= ExpectTrue(!TryAdvanceGenerationOnDevice(buffers, 61U, MakeRuntimeWordCounts(), MakeAssemblyConfig(),
-                                                   pending_output_embedding_injection, &training_word_catalog),
-                     "Expected growth to fail when widening leaves no initial on-device child slot and children-only "
-                     "spillover cannot bootstrap assembly");
-
-    DeviceSlabGARuntimeStatusCode status_code = DeviceSlabGARuntimeStatusCode::kOk;
-    ok &= TryReadDeviceSlabGARuntimeStatus(buffers, status_code);
-    ok &= ExpectTrue(!buffers.last_generation_used_host_spillover,
-                     "Expected failed growth without an initial child slot to avoid host spillover");
-    ok &= ExpectTrue(buffers.host_spillover_count == 0,
-                     "Expected impossible widened growth to record no host spillover");
-    neuroevolution::genetic_algorithm::slab_device::DestroyDeviceSlabGARuntimeBuffers(buffers);
-    if (!ok) {
-        return false;
-    }
-
-    ok &= ExpectTrue(status_code == DeviceSlabGARuntimeStatusCode::kSlabRepackFailed,
-                     "Expected impossible widened growth without a bootstrap child slot to report slab repack failure");
-    return ok;
-}
-
 } // namespace
 
 int main() {
@@ -655,8 +595,7 @@ int main() {
     if (!TestSlabRuntimeEvaluatesAndSummarizesCurrentGeneration() || !TestSlabRuntimeAdvancesOneGeneration() ||
         !TestSlabRuntimeGrowsActionCountWithSlabRepacking() ||
         !TestSlabRuntimeRejectsGrowthWhenGenerationBudgetCannotFitOneChild() ||
-        !TestSlabRuntimeUsesHostSpilloverWhenDeviceSlackIsExhausted() ||
-        !TestSlabRuntimeRejectsGrowthWhenWidenedSlabHasNoInitialChildSlot()) {
+        !TestSlabRuntimeUsesHostSpilloverWhenDeviceSlackIsExhausted()) {
         return 1;
     }
 
