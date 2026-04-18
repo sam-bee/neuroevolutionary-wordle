@@ -38,8 +38,8 @@ This avoids edge cells having systematically fewer neighbours than interior cell
 
 ## Population Size and Grid Shape
 
-To simplify the runtime and keep the spatial structure regular, the population size should be converted to a square
-number at startup.
+To simplify the runtime and keep the spatial structure regular, the population size should always be converted to a
+square number before the spatial parent-selection step runs.
 
 The intended rule is:
 
@@ -47,11 +47,12 @@ The intended rule is:
 2. round that size **down** to the largest square number that does not exceed it
 3. lay the population out as an `N x N` grid
 
-So the cellular runtime would operate on:
+So the cellular runtime operates on:
 
 - a square population
 - one genotype per grid cell
-- a stable lattice shape for the duration of a run, unless a later design change decides otherwise
+- a square lattice shape that may shrink at genotype-growth boundaries if the fixed generation byte budget no longer
+  fits the previous square population
 
 ## Spatial Coordinates
 
@@ -91,13 +92,17 @@ for that site may differ substantially from the focal parent.
 
 ## First Parent
 
-The recommended first draft is:
+The implemented first draft is:
 
 - **first parent = the genotype currently occupying the focal cell**
 
 This is the most standard cellular-GA choice and matches the intended “fixed spatial coordinate” interpretation.
 
-It also avoids adding a second layer of global selection pressure before locality has had any effect.
+When the next generation remains the same square size, the focal cell is the same cell index in the current grid.
+
+When genotype growth shrinks the next square population, the next-generation cells are projected across the current
+grid so the smaller lattice still samples focal parents from across the full parent lattice, rather than only from a
+linear prefix.
 
 ## Second Parent
 
@@ -150,7 +155,8 @@ The recommended first draft is:
 
 - **child location = the same cell as the first parent, but in the next-generation grid**
 
-So if a child is produced at grid cell `(r, c)`, that child occupies `(r, c)` in the offspring population.
+So if a child is produced for grid cell `(r, c)` in the next-generation lattice, that child occupies `(r, c)` in the
+offspring population.
 
 This keeps the spatial model simple:
 
