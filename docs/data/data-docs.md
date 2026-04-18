@@ -37,3 +37,6 @@ fall back to host memory if the genotype slab cannot realize the step within its
 
 If more information about the data is needed, see the [blog post on curating the
 data](https://sam-burns.com/posts/neuroevolutionary-wordle-wordlists/).
+
+For the current runtime curriculum over the randomized action catalog, see
+[`training-data-sharding-curriculum.md`](training-data-sharding-curriculum.md).
