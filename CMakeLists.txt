@@ -389,6 +389,21 @@ set_tests_properties(genotype_slab_test PROPERTIES
     LABELS "cpu;unit"
 )
 
+add_executable(spatial_grid_test
+    tests/genetic_algorithm/spatial_grid_test.cpp
+)
+
+target_link_libraries(spatial_grid_test PRIVATE
+    genetic_algorithm
+)
+
+enable_project_warnings(spatial_grid_test)
+
+add_test(NAME spatial_grid_test COMMAND spatial_grid_test)
+set_tests_properties(spatial_grid_test PROPERTIES
+    LABELS "cpu;unit"
+)
+
 add_executable(training_data_test
     tests/training_folder/training_data_test.cpp
 )
