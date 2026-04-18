@@ -49,6 +49,8 @@ using neuroevolution::genetic_algorithm::genotype_slab::device::TryReadDeviceSla
 using neuroevolution::genetic_algorithm::genotype_slab::device::TryUploadAssemblyPlanToDevice;
 using neuroevolution::genetic_algorithm::genotype_slab::device::TryUploadCurrentGenerationToDevice;
 using neuroevolution::genetic_algorithm::genotype_slab::device::TryUploadSlabToDevice;
+using neuroevolution::genetic_algorithm::output_tail_ops::kRowBlendMaximumLambda;
+using neuroevolution::genetic_algorithm::output_tail_ops::kRowBlendMinimumLambda;
 
 constexpr int kSelectedVisibleDeviceIndex = 0;
 constexpr float kTolerance = 1.0e-3f;
@@ -98,8 +100,10 @@ bool ExpectNear(const float actual, const float expected, const std::string_view
 SlabDeviceAssemblyConfig MakeDeterministicAssemblyConfig() {
     SlabDeviceAssemblyConfig config{};
     config.breeding.first_parent_probability = 1.0f;
+    config.breeding.output_tail_row_arithmetic_recombination_probability = 0.0f;
     config.mutation.mutation_probability = 0.0f;
     config.mutation.mutation_sigma = 0.0f;
+    config.mutation.output_tail_row_scale_mutation_probability = 0.0f;
     return config;
 }
 
@@ -530,6 +534,174 @@ bool TestDeviceSlabRuntimeReusesSweptAndReleasedSlotsDuringAssembly() {
                      "Expected zero-reference parents to be garbage-collected on-device before child assembly");
     ok &= ExpectTrue(downloaded_buffer.free_slot_count == 1,
                      "Expected one free slot to remain after two children occupy the reused slab slots");
+    return ok;
+}
+
+bool TestDeviceSlabRuntimeArithmeticRecombinesOutputTailRows() {
+    HostGenotypeSlab host_buffer{};
+    SlabGeneration current_generation{};
+    bool ok = TryCreateHostGenotypeSlab(host_buffer, 3, 4);
+    ok &= TryCreateSlabGeneration(current_generation, 2, 7);
+    if (!ok) {
+        std::cerr << "FAIL: could not allocate arithmetic row-recombination fixtures\n";
+        return false;
+    }
+
+    std::uint32_t parent_slots[2]{};
+    for (std::size_t parent_index = 0; parent_index < current_generation.active_individual_count; ++parent_index) {
+        ok &= TryAllocateSlabSlot(host_buffer, parent_slots[parent_index]);
+        ok &= TrySetSlabGenerationSlot(current_generation, parent_index, parent_slots[parent_index]);
+    }
+    if (!ok) {
+        return false;
+    }
+
+    GenomePolicyModelParameters(HostSlabSlotBytesAt(host_buffer, parent_slots[0]))
+        .dense_trunk.hidden1_to_output.biases[0] = ToFloat16(11.0f);
+    GenomePolicyModelParameters(HostSlabSlotBytesAt(host_buffer, parent_slots[1]))
+        .dense_trunk.hidden1_to_output.biases[0] = ToFloat16(22.0f);
+    GenomeTailRows(HostSlabSlotBytesAt(host_buffer, parent_slots[0]))[0][0] = ToFloat16(10.0f);
+    GenomeTailRows(HostSlabSlotBytesAt(host_buffer, parent_slots[0]))[0][1] = ToFloat16(-6.0f);
+    GenomeTailRows(HostSlabSlotBytesAt(host_buffer, parent_slots[0]))[0][2] = ToFloat16(4.0f);
+    GenomeTailRows(HostSlabSlotBytesAt(host_buffer, parent_slots[1]))[0][0] = ToFloat16(30.0f);
+    GenomeTailRows(HostSlabSlotBytesAt(host_buffer, parent_slots[1]))[0][1] = ToFloat16(14.0f);
+    GenomeTailRows(HostSlabSlotBytesAt(host_buffer, parent_slots[1]))[0][2] = ToFloat16(24.0f);
+
+    SlabAssemblyPlan plan{};
+    ok &= TryCreateSlabAssemblyPlan(plan, 1);
+    plan.parent_pairs[0] = {.first_parent_index = 0, .second_parent_index = 1};
+
+    DeviceSlabRuntimeConfig runtime_config{};
+    runtime_config.slot_count = 3;
+    runtime_config.action_count = 4;
+    runtime_config.max_generation_size = 2;
+
+    DeviceSlabRuntimeBuffers buffers{};
+    ok &= TryCreateDeviceSlabRuntimeBuffers(buffers, runtime_config);
+    ok &= TryUploadSlabToDevice(host_buffer, buffers);
+    ok &= TryUploadCurrentGenerationToDevice(current_generation, buffers);
+    ok &= TryUploadAssemblyPlanToDevice(plan, buffers);
+
+    SlabDeviceAssemblyConfig assembly_config = MakeDeterministicAssemblyConfig();
+    assembly_config.breeding.output_tail_row_arithmetic_recombination_probability = 1.0f;
+    ok &= TryAssembleNextGenerationOnDevice(buffers, 151U, assembly_config);
+    if (!ok) {
+        DeviceSlabRuntimeStatusCode status_code = DeviceSlabRuntimeStatusCode::kOk;
+        (void)TryReadDeviceSlabRuntimeStatus(buffers, status_code);
+        std::cerr << "FAIL: arithmetic row-recombination assembly failed with status " << static_cast<int>(status_code)
+                  << '\n';
+        DestroyDeviceSlabRuntimeBuffers(buffers);
+        return false;
+    }
+
+    HostGenotypeSlab downloaded_buffer{};
+    SlabGeneration downloaded_next_generation{};
+    ok &= TryDownloadSlabFromDevice(buffers, downloaded_buffer);
+    ok &= TryDownloadNextGenerationFromDevice(buffers, downloaded_next_generation);
+    DestroyDeviceSlabRuntimeBuffers(buffers);
+    if (!ok) {
+        return false;
+    }
+
+    const std::uint32_t child_slot = downloaded_next_generation.slot_indices[0];
+    const float blended0 = ToFloat(GenomeTailRows(HostSlabSlotBytesAt(downloaded_buffer, child_slot))[0][0]);
+    const float blended1 = ToFloat(GenomeTailRows(HostSlabSlotBytesAt(downloaded_buffer, child_slot))[0][1]);
+    const float blended2 = ToFloat(GenomeTailRows(HostSlabSlotBytesAt(downloaded_buffer, child_slot))[0][2]);
+    const float lambda = (blended0 - 30.0f) / (10.0f - 30.0f);
+    const float lambda1 = (blended1 - 14.0f) / (-6.0f - 14.0f);
+    const float lambda2 = (blended2 - 24.0f) / (4.0f - 24.0f);
+
+    ok &= ExpectNear(ToFloat(GenomePolicyModelParameters(HostSlabSlotBytesAt(downloaded_buffer, child_slot))
+                                 .dense_trunk.hidden1_to_output.biases[0]),
+                     11.0f, "arithmetic row recombination keeps non-tail inheritance on the first parent");
+    ok &= ExpectTrue(lambda >= kRowBlendMinimumLambda,
+                     "Expected device arithmetic row recombination lambda to stay above the configured minimum");
+    ok &= ExpectTrue(lambda <= kRowBlendMaximumLambda,
+                     "Expected device arithmetic row recombination lambda to stay below the configured maximum");
+    ok &= ExpectTrue(std::fabs(lambda1 - lambda) <= 1.0e-3f,
+                     "Expected device arithmetic row recombination to reuse one lambda across the row");
+    ok &= ExpectTrue(std::fabs(lambda2 - lambda) <= 1.0e-3f,
+                     "Expected device arithmetic row recombination to reuse the same lambda for later row features");
+    return ok;
+}
+
+bool TestDeviceSlabRuntimeCanScaleOutputTailRows() {
+    HostGenotypeSlab host_buffer{};
+    SlabGeneration current_generation{};
+    bool ok = TryCreateHostGenotypeSlab(host_buffer, 2, 4);
+    ok &= TryCreateSlabGeneration(current_generation, 1, 9);
+    if (!ok) {
+        std::cerr << "FAIL: could not allocate row-scale mutation fixtures\n";
+        return false;
+    }
+
+    std::uint32_t parent_slot = 0;
+    ok &= TryAllocateSlabSlot(host_buffer, parent_slot);
+    ok &= TrySetSlabGenerationSlot(current_generation, 0, parent_slot);
+    if (!ok) {
+        return false;
+    }
+
+    GenomePolicyModelParameters(HostSlabSlotBytesAt(host_buffer, parent_slot))
+        .dense_trunk.hidden1_to_output.biases[0] = ToFloat16(11.0f);
+    for (std::size_t feature_index = 0;
+         feature_index < neuroevolution::model::output_embedding::kTrainableFeatureDimension; ++feature_index) {
+        GenomeTailRows(HostSlabSlotBytesAt(host_buffer, parent_slot))[0][feature_index] =
+            ToFloat16(1.0f + static_cast<float>(feature_index));
+    }
+
+    SlabAssemblyPlan plan{};
+    ok &= TryCreateSlabAssemblyPlan(plan, 1);
+    plan.parent_pairs[0] = {.first_parent_index = 0, .second_parent_index = 0};
+
+    DeviceSlabRuntimeConfig runtime_config{};
+    runtime_config.slot_count = 2;
+    runtime_config.action_count = 4;
+    runtime_config.max_generation_size = 1;
+
+    DeviceSlabRuntimeBuffers buffers{};
+    ok &= TryCreateDeviceSlabRuntimeBuffers(buffers, runtime_config);
+    ok &= TryUploadSlabToDevice(host_buffer, buffers);
+    ok &= TryUploadCurrentGenerationToDevice(current_generation, buffers);
+    ok &= TryUploadAssemblyPlanToDevice(plan, buffers);
+
+    SlabDeviceAssemblyConfig assembly_config = MakeDeterministicAssemblyConfig();
+    assembly_config.mutation.output_tail_row_scale_mutation_probability = 1.0f;
+    ok &= TryAssembleNextGenerationOnDevice(buffers, 173U, assembly_config);
+    if (!ok) {
+        DeviceSlabRuntimeStatusCode status_code = DeviceSlabRuntimeStatusCode::kOk;
+        (void)TryReadDeviceSlabRuntimeStatus(buffers, status_code);
+        std::cerr << "FAIL: row-scale mutation assembly failed with status " << static_cast<int>(status_code) << '\n';
+        DestroyDeviceSlabRuntimeBuffers(buffers);
+        return false;
+    }
+
+    HostGenotypeSlab downloaded_buffer{};
+    SlabGeneration downloaded_next_generation{};
+    ok &= TryDownloadSlabFromDevice(buffers, downloaded_buffer);
+    ok &= TryDownloadNextGenerationFromDevice(buffers, downloaded_next_generation);
+    DestroyDeviceSlabRuntimeBuffers(buffers);
+    if (!ok) {
+        return false;
+    }
+
+    const std::uint32_t child_slot = downloaded_next_generation.slot_indices[0];
+    const float scale = ToFloat(GenomeTailRows(HostSlabSlotBytesAt(downloaded_buffer, child_slot))[0][0]);
+    const bool scale_is_expected = (std::fabs(scale - 0.98f) <= 5.0e-3f) || (std::fabs(scale - 1.02f) <= 5.0e-3f);
+
+    ok &= ExpectNear(ToFloat(GenomePolicyModelParameters(HostSlabSlotBytesAt(downloaded_buffer, child_slot))
+                                 .dense_trunk.hidden1_to_output.biases[0]),
+                     11.0f, "row-scale mutation leaves non-tail parameters untouched");
+    ok &= ExpectTrue(scale_is_expected, "Expected device row-scale mutation to use a +/-2% multiplier");
+    for (std::size_t feature_index = 0;
+         feature_index < neuroevolution::model::output_embedding::kTrainableFeatureDimension; ++feature_index) {
+        const float baseline = 1.0f + static_cast<float>(feature_index);
+        const float feature_scale = ToFloat(GenomeTailRows(HostSlabSlotBytesAt(downloaded_buffer, child_slot))[0]
+                                                [feature_index]) /
+                                    baseline;
+        ok &= ExpectTrue(std::fabs(feature_scale - scale) <= 5.0e-3f,
+                         "Expected device row-scale mutation to apply one multiplier across the row");
+    }
     return ok;
 }
 
@@ -1065,6 +1237,8 @@ int main() {
         !TestDeviceSlabFreeListIsThreadSafeUnderWarpContention() ||
         !TestDeviceSlabRuntimeUploadsAndDownloadsBufferAndGenerationState() ||
         !TestDeviceSlabRuntimeReusesSweptAndReleasedSlotsDuringAssembly() ||
+        !TestDeviceSlabRuntimeArithmeticRecombinesOutputTailRows() ||
+        !TestDeviceSlabRuntimeCanScaleOutputTailRows() ||
         !TestDeviceAssemblyPlanAppliesFinalChildPriority() ||
         !TestDeviceSlabRuntimeRepacksAndAssemblesAfterActionCountGrowth() ||
         !TestDeviceSlabRuntimeRepackFailureDoesNotMutateBuffer() ||

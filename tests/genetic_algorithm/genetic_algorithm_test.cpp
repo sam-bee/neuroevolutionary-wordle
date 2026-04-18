@@ -553,8 +553,10 @@ bool TestNextGenerationAssemblyBreedsEveryChild() {
     valid_config.parent_selection.tournament_size = kPopulationSize;
     valid_config.parent_selection.allow_self_parenting = false;
     valid_config.breeding.first_parent_probability = 0.0f;
+    valid_config.breeding.output_tail_row_arithmetic_recombination_probability = 0.0f;
     valid_config.mutation.mutation_probability = 0.0f;
     valid_config.mutation.mutation_sigma = 1.0f;
+    valid_config.mutation.output_tail_row_scale_mutation_probability = 0.0f;
 
     GenerationAssemblyRandomEngine random_engine(13);
     Population<ModelGenome<2>, kPopulationSize> next_population{};
@@ -639,8 +641,10 @@ bool TestNextGenerationAssemblyAppliesMutationToEveryChild() {
     config.parent_selection.tournament_size = kPopulationSize;
     config.parent_selection.allow_self_parenting = false;
     config.breeding.first_parent_probability = 0.0f;
+    config.breeding.output_tail_row_arithmetic_recombination_probability = 0.0f;
     config.mutation.mutation_probability = 1.0f;
     config.mutation.mutation_sigma = 0.5f;
+    config.mutation.output_tail_row_scale_mutation_probability = 0.0f;
 
     GenerationAssemblyRandomEngine random_engine(17);
     Population<ModelGenome<2>, kPopulationSize> next_population{};

@@ -8,6 +8,7 @@
 #include "genetic_algorithm/breeding.hpp"
 #include "genetic_algorithm/genome/dynamic_layout.hpp"
 #include "genetic_algorithm/mutation.hpp"
+#include "genetic_algorithm/output_tail_ops.hpp"
 
 namespace neuroevolution::genetic_algorithm::device_genome_ops {
 
@@ -79,6 +80,65 @@ __device__ inline void BreedAndMutateFixedBuffer(const common::FixedBuffer<commo
 
         child[index] = common::ToFloat16(value);
     }
+}
+
+template <std::size_t Size>
+__device__ inline void CopyFixedBuffer(const common::FixedBuffer<common::Float16, Size> &source,
+                                       common::FixedBuffer<common::Float16, Size> &target) {
+    for (std::size_t index = 0; index < Size; ++index) {
+        target[index] = source[index];
+    }
+}
+
+__device__ inline float SampleOutputTailRowBlendLambda(DeviceRandomState &random_state) {
+    return output_tail_ops::MapArcsineUnitSampleToBlendLambda(NextUniform01(random_state));
+}
+
+template <std::size_t Size>
+__device__ inline void MutateOutputTailRow(common::FixedBuffer<common::Float16, Size> &row,
+                                           DeviceRandomState &random_state, const MutationConfig &mutation_config) {
+    for (std::size_t index = 0; index < Size; ++index) {
+        if ((mutation_config.mutation_probability > 0.0f) &&
+            SampleBernoulli(random_state, mutation_config.mutation_probability) &&
+            (mutation_config.mutation_sigma > 0.0f)) {
+            const float value = common::ToFloat(row[index]) +
+                                (mutation_config.mutation_sigma * SampleStandardNormal(random_state));
+            row[index] = common::ToFloat16(value);
+        }
+    }
+
+    if ((mutation_config.output_tail_row_scale_mutation_probability > 0.0f) &&
+        SampleBernoulli(random_state, mutation_config.output_tail_row_scale_mutation_probability)) {
+        const float scale = output_tail_ops::RowScaleFactor(SampleBernoulli(random_state, 0.5f));
+        for (std::size_t index = 0; index < Size; ++index) {
+            row[index] = common::ToFloat16(common::ToFloat(row[index]) * scale);
+        }
+    }
+}
+
+template <std::size_t Size>
+__device__ inline void BreedAndMutateOutputTailRow(const common::FixedBuffer<common::Float16, Size> &first_parent,
+                                                   const common::FixedBuffer<common::Float16, Size> &second_parent,
+                                                   common::FixedBuffer<common::Float16, Size> &child,
+                                                   DeviceRandomState &random_state,
+                                                   const BreedingConfig &breeding_config,
+                                                   const MutationConfig &mutation_config) {
+    if ((breeding_config.output_tail_row_arithmetic_recombination_probability > 0.0f) &&
+        SampleBernoulli(random_state, breeding_config.output_tail_row_arithmetic_recombination_probability)) {
+        const float lambda = SampleOutputTailRowBlendLambda(random_state);
+        const float other_lambda = 1.0f - lambda;
+        for (std::size_t index = 0; index < Size; ++index) {
+            const float blended_value = (lambda * common::ToFloat(first_parent[index])) +
+                                        (other_lambda * common::ToFloat(second_parent[index]));
+            child[index] = common::ToFloat16(blended_value);
+        }
+    } else if (SampleBernoulli(random_state, breeding_config.first_parent_probability)) {
+        CopyFixedBuffer(first_parent, child);
+    } else {
+        CopyFixedBuffer(second_parent, child);
+    }
+
+    MutateOutputTailRow(child, random_state, mutation_config);
 }
 
 template <std::size_t InputSize, std::size_t OutputSize>
@@ -159,8 +219,8 @@ __device__ inline void BreedAndMutateGenome(const std::uint8_t *first_parent_gen
     genome::TrainableActionEmbeddingTail *child_tail_rows = genome::GenomeTailRows(child_genome_bytes);
 
     for (std::size_t action_index = 0; action_index < action_count; ++action_index) {
-        BreedAndMutateFixedBuffer(first_parent_tail_rows[action_index], second_parent_tail_rows[action_index],
-                                  child_tail_rows[action_index], random_state, breeding_config, mutation_config);
+        BreedAndMutateOutputTailRow(first_parent_tail_rows[action_index], second_parent_tail_rows[action_index],
+                                    child_tail_rows[action_index], random_state, breeding_config, mutation_config);
     }
 }
 
