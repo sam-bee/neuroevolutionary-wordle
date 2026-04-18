@@ -504,7 +504,7 @@ __global__ void CleanupNextGenerationSlotsKernel(std::uint8_t *slab_storage, Sla
     }
 }
 
-inline bool CleanupFailedAssemblyOnDevice(DeviceSlabRuntimeBuffers &buffers) {
+bool CleanupFailedAssemblyOnDeviceInternal(DeviceSlabRuntimeBuffers &buffers) {
     const std::size_t cleanup_generation_size = buffers.next_generation_size;
     int original_status = DeviceStatusValue(DeviceSlabRuntimeStatusCode::kCudaFailure);
     bool ok = ReadDeviceStatus(buffers, original_status);
@@ -539,12 +539,12 @@ inline bool FinishAssemblyKernelOrCleanup(DeviceSlabRuntimeBuffers &buffers) {
     const bool sync_ok = CheckCuda(cudaDeviceSynchronize());
     if (!launch_ok || !sync_ok) {
         (void)WriteDeviceStatus(buffers, DeviceSlabRuntimeStatusCode::kCudaFailure);
-        (void)CleanupFailedAssemblyOnDevice(buffers);
+        (void)CleanupFailedAssemblyOnDeviceInternal(buffers);
         return false;
     }
 
     if (!IsDeviceStatusOk(buffers)) {
-        (void)CleanupFailedAssemblyOnDevice(buffers);
+        (void)CleanupFailedAssemblyOnDeviceInternal(buffers);
         return false;
     }
 
@@ -589,6 +589,10 @@ __global__ void PrepareSlabForExpandedActionCountKernel(
 }
 
 } // namespace
+
+bool TryCleanupFailedAssemblyOnDevice(DeviceSlabRuntimeBuffers &buffers) {
+    return CleanupFailedAssemblyOnDeviceInternal(buffers);
+}
 
 bool TryCreateDeviceSlabRuntimeBuffers(DeviceSlabRuntimeBuffers &buffers, const DeviceSlabRuntimeConfig &config) {
     buffers = {};
@@ -864,8 +868,8 @@ bool TryPrepareSlabForExpandedActionCountOnDevice(DeviceSlabRuntimeBuffers &buff
     return true;
 }
 
-bool TryAssembleNextGenerationOnDevice(DeviceSlabRuntimeBuffers &buffers, const std::uint32_t generation_seed,
-                                       const SlabDeviceAssemblyConfig &config) {
+bool TryInitializeNextGenerationAssemblyOnDevice(DeviceSlabRuntimeBuffers &buffers,
+                                                 const SlabDeviceAssemblyConfig &config) {
     if (!IsValidSlabDeviceAssemblyConfig(config) || !IsValidGenotypeSlabLayout(buffers.slab_layout) ||
         (buffers.current_generation_size == 0) || (buffers.planned_child_count == 0)) {
         (void)WriteDeviceStatus(buffers, DeviceSlabRuntimeStatusCode::kInvalidAssemblyConfig);
@@ -911,22 +915,32 @@ bool TryAssembleNextGenerationOnDevice(DeviceSlabRuntimeBuffers &buffers, const 
         buffers.free_slot_lock, buffers.slab_layout, buffers.current_slot_indices, buffers.current_fitness,
         buffers.current_evaluation_counts, buffers.current_has_fitness, buffers.current_generation_index,
         buffers.current_generation_size, buffers.parent_reference_counts, buffers.status);
-    if (!FinishAssemblyKernelOrCleanup(buffers)) {
+    return FinishAssemblyKernelOrCleanup(buffers);
+}
+
+bool TryContinueNextGenerationAssemblyOnDevice(DeviceSlabRuntimeBuffers &buffers, const std::uint32_t generation_seed,
+                                               const SlabDeviceAssemblyConfig &config, std::size_t child_offset) {
+    if (!IsValidSlabDeviceAssemblyConfig(config) || !IsValidGenotypeSlabLayout(buffers.slab_layout) ||
+        (buffers.current_generation_size == 0) || (buffers.next_generation_size == 0) ||
+        (child_offset > buffers.next_generation_size)) {
+        (void)WriteDeviceStatus(buffers, DeviceSlabRuntimeStatusCode::kInvalidAssemblyConfig);
         return false;
     }
 
-    std::size_t child_offset = 0;
+    if (!ResetDeviceStatus(buffers)) {
+        return false;
+    }
+
     while (child_offset < buffers.next_generation_size) {
         std::uint32_t free_slot_count = 0;
         if (!ReadDeviceFreeSlotCount(buffers, free_slot_count)) {
             (void)WriteDeviceStatus(buffers, DeviceSlabRuntimeStatusCode::kCudaFailure);
-            (void)CleanupFailedAssemblyOnDevice(buffers);
+            (void)TryCleanupFailedAssemblyOnDevice(buffers);
             return false;
         }
 
         if (free_slot_count == 0) {
             (void)WriteDeviceStatus(buffers, DeviceSlabRuntimeStatusCode::kSlabFull);
-            (void)CleanupFailedAssemblyOnDevice(buffers);
             return false;
         }
 
@@ -965,6 +979,25 @@ bool TryAssembleNextGenerationOnDevice(DeviceSlabRuntimeBuffers &buffers, const 
     }
 
     return true;
+}
+
+bool TryAssembleNextGenerationOnDevice(DeviceSlabRuntimeBuffers &buffers, const std::uint32_t generation_seed,
+                                       const SlabDeviceAssemblyConfig &config) {
+    if (!TryInitializeNextGenerationAssemblyOnDevice(buffers, config)) {
+        return false;
+    }
+
+    if (TryContinueNextGenerationAssemblyOnDevice(buffers, generation_seed, config, 0)) {
+        return true;
+    }
+
+    int status_value = DeviceStatusValue(DeviceSlabRuntimeStatusCode::kCudaFailure);
+    if (ReadDeviceStatus(buffers, status_value) &&
+        (status_value == DeviceStatusValue(DeviceSlabRuntimeStatusCode::kSlabFull))) {
+        (void)CleanupFailedAssemblyOnDeviceInternal(buffers);
+    }
+
+    return false;
 }
 
 bool TryReadDeviceSlabRuntimeStatus(const DeviceSlabRuntimeBuffers &buffers, DeviceSlabRuntimeStatusCode &status_code) {

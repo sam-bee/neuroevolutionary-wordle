@@ -36,6 +36,7 @@ enum class DeviceSlabGARuntimeStatusCode : int {
 struct DeviceSlabGARuntimeConfig {
     std::size_t genotype_slab_byte_budget_bytes = 0;
     std::size_t generation_byte_budget_bytes = 0;
+    std::size_t host_spillover_byte_budget_bytes = 0;
     std::size_t action_count = 0;
     std::size_t population_size_ceiling = 0;
 };
@@ -55,8 +56,9 @@ struct DeviceSlabGARuntimeBuffers {
     int *status = nullptr;
     std::size_t max_generation_size = 0;
     std::size_t generation_byte_budget_bytes = 0;
-    std::size_t host_failover_count = 0;
-    bool last_generation_used_host_failover = false;
+    std::size_t host_spillover_byte_budget_bytes = 0;
+    std::size_t host_spillover_count = 0;
+    bool last_generation_used_host_spillover = false;
 };
 
 using PendingOutputEmbeddingInjection = genotype_slab::device::PendingOutputEmbeddingInjection;

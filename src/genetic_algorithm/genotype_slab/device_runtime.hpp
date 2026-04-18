@@ -102,6 +102,15 @@ bool TryApplyFinalChildPriorityToAssemblyPlanOnDevice(DeviceSlabRuntimeBuffers &
 
 bool TryPrepareSlabForExpandedActionCountOnDevice(DeviceSlabRuntimeBuffers &buffers, std::size_t next_action_count);
 
+bool TryInitializeNextGenerationAssemblyOnDevice(DeviceSlabRuntimeBuffers &buffers,
+                                                 const SlabDeviceAssemblyConfig &config = {});
+
+bool TryContinueNextGenerationAssemblyOnDevice(DeviceSlabRuntimeBuffers &buffers, std::uint32_t generation_seed,
+                                               const SlabDeviceAssemblyConfig &config = {},
+                                               std::size_t child_offset = 0);
+
+bool TryCleanupFailedAssemblyOnDevice(DeviceSlabRuntimeBuffers &buffers);
+
 bool TryAssembleNextGenerationOnDevice(DeviceSlabRuntimeBuffers &buffers, std::uint32_t generation_seed,
                                        const SlabDeviceAssemblyConfig &config = {});
 

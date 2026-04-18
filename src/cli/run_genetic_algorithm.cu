@@ -58,7 +58,7 @@ constexpr std::size_t kDefaultGenerationCount = 3;
 constexpr int kSelectedVisibleDeviceIndex = 0;
 constexpr double kBytesPerVramGiB = 1024.0 * 1024.0 * 1024.0;
 constexpr double kDefaultGenotypeSlabBudgetGiB = 6.0;
-constexpr double kDefaultBufferToGenerationRatio = 1.4;
+constexpr double kDefaultBufferToGenerationRatio = 1.5;
 
 struct CliConfig {
     std::size_t generation_count = kDefaultGenerationCount;
@@ -479,6 +479,7 @@ int main(int argc, char **argv) {
         DeviceSlabGARuntimeConfig runtime_config{};
         runtime_config.genotype_slab_byte_budget_bytes = genotype_memory_budget_bytes;
         runtime_config.generation_byte_budget_bytes = generation_memory_budget_bytes;
+        runtime_config.host_spillover_byte_budget_bytes = generation_memory_budget_bytes / 2;
         runtime_config.action_count = runtime_word_counts.action_space_word_count;
         runtime_config.population_size_ceiling = initial_population_size;
 
@@ -542,10 +543,10 @@ int main(int argc, char **argv) {
                     return 1;
                 }
 
-                if (buffers.last_generation_used_host_failover) {
+                if (buffers.last_generation_used_host_spillover) {
                     std::cerr << "WARNING: genotype slab overflowed its device budget during generation "
                               << (generation_step + 1)
-                              << "; assembled children via host failover. Consider increasing "
+                              << "; spilled assembled children to host-side slab storage. Consider increasing "
                                  "--genotype-vram-gb or --generation-vram-gb if this becomes frequent.\n";
                 }
 
