@@ -2,6 +2,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <memory>
 
 #include "genetic_algorithm/device/runtime_common.hpp"
 #include "genetic_algorithm/generation_assembly.hpp"
@@ -77,6 +78,10 @@ bool TryBootstrapRandomCurrentGenerationOnDevice(DeviceSlabGARuntimeBuffers &buf
                                                  const DeviceSlabBootstrapConfig &config = {});
 
 bool TryDownloadSlabFromDevice(const DeviceSlabGARuntimeBuffers &buffers, genotype_slab::HostGenotypeSlab &host_buffer);
+
+bool TryDownloadSlabSlotBytesFromDevice(const DeviceSlabGARuntimeBuffers &buffers, std::uint32_t slot_index,
+                                        std::unique_ptr<std::uint8_t[]> &slot_bytes,
+                                        std::size_t &slot_byte_count);
 
 bool TryDownloadCurrentGenerationFromDevice(const DeviceSlabGARuntimeBuffers &buffers,
                                             genotype_slab::SlabGeneration &generation);

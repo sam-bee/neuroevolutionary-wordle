@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <cstring>
 #include <iostream>
+#include <memory>
 #include <string_view>
 
 #include "common/float16.hpp"
@@ -42,6 +43,7 @@ using neuroevolution::genetic_algorithm::slab_device::TryBootstrapRandomCurrentG
 using neuroevolution::genetic_algorithm::slab_device::TryCreateDeviceSlabGARuntimeBuffers;
 using neuroevolution::genetic_algorithm::slab_device::TryDownloadCurrentGenerationFromDevice;
 using neuroevolution::genetic_algorithm::slab_device::TryDownloadSlabFromDevice;
+using neuroevolution::genetic_algorithm::slab_device::TryDownloadSlabSlotBytesFromDevice;
 using neuroevolution::genetic_algorithm::slab_device::TryEvaluateCurrentGenerationFitnessOnDevice;
 using neuroevolution::genetic_algorithm::slab_device::TryReadDeviceSlabGARuntimeStatus;
 using neuroevolution::genetic_algorithm::slab_device::TryReadPopulationFitnessSummaryFromDevice;
@@ -278,6 +280,75 @@ bool TestSlabRuntimeBootstrapsRandomCurrentGenerationOnDevice() {
 
     ok &= ExpectTrue(found_non_zero_parameter,
                      "Expected device bootstrap to produce non-zero random policy parameters");
+    return ok;
+}
+
+bool TestSlabRuntimeDownloadsOneWinningSlabSlot() {
+    TrainingWordCatalog training_word_catalog{};
+    if (!InitializeTrainingCatalog(training_word_catalog)) {
+        std::cerr << "FAIL: could not upload training-word catalog to device constant memory\n";
+        return false;
+    }
+
+    const DeviceSlabGARuntimeConfig runtime_config = MakeRuntimeConfig(8, 4, kActionCount);
+
+    DeviceSlabGARuntimeBuffers buffers{};
+    bool ok = TryCreateAndBootstrapRuntime(buffers, runtime_config, 4, 101U, 3);
+    ok &= TryEvaluateCurrentGenerationFitnessOnDevice(buffers, MakeRuntimeWordCounts());
+    if (!ok) {
+        neuroevolution::genetic_algorithm::slab_device::DestroyDeviceSlabGARuntimeBuffers(buffers);
+        return false;
+    }
+
+    PopulationFitnessSummary summary{};
+    HostGenotypeSlab downloaded_buffer{};
+    std::unique_ptr<std::uint8_t[]> downloaded_slot_bytes{};
+    std::size_t downloaded_slot_byte_count = 0;
+    ok &= TryReadPopulationFitnessSummaryFromDevice(buffers, summary);
+    ok &= TryDownloadSlabFromDevice(buffers, downloaded_buffer);
+    ok &= TryDownloadSlabSlotBytesFromDevice(buffers, summary.best_slot_index, downloaded_slot_bytes,
+                                             downloaded_slot_byte_count);
+    neuroevolution::genetic_algorithm::slab_device::DestroyDeviceSlabGARuntimeBuffers(buffers);
+    if (!ok) {
+        return false;
+    }
+
+    ok &= ExpectTrue(downloaded_slot_byte_count == downloaded_buffer.layout.slot_stride_bytes,
+                     "Expected single-slot download to copy one full genome stride");
+    ok &= ExpectTrue(
+        std::memcmp(downloaded_slot_bytes.get(), HostSlabSlotBytesAt(downloaded_buffer, summary.best_slot_index),
+                    downloaded_slot_byte_count) == 0,
+        "Expected single-slot download to match the corresponding downloaded slab slot");
+    return ok;
+}
+
+bool TestSlabRuntimeRejectsInvalidSingleSlotDownloads() {
+    TrainingWordCatalog training_word_catalog{};
+    if (!InitializeTrainingCatalog(training_word_catalog)) {
+        std::cerr << "FAIL: could not upload training-word catalog to device constant memory\n";
+        return false;
+    }
+
+    const DeviceSlabGARuntimeConfig runtime_config = MakeRuntimeConfig(8, 4, kActionCount);
+
+    DeviceSlabGARuntimeBuffers buffers{};
+    bool ok = TryCreateAndBootstrapRuntime(buffers, runtime_config, 4, 131U, 2);
+    if (!ok) {
+        neuroevolution::genetic_algorithm::slab_device::DestroyDeviceSlabGARuntimeBuffers(buffers);
+        return false;
+    }
+
+    std::unique_ptr<std::uint8_t[]> downloaded_slot_bytes{};
+    std::size_t downloaded_slot_byte_count = 0;
+    ok &= ExpectTrue(!TryDownloadSlabSlotBytesFromDevice(buffers, 7U, downloaded_slot_bytes, downloaded_slot_byte_count),
+                     "Expected single-slot download to reject an unoccupied slab slot");
+    ok &= ExpectTrue(!TryDownloadSlabSlotBytesFromDevice(buffers, 8U, downloaded_slot_bytes, downloaded_slot_byte_count),
+                     "Expected single-slot download to reject an out-of-range slab slot index");
+    ok &= ExpectTrue(downloaded_slot_bytes == nullptr,
+                     "Expected failed single-slot downloads to leave the output buffer empty");
+    ok &= ExpectTrue(downloaded_slot_byte_count == 0,
+                     "Expected failed single-slot downloads to leave the output byte count at zero");
+    neuroevolution::genetic_algorithm::slab_device::DestroyDeviceSlabGARuntimeBuffers(buffers);
     return ok;
 }
 
@@ -725,6 +796,7 @@ int main() {
     }
 
     if (!TestSlabRuntimeBootstrapsRandomCurrentGenerationOnDevice() ||
+        !TestSlabRuntimeDownloadsOneWinningSlabSlot() || !TestSlabRuntimeRejectsInvalidSingleSlotDownloads() ||
         !TestSlabRuntimeEvaluatesAndSummarizesCurrentGeneration() || !TestSlabRuntimeAdvancesOneGeneration() ||
         !TestSlabRuntimeBuildsCellularLocalAssemblyPlan() ||
         !TestSlabRuntimeEvaluatesSpatialTrainingShardExposurePerCell() ||

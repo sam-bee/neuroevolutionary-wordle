@@ -636,6 +636,40 @@ bool TryDownloadSlabFromDevice(const DeviceSlabGARuntimeBuffers &buffers,
     return genotype_slab::device::TryDownloadSlabFromDevice(buffers.genotype_slab, host_buffer);
 }
 
+bool TryDownloadSlabSlotBytesFromDevice(const DeviceSlabGARuntimeBuffers &buffers, const std::uint32_t slot_index,
+                                        std::unique_ptr<std::uint8_t[]> &slot_bytes,
+                                        std::size_t &slot_byte_count) {
+    slot_bytes.reset();
+    slot_byte_count = 0;
+
+    if (!genotype_slab::IsValidGenotypeSlabLayout(buffers.genotype_slab.slab_layout) ||
+        (buffers.genotype_slab.slab_storage == nullptr) || (buffers.genotype_slab.slot_states == nullptr) ||
+        (slot_index >= buffers.genotype_slab.slab_layout.slot_count)) {
+        return false;
+    }
+
+    genotype_slab::SlabSlotState slot_state{};
+    if (!CheckCuda(cudaMemcpy(&slot_state, buffers.genotype_slab.slot_states + slot_index, sizeof(slot_state),
+                              cudaMemcpyDeviceToHost)) ||
+        !slot_state.occupied || (slot_state.liveness_count == 0)) {
+        return false;
+    }
+
+    const std::size_t slot_stride_bytes = buffers.genotype_slab.slab_layout.slot_stride_bytes;
+    slot_bytes.reset(new (std::nothrow) std::uint8_t[slot_stride_bytes]);
+    if ((slot_bytes == nullptr) ||
+        !CheckCuda(cudaMemcpy(slot_bytes.get(),
+                              genotype_slab::SlabSlotBytesAt(buffers.genotype_slab.slab_storage,
+                                                             buffers.genotype_slab.slab_layout, slot_index),
+                              slot_stride_bytes, cudaMemcpyDeviceToHost))) {
+        slot_bytes.reset();
+        return false;
+    }
+
+    slot_byte_count = slot_stride_bytes;
+    return true;
+}
+
 bool TryDownloadCurrentGenerationFromDevice(const DeviceSlabGARuntimeBuffers &buffers,
                                             genotype_slab::SlabGeneration &generation) {
     return genotype_slab::device::TryDownloadCurrentGenerationFromDevice(buffers.genotype_slab, generation);
