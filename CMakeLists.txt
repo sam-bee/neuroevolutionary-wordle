@@ -210,6 +210,7 @@ add_executable(run_genetic_algorithm
 
 target_link_libraries(run_genetic_algorithm PRIVATE
     genetic_algorithm_slab_device
+    model_artifact
 )
 
 enable_project_warnings(run_genetic_algorithm)

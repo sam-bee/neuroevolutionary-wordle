@@ -9,12 +9,14 @@
 #include <iomanip>
 #include <iostream>
 #include <limits>
+#include <memory>
 #include <string>
 #include <string_view>
 
 #include "genetic_algorithm/device/slab_runtime.hpp"
-#include "genetic_algorithm/spatial/grid.hpp"
 #include "genetic_algorithm/genotype_slab/slab_allocator.hpp"
+#include "genetic_algorithm/spatial/grid.hpp"
+#include "model_artifact/winner_artifact.hpp"
 #include "training_folder/training_data.hpp"
 
 namespace {
@@ -34,9 +36,13 @@ using neuroevolution::genetic_algorithm::slab_device::RuntimeWordCounts;
 using neuroevolution::genetic_algorithm::slab_device::TryAdvanceGenerationOnDevice;
 using neuroevolution::genetic_algorithm::slab_device::TryBootstrapRandomCurrentGenerationOnDevice;
 using neuroevolution::genetic_algorithm::slab_device::TryCreateDeviceSlabGARuntimeBuffers;
+using neuroevolution::genetic_algorithm::slab_device::TryDownloadSlabSlotBytesFromDevice;
 using neuroevolution::genetic_algorithm::slab_device::TryEvaluateCurrentGenerationFitnessOnDevice;
 using neuroevolution::genetic_algorithm::slab_device::TryReadDeviceSlabGARuntimeStatus;
 using neuroevolution::genetic_algorithm::slab_device::TryReadPopulationFitnessSummaryFromDevice;
+using neuroevolution::model_artifact::TryWriteWinnerArtifact;
+using neuroevolution::model_artifact::WinnerArtifactMetadata;
+using neuroevolution::model_artifact::WinnerArtifactPaths;
 using neuroevolution::genetic_algorithm::spatial::CellularGridShape;
 using neuroevolution::genetic_algorithm::spatial::FloorSquarePopulationSize;
 using neuroevolution::genetic_algorithm::spatial::TryMakeCellularGridShape;
@@ -346,6 +352,27 @@ PendingOutputEmbeddingInjection MakePendingOutputEmbeddingInjection(const std::s
     return pending_output_embedding_injection;
 }
 
+bool TryPersistWinningGenome(const DeviceSlabGARuntimeBuffers &buffers, const PopulationFitnessSummary &summary,
+                             const std::uint32_t seed, const std::filesystem::path &action_space_path,
+                             WinnerArtifactPaths &artifact_paths_out) {
+    std::unique_ptr<std::uint8_t[]> genome_bytes{};
+    std::size_t genome_byte_count = 0;
+    if (!TryDownloadSlabSlotBytesFromDevice(buffers, summary.best_slot_index, genome_bytes, genome_byte_count)) {
+        return false;
+    }
+
+    WinnerArtifactMetadata metadata{};
+    metadata.best_fitness = summary.best_fitness;
+    metadata.generation_index = summary.generation_index;
+    metadata.best_index = summary.best_index;
+    metadata.best_slot_index = summary.best_slot_index;
+    metadata.action_count = summary.action_count;
+    metadata.genome_byte_count = genome_byte_count;
+    metadata.seed = seed;
+    metadata.action_space_path = action_space_path;
+    return TryWriteWinnerArtifact("models", genome_bytes.get(), metadata, artifact_paths_out);
+}
+
 } // namespace
 
 int main(int argc, char **argv) {
@@ -511,6 +538,7 @@ int main(int argc, char **argv) {
                   << ", training_storage=constant_memory\n";
         std::cout << std::fixed << std::setprecision(4);
 
+        PopulationFitnessSummary final_summary{};
         for (std::size_t generation_step = 0; generation_step < cli_config.generation_count; ++generation_step) {
             const bool is_last_generation = ((generation_step + 1) == cli_config.generation_count);
             if (is_last_generation) {
@@ -551,6 +579,7 @@ int main(int argc, char **argv) {
                 DestroyDeviceSlabGARuntimeBuffers(buffers);
                 return 1;
             }
+            final_summary = summary;
 
             std::cout << "Generation " << summary.generation_index << ": best=" << summary.best_fitness
                       << ", average=" << summary.average_fitness << ", best_index=" << summary.best_index
@@ -558,7 +587,16 @@ int main(int argc, char **argv) {
                       << ", genome_stride_bytes=" << ComputeSlabSlotStrideBytes(summary.action_count) << '\n';
         }
 
+        WinnerArtifactPaths artifact_paths{};
+        if (!TryPersistWinningGenome(buffers, final_summary, cli_config.seed, training_data_path, artifact_paths)) {
+            std::cerr << "Could not persist the final-generation winner to models/.\n";
+            DestroyDeviceSlabGARuntimeBuffers(buffers);
+            return 1;
+        }
+
         DestroyDeviceSlabGARuntimeBuffers(buffers);
+        std::cout << "Saved final-generation winner to " << artifact_paths.binary_path.string() << " with metadata "
+                  << artifact_paths.metadata_path.string() << '\n';
         std::cout << "GA demo finished after " << cli_config.generation_count << " generations.\n";
         return 0;
     } catch (const std::exception &exception) {
