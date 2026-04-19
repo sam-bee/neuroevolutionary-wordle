@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstddef>
+#include <cstdint>
 
 #include "training_folder/training_data.hpp"
 
@@ -18,6 +19,7 @@ struct PopulationFitnessSummary {
     float best_fitness = 0.0f;
     float average_fitness = 0.0f;
     std::size_t best_index = 0;
+    std::uint32_t best_slot_index = static_cast<std::uint32_t>(-1);
     std::size_t generation_index = 0;
     std::size_t action_count = 0;
     std::size_t population_size = 0;

@@ -204,6 +204,7 @@ __global__ void EvaluateSlabGenerationFitnessKernel(
 }
 
 __global__ void SummarizeSlabGenerationKernel(const float *current_fitness, const std::uint8_t *current_has_fitness,
+                                              const std::uint32_t *current_slot_indices,
                                               const std::size_t current_generation_index,
                                               const std::size_t current_generation_size, const std::size_t action_count,
                                               PopulationFitnessSummary *summary, int *status) {
@@ -211,7 +212,8 @@ __global__ void SummarizeSlabGenerationKernel(const float *current_fitness, cons
         return;
     }
 
-    if ((current_fitness == nullptr) || (current_has_fitness == nullptr) || (summary == nullptr) ||
+    if ((current_fitness == nullptr) || (current_has_fitness == nullptr) || (current_slot_indices == nullptr) ||
+        (summary == nullptr) ||
         (current_generation_size == 0) || (action_count == 0)) {
         SetFailureStatus(status, DeviceSlabGARuntimeStatusCode::kInvalidGeneration);
         return;
@@ -241,6 +243,7 @@ __global__ void SummarizeSlabGenerationKernel(const float *current_fitness, cons
     summary->best_fitness = best_fitness;
     summary->average_fitness = fitness_sum / static_cast<float>(current_generation_size);
     summary->best_index = best_index;
+    summary->best_slot_index = current_slot_indices[best_index];
     summary->generation_index = current_generation_index;
     summary->action_count = action_count;
     summary->population_size = current_generation_size;
@@ -688,6 +691,7 @@ bool TryEvaluateCurrentGenerationFitnessOnDevice(DeviceSlabGARuntimeBuffers &buf
 
     SummarizeSlabGenerationKernel<<<1, 1>>>(
         buffers.genotype_slab.current_fitness, buffers.genotype_slab.current_has_fitness,
+        buffers.genotype_slab.current_slot_indices,
         buffers.genotype_slab.current_generation_index, buffers.genotype_slab.current_generation_size,
         buffers.genotype_slab.slab_layout.action_count, buffers.summary, buffers.status);
     if (!CheckCuda(cudaGetLastError()) || !CheckCuda(cudaDeviceSynchronize())) {

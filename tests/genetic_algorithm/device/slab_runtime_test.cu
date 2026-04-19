@@ -312,6 +312,10 @@ bool TestSlabRuntimeEvaluatesAndSummarizesCurrentGeneration() {
     ok &= ExpectTrue(summary.population_size == 4, "Expected summary to report the current generation size");
     ok &= ExpectTrue(summary.action_count == kActionCount, "Expected summary to report the fixed action count");
     ok &= ExpectTrue(summary.generation_index == 4, "Expected summary to report the current generation index");
+    ok &= ExpectTrue(summary.best_index < downloaded_generation.active_individual_count,
+                     "Expected summary best index to point at a live current-generation organism");
+    ok &= ExpectTrue(summary.best_slot_index == downloaded_generation.slot_indices[summary.best_index],
+                     "Expected summary best slot index to match the winning current-generation slot");
     ok &= ExpectInRange(summary.best_fitness, minimum_possible_fitness, 1.0f, "summary best fitness");
     ok &= ExpectInRange(summary.average_fitness, minimum_possible_fitness, 1.0f, "summary average fitness");
 
@@ -547,6 +551,10 @@ bool TestSlabRuntimeGrowsActionCountWithSlabRepacking() {
 
     ok &=
         ExpectTrue(summary.generation_index == 8, "Expected summary to still describe the evaluated parent generation");
+    ok &= ExpectTrue(summary.best_index < parent_generation.active_individual_count,
+                     "Expected parent summary best index to point at a live parent organism");
+    ok &= ExpectTrue(summary.best_slot_index == parent_generation.slot_indices[summary.best_index],
+                     "Expected parent summary best slot index to match the winning parent slot");
     ok &= ExpectTrue(downloaded_generation.generation_index == 9,
                      "Expected a successful growth step to increment the generation index");
     ok &= ExpectTrue(downloaded_generation.active_individual_count == expected_next_generation_size,
@@ -559,6 +567,10 @@ bool TestSlabRuntimeGrowsActionCountWithSlabRepacking() {
                      "Expected child evaluation to report the budget-sized grown population");
     ok &= ExpectTrue(child_summary.action_count == next_action_count,
                      "Expected child evaluation to report the grown action count");
+    ok &= ExpectTrue(child_summary.best_index < downloaded_generation.active_individual_count,
+                     "Expected child summary best index to point at a live child organism");
+    ok &= ExpectTrue(child_summary.best_slot_index == downloaded_generation.slot_indices[child_summary.best_index],
+                     "Expected child summary best slot index to match the winning child slot");
 
     CellularGridShape current_grid_shape{};
     CellularGridShape next_grid_shape{};
