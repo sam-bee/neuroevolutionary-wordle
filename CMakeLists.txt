@@ -250,6 +250,18 @@ set_target_properties(run_genetic_algorithm PROPERTIES
     CUDA_SEPARABLE_COMPILATION ON
 )
 
+add_executable(play_wordle
+    src/cli/play_wordle.cpp
+)
+
+target_link_libraries(play_wordle PRIVATE
+    model_artifact
+    play_wordle_ui
+    wordle_inference_runtime
+)
+
+enable_project_warnings(play_wordle)
+
 add_executable(turn_features_test
     tests/model/input_encoder/turn_features_test.cpp
 )
