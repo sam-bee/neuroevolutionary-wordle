@@ -225,6 +225,16 @@ set_target_properties(wordle_inference_runtime PROPERTIES
     CUDA_SEPARABLE_COMPILATION ON
 )
 
+add_library(play_wordle_ui STATIC
+    src/play_wordle/interactive_ui.cpp
+)
+
+target_include_directories(play_wordle_ui PUBLIC
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
+)
+
+enable_project_warnings(play_wordle_ui)
+
 add_executable(run_genetic_algorithm
     src/cli/run_genetic_algorithm.cu
 )
@@ -568,6 +578,21 @@ add_test(NAME single_model_device_runtime_test COMMAND single_model_device_runti
 set_tests_properties(single_model_device_runtime_test PROPERTIES
     LABELS "gpu;integration"
     RESOURCE_LOCK cuda_device
+)
+
+add_executable(interactive_ui_test
+    tests/play_wordle/interactive_ui_test.cpp
+)
+
+target_link_libraries(interactive_ui_test PRIVATE
+    play_wordle_ui
+)
+
+enable_project_warnings(interactive_ui_test)
+
+add_test(NAME interactive_ui_test COMMAND interactive_ui_test)
+set_tests_properties(interactive_ui_test PROPERTIES
+    LABELS "cpu;unit"
 )
 
 add_executable(training_data_device_test
