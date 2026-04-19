@@ -1,4 +1,4 @@
-.PHONY: configure build test test-cpu test-gpu test-gpu-sanitized smoke format clean rebuild agents-rebuild build-and-test run-ga run-ga-laptop run-ga-growth-smoke
+.PHONY: configure build test test-cpu test-gpu test-gpu-sanitized smoke format clean rebuild agents-rebuild build-and-test run-ga-desktop run-ga-laptop run-ga-growth-smoke
 
 -include .env
 
@@ -11,12 +11,6 @@ AGENTS_CUDA_DEVICE_ORDER := $(if $(CUDA_DEVICE_ORDER),$(CUDA_DEVICE_ORDER),FASTE
 AGENTS_CUDA_VISIBLE_DEVICES := $(if $(CUDA_VISIBLE_DEVICES),$(CUDA_VISIBLE_DEVICES),0)
 
 GA_GENERATIONS ?= 1000
-GA_GENOTYPE_VRAM_GB ?= 12
-GA_LAPTOP_GENOTYPE_VRAM_GB ?= 6
-GA_INITIAL_WORD_COUNT ?= 20
-GA_WORD_COUNT_STEP ?= 20
-GA_WORD_COUNT_STEP_PERIOD ?= 25
-GA_SHARD_RADIUS_GROWTH_PERIOD ?= 2
 GA_SEED ?=
 GA_SEED_ARG := $(if $(GA_SEED),--seed $(GA_SEED))
 
@@ -43,25 +37,18 @@ test-gpu-sanitized: .env
 
 smoke: test-gpu
 
-run-ga: .env
-	cmake --build build --target run_genetic_algorithm
-	./build/run_genetic_algorithm \
-		--generations $(GA_GENERATIONS) \
-		--genotype-vram-gb $(GA_GENOTYPE_VRAM_GB) \
-		--initial-word-count $(GA_INITIAL_WORD_COUNT) \
-		--word-count-step $(GA_WORD_COUNT_STEP) \
-		--word-count-step-period $(GA_WORD_COUNT_STEP_PERIOD) \
-		--shard-radius-growth-period $(GA_SHARD_RADIUS_GROWTH_PERIOD) $(GA_SEED_ARG)
+run-ga-desktop: GA_TARGET_GENOTYPE_VRAM_GB := 12
+run-ga-laptop: GA_TARGET_GENOTYPE_VRAM_GB := 6
 
-run-ga-laptop: .env
+run-ga-desktop run-ga-laptop: .env
 	cmake --build build --target run_genetic_algorithm
 	./build/run_genetic_algorithm \
 		--generations $(GA_GENERATIONS) \
-		--genotype-vram-gb $(GA_LAPTOP_GENOTYPE_VRAM_GB) \
-		--initial-word-count $(GA_INITIAL_WORD_COUNT) \
-		--word-count-step $(GA_WORD_COUNT_STEP) \
-		--word-count-step-period $(GA_WORD_COUNT_STEP_PERIOD) \
-		--shard-radius-growth-period $(GA_SHARD_RADIUS_GROWTH_PERIOD) $(GA_SEED_ARG)
+		--genotype-vram-gb $(GA_TARGET_GENOTYPE_VRAM_GB) \
+		--initial-word-count 20 \
+		--word-count-step 20 \
+		--word-count-step-period 25 \
+		--shard-radius-growth-period 2 $(GA_SEED_ARG)
 
 run-ga-growth-smoke: .env
 	cmake --build build --target run_genetic_algorithm
