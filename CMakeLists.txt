@@ -196,6 +196,7 @@ set_target_properties(genetic_algorithm_slab_device PROPERTIES
 
 add_library(model_artifact STATIC
     src/model_artifact/winner_artifact.cpp
+    src/model_artifact/winner_artifact_reader.cpp
 )
 
 target_include_directories(model_artifact PUBLIC
@@ -411,6 +412,21 @@ enable_project_warnings(winner_artifact_test)
 
 add_test(NAME winner_artifact_test COMMAND winner_artifact_test)
 set_tests_properties(winner_artifact_test PROPERTIES
+    LABELS "cpu;unit"
+)
+
+add_executable(winner_artifact_reader_test
+    tests/model_artifact/winner_artifact_reader_test.cpp
+)
+
+target_link_libraries(winner_artifact_reader_test PRIVATE
+    model_artifact
+)
+
+enable_project_warnings(winner_artifact_reader_test)
+
+add_test(NAME winner_artifact_reader_test COMMAND winner_artifact_reader_test)
+set_tests_properties(winner_artifact_reader_test PROPERTIES
     LABELS "cpu;unit"
 )
 

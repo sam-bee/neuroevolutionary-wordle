@@ -3,6 +3,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <memory>
 #include <string>
 #include <string_view>
 
@@ -46,11 +47,16 @@ bool TestWinnerArtifactWriterPersistsBinaryAndMetadata() {
         std::filesystem::current_path() / "Testing" / "winner-artifact-test-output";
     std::filesystem::remove_all(output_directory);
 
-    const std::uint8_t genome_bytes[]{1U, 2U, 3U, 4U, 5U, 6U};
     TrainingWordCatalog action_space_words{};
     bool ok = MakeWord("CRANE", action_space_words.words[0]);
     ok &= MakeWord("SLATE", action_space_words.words[1]);
     action_space_words.word_count = 2;
+
+    const std::size_t genome_byte_count = 384;
+    std::unique_ptr<std::uint8_t[]> genome_bytes(new std::uint8_t[genome_byte_count]);
+    for (std::size_t byte_index = 0; byte_index < genome_byte_count; ++byte_index) {
+        genome_bytes[byte_index] = static_cast<std::uint8_t>(byte_index % 251U);
+    }
 
     WinnerArtifactMetadata metadata{};
     metadata.best_fitness = 0.75f;
@@ -58,12 +64,12 @@ bool TestWinnerArtifactWriterPersistsBinaryAndMetadata() {
     metadata.best_index = 3;
     metadata.best_slot_index = 11U;
     metadata.action_count = 2;
-    metadata.genome_byte_count = sizeof(genome_bytes);
+    metadata.genome_byte_count = genome_byte_count;
     metadata.seed = 12345U;
     metadata.action_space_path = "data/action-space-randomised.txt";
 
     WinnerArtifactPaths paths{};
-    ok &= TryWriteWinnerArtifact(output_directory, genome_bytes, action_space_words, metadata, paths);
+    ok &= TryWriteWinnerArtifact(output_directory, genome_bytes.get(), action_space_words, metadata, paths);
     ok &= ExpectTrue(!paths.timestamp_local.empty(), "Expected writer to return a human-readable local timestamp");
     ok &= ExpectTrue(paths.binary_path.extension() == ".bin", "Expected writer to create a .bin artifact");
     ok &= ExpectTrue(paths.metadata_path.extension() == ".json", "Expected writer to create a .json sidecar");
@@ -80,9 +86,9 @@ bool TestWinnerArtifactWriterPersistsBinaryAndMetadata() {
     std::string metadata_contents{};
     ok &= ReadWholeFile(paths.binary_path, binary_contents);
     ok &= ReadWholeFile(paths.metadata_path, metadata_contents);
-    ok &= ExpectTrue(binary_contents.size() == sizeof(genome_bytes),
+    ok &= ExpectTrue(binary_contents.size() == genome_byte_count,
                      "Expected binary artifact size to match the saved genome payload");
-    ok &= ExpectTrue(binary_contents == std::string(reinterpret_cast<const char *>(genome_bytes), sizeof(genome_bytes)),
+    ok &= ExpectTrue(binary_contents == std::string(reinterpret_cast<const char *>(genome_bytes.get()), genome_byte_count),
                      "Expected binary artifact contents to match the saved genome payload");
     ok &= ExpectTrue(metadata_contents.find("\"generation_index\": 7") != std::string::npos,
                      "Expected metadata sidecar to record the generation index");
