@@ -15,3 +15,4 @@ If you only need the current runtime shape, start with:
 2. [`genetic-algorithm/fitness-evaluation.md`](genetic-algorithm/fitness-evaluation.md)
 3. [`genetic-algorithm/genotype-slab-design.md`](genetic-algorithm/genotype-slab-design.md)
 4. [`genetic-algorithm/startup-bootstrap.md`](genetic-algorithm/startup-bootstrap.md)
+5. [`genetic-algorithm/winner-artifacts.md`](genetic-algorithm/winner-artifacts.md)

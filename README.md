@@ -95,6 +95,7 @@ The current high-signal docs are:
 - [`docs/genetic-algorithm/output-embedding-recombination.md`](docs/genetic-algorithm/output-embedding-recombination.md)
 - [`docs/genetic-algorithm/genotype-slab-design.md`](docs/genetic-algorithm/genotype-slab-design.md)
 - [`docs/genetic-algorithm/startup-bootstrap.md`](docs/genetic-algorithm/startup-bootstrap.md)
+- [`docs/genetic-algorithm/winner-artifacts.md`](docs/genetic-algorithm/winner-artifacts.md)
 
 ## Repository Layout
 
