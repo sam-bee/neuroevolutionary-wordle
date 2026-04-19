@@ -1,4 +1,4 @@
-.PHONY: configure build test test-cpu test-gpu test-gpu-sanitized smoke format clean rebuild agents-rebuild build-and-test run-ga-desktop run-ga-laptop run-ga-growth-smoke
+.PHONY: configure build test test-cpu test-gpu test-gpu-sanitized smoke format clean rebuild agents-rebuild build-and-test run-ga-desktop run-ga-laptop run-ga-growth-smoke play-wordle
 
 -include .env
 
@@ -13,6 +13,8 @@ AGENTS_CUDA_VISIBLE_DEVICES := $(if $(CUDA_VISIBLE_DEVICES),$(CUDA_VISIBLE_DEVIC
 GA_GENERATIONS ?= 1000
 GA_SEED ?=
 GA_SEED_ARG := $(if $(GA_SEED),--seed $(GA_SEED))
+PLAY_WORDLE_MODEL ?=
+PLAY_WORDLE_METADATA ?= $(patsubst %.bin,%.json,$(PLAY_WORDLE_MODEL))
 
 FORMAT_FILES := $(shell find src tests -type f \( -name '*.hpp' -o -name '*.cpp' -o -name '*.cu' \) | sort)
 
@@ -59,6 +61,22 @@ run-ga-growth-smoke: .env
 		--word-count-step 20 \
 		--word-count-step-period 2 \
 		--shard-radius-growth-period 2
+
+play-wordle: .env
+	@if [ -z "$(PLAY_WORDLE_MODEL)" ]; then \
+		echo "Set PLAY_WORDLE_MODEL=path/to/winner.bin"; \
+		exit 1; \
+	fi
+	@if [ ! -f "$(PLAY_WORDLE_MODEL)" ]; then \
+		echo "Model file not found: $(PLAY_WORDLE_MODEL)"; \
+		exit 1; \
+	fi
+	@if [ ! -f "$(PLAY_WORDLE_METADATA)" ]; then \
+		echo "Metadata file not found: $(PLAY_WORDLE_METADATA)"; \
+		exit 1; \
+	fi
+	cmake --build build --target play_wordle
+	./build/play_wordle "$(PLAY_WORDLE_MODEL)" "$(PLAY_WORDLE_METADATA)"
 
 format:
 	clang-format -i $(FORMAT_FILES)

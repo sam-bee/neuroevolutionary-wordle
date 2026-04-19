@@ -96,6 +96,7 @@ The current high-signal docs are:
 - [`docs/genetic-algorithm/genotype-slab-design.md`](docs/genetic-algorithm/genotype-slab-design.md)
 - [`docs/genetic-algorithm/startup-bootstrap.md`](docs/genetic-algorithm/startup-bootstrap.md)
 - [`docs/genetic-algorithm/winner-artifacts.md`](docs/genetic-algorithm/winner-artifacts.md)
+- [`docs/inference/play_wordle.md`](docs/inference/play_wordle.md)
 
 ## Repository Layout
 
@@ -124,6 +125,14 @@ make test-gpu-sanitized
 make smoke
 make clean
 ```
+
+To load a saved winner artifact into the interactive inference runtime:
+
+```bash
+make play-wordle PLAY_WORDLE_MODEL=models/winner-...bin
+```
+
+`PLAY_WORDLE_METADATA` defaults to the matching `.json` sidecar path and can be overridden if needed.
 
 For end-to-end verification after a change, `make rebuild` is the preferred command. It reformats the code, rebuilds the
 project from scratch, and runs the full test suite, including the GPU-backed test.

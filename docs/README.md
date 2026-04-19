@@ -6,6 +6,8 @@ The docs are organised by topic:
   Wordlists, the runtime action catalog, and the spatial training-data curriculum.
 - [`genetic-algorithm/`](genetic-algorithm/)
   The current GA, fitness evaluation, genotype slab, and output-tail heredity.
+- [`inference/`](inference/)
+  Interactive runtime docs for saved winner artifacts.
 - [`neural-net-design/`](neural-net-design/)
   The policy-model structure and its supporting assets.
 
@@ -16,3 +18,4 @@ If you only need the current runtime shape, start with:
 3. [`genetic-algorithm/genotype-slab-design.md`](genetic-algorithm/genotype-slab-design.md)
 4. [`genetic-algorithm/startup-bootstrap.md`](genetic-algorithm/startup-bootstrap.md)
 5. [`genetic-algorithm/winner-artifacts.md`](genetic-algorithm/winner-artifacts.md)
+6. [`inference/play_wordle.md`](inference/play_wordle.md)
