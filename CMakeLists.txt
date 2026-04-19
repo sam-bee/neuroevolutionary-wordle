@@ -194,6 +194,16 @@ set_target_properties(genetic_algorithm_slab_device PROPERTIES
     CUDA_SEPARABLE_COMPILATION ON
 )
 
+add_library(model_artifact STATIC
+    src/model_artifact/winner_artifact.cpp
+)
+
+target_include_directories(model_artifact PUBLIC
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
+)
+
+enable_project_warnings(model_artifact)
+
 add_executable(run_genetic_algorithm
     src/cli/run_genetic_algorithm.cu
 )
@@ -385,6 +395,21 @@ enable_project_warnings(genotype_slab_test)
 
 add_test(NAME genotype_slab_test COMMAND genotype_slab_test)
 set_tests_properties(genotype_slab_test PROPERTIES
+    LABELS "cpu;unit"
+)
+
+add_executable(winner_artifact_test
+    tests/model_artifact/winner_artifact_test.cpp
+)
+
+target_link_libraries(winner_artifact_test PRIVATE
+    model_artifact
+)
+
+enable_project_warnings(winner_artifact_test)
+
+add_test(NAME winner_artifact_test COMMAND winner_artifact_test)
+set_tests_properties(winner_artifact_test PROPERTIES
     LABELS "cpu;unit"
 )
 
