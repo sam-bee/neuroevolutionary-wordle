@@ -105,7 +105,7 @@ __global__ void DynamicPolicyKernel(const TrainingWordCatalog *catalog, const st
         return;
     }
 
-    WordleGrid grid = MakeWordleGrid(catalog->words[0]);
+    WordleGrid grid = MakeWordleGrid(catalog->words[1]);
     if (!TryAppendGuess(grid, catalog->words[0]) || !HasGridAlreadyGuessedWord(grid, catalog->words[0])) {
         *status_out = kStatusRepeatMaskCheckFailed;
         return;
