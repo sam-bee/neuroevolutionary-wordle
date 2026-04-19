@@ -106,19 +106,20 @@ The device assembly path currently handles:
 
 When the active action count grows, genotype width increases.
 
-That changes slot width, so the slab must be widened. The current widening path is a stop-the-world
-reference-counting GC phase.
+That changes slot width, so the slab must be widened before child assembly can continue.
 
-The widening repack does this:
+The current growth path does this:
 
-1. preflight the widened layout
-2. count referenced surviving parents
-3. reject impossible growth before mutating bytes
-4. compact surviving parents
+1. build parent reference counts from the child assembly plan
+2. sweep zero-reference parents before widening begins
+3. preflight the widened layout
+4. compact referenced surviving parents
 5. repack them into the widened slot layout
 6. rebuild slot state and free-list metadata
+7. resume ordinary bounded child assembly, parent release, and spillover if needed
 
-This phase is intentionally simple and stop-the-world. It is not yet a low-latency concurrent collector.
+The repack phase is intentionally simple and stop-the-world. Once the widened layout is in place, the runtime returns to
+the normal incremental child-assembly path rather than reserving space for the full child generation up front.
 
 ## Byte-Budget-Driven Sizing
 

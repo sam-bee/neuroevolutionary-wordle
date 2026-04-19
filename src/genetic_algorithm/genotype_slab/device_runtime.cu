@@ -534,6 +534,10 @@ bool CleanupFailedAssemblyOnDeviceInternal(DeviceSlabRuntimeBuffers &buffers) {
     return ok && (cleanup_status == DeviceStatusValue(DeviceSlabRuntimeStatusCode::kOk));
 }
 
+inline bool FinishKernelWithoutCleanup(const DeviceSlabRuntimeBuffers &buffers) {
+    return CheckCuda(cudaGetLastError()) && CheckCuda(cudaDeviceSynchronize()) && IsDeviceStatusOk(buffers);
+}
+
 inline bool FinishAssemblyKernelOrCleanup(DeviceSlabRuntimeBuffers &buffers) {
     const bool launch_ok = CheckCuda(cudaGetLastError());
     const bool sync_ok = CheckCuda(cudaDeviceSynchronize());
@@ -555,16 +559,14 @@ __global__ void PrepareSlabForExpandedActionCountKernel(
     const GenotypeSlabLayout current_layout, const GenotypeSlabLayout next_layout, std::uint8_t *slab_storage,
     SlabSlotState *slot_states, std::uint32_t *free_slot_stack, std::uint32_t *free_slot_count,
     std::uint32_t *free_slot_lock, std::uint32_t *current_slot_indices, const std::size_t current_generation_size,
-    const SlabParentPair *parent_pairs, const std::size_t planned_child_count, std::uint32_t *parent_reference_counts,
-    int *status) {
+    std::uint32_t *parent_reference_counts, int *status) {
     if ((blockIdx.x != 0) || (threadIdx.x != 0)) {
         return;
     }
 
     if ((slab_storage == nullptr) || (slot_states == nullptr) || (free_slot_stack == nullptr) ||
         (free_slot_count == nullptr) || (free_slot_lock == nullptr) || (current_slot_indices == nullptr) ||
-        (parent_pairs == nullptr) || (parent_reference_counts == nullptr) || (planned_child_count == 0) ||
-        (current_generation_size == 0)) {
+        (parent_reference_counts == nullptr) || (current_generation_size == 0)) {
         SetFailureStatus(status, DeviceSlabRuntimeStatusCode::kInvalidSlab);
         return;
     }
@@ -574,16 +576,10 @@ __global__ void PrepareSlabForExpandedActionCountKernel(
         return;
     }
 
-    if (!TryBuildParentReferenceCounts(current_slot_indices, current_generation_size, parent_pairs, planned_child_count,
-                                       parent_reference_counts)) {
-        SetFailureStatus(status, DeviceSlabRuntimeStatusCode::kInvalidParentIndex);
-        return;
-    }
-
     GenotypeSlabLayout working_layout = current_layout;
     if (!TryCompactAndRepackSlabForExpandedActionCount(
             working_layout, slab_storage, slot_states, free_slot_stack, *free_slot_count, current_slot_indices,
-            current_generation_size, parent_reference_counts, next_layout.action_count, planned_child_count)) {
+            current_generation_size, parent_reference_counts, next_layout.action_count)) {
         SetFailureStatus(status, DeviceSlabRuntimeStatusCode::kSlabRepackFailed);
     }
 }
@@ -850,17 +846,29 @@ bool TryPrepareSlabForExpandedActionCountOnDevice(DeviceSlabRuntimeBuffers &buff
         return false;
     }
 
-    PrepareSlabForExpandedActionCountKernel<<<1, 1>>>(
-        buffers.slab_layout, next_layout, buffers.slab_storage, buffers.slot_states, buffers.free_slot_stack,
-        buffers.free_slot_count, buffers.free_slot_lock, buffers.current_slot_indices, buffers.current_generation_size,
-        buffers.assembly_parent_pairs, buffers.planned_child_count, buffers.parent_reference_counts, buffers.status);
-    if (!CheckCuda(cudaGetLastError()) || !CheckCuda(cudaDeviceSynchronize())) {
+    BuildParentReferenceCountsKernel<<<BoundedAssemblyBlockCount(buffers.planned_child_count),
+                                       kSlabAssemblyThreadBlockSize>>>(
+        buffers.current_slot_indices, buffers.current_generation_size, buffers.assembly_parent_pairs,
+        buffers.planned_child_count, buffers.parent_reference_counts, buffers.status);
+    if (!FinishKernelWithoutCleanup(buffers)) {
         return false;
     }
 
-    int status_value = DeviceStatusValue(DeviceSlabRuntimeStatusCode::kCudaFailure);
-    if (!ReadDeviceStatus(buffers, status_value) ||
-        (status_value != DeviceStatusValue(DeviceSlabRuntimeStatusCode::kOk))) {
+    CollectZeroReferenceParentsKernel<<<BoundedAssemblyBlockCount(buffers.current_generation_size),
+                                        kSlabAssemblyThreadBlockSize>>>(
+        buffers.slab_storage, buffers.slot_states, buffers.free_slot_stack, buffers.free_slot_count,
+        buffers.free_slot_lock, buffers.slab_layout, buffers.current_slot_indices, buffers.current_fitness,
+        buffers.current_evaluation_counts, buffers.current_has_fitness, buffers.current_generation_index,
+        buffers.current_generation_size, buffers.parent_reference_counts, buffers.status);
+    if (!FinishKernelWithoutCleanup(buffers)) {
+        return false;
+    }
+
+    PrepareSlabForExpandedActionCountKernel<<<1, 1>>>(
+        buffers.slab_layout, next_layout, buffers.slab_storage, buffers.slot_states, buffers.free_slot_stack,
+        buffers.free_slot_count, buffers.free_slot_lock, buffers.current_slot_indices, buffers.current_generation_size,
+        buffers.parent_reference_counts, buffers.status);
+    if (!FinishKernelWithoutCleanup(buffers)) {
         return false;
     }
 

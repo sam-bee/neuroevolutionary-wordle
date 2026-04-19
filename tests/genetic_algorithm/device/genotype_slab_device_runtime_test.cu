@@ -909,88 +909,6 @@ bool TestDeviceSlabRuntimeRepacksAndAssemblesAfterActionCountGrowth() {
     return ok;
 }
 
-bool TestDeviceSlabRuntimeRepackFailureDoesNotMutateBuffer() {
-    constexpr std::size_t kInitialActionCount = 4;
-    constexpr std::size_t kExpandedActionCount = 8;
-
-    HostGenotypeSlab host_buffer{};
-    SlabGeneration current_generation{};
-    bool ok = TryCreateHostGenotypeSlab(host_buffer, 6, kInitialActionCount);
-    ok &= TryCreateSlabGeneration(current_generation, 3, 24);
-    if (!ok) {
-        std::cerr << "FAIL: could not allocate failed-growth fixtures\n";
-        return false;
-    }
-
-    std::uint32_t parent_slots[3]{};
-    for (std::size_t parent_index = 0; parent_index < current_generation.active_individual_count; ++parent_index) {
-        ok &= TryAllocateSlabSlot(host_buffer, parent_slots[parent_index]);
-        ok &= TrySetSlabGenerationSlot(current_generation, parent_index, parent_slots[parent_index]);
-        GenomePolicyModelParameters(HostSlabSlotBytesAt(host_buffer, parent_slots[parent_index]))
-            .dense_trunk.hidden1_to_output.biases[0] = ToFloat16(5.0f + static_cast<float>(parent_index));
-    }
-    if (!ok) {
-        return false;
-    }
-
-    SlabAssemblyPlan plan{};
-    ok &= TryCreateSlabAssemblyPlan(plan, 4);
-    for (std::size_t child_index = 0; child_index < plan.child_count; ++child_index) {
-        plan.parent_pairs[child_index] = {.first_parent_index = 0, .second_parent_index = 2};
-    }
-
-    DeviceSlabRuntimeConfig runtime_config{};
-    runtime_config.slot_count = 6;
-    runtime_config.action_count = kInitialActionCount;
-    runtime_config.max_generation_size = 4;
-
-    DeviceSlabRuntimeBuffers buffers{};
-    ok &= TryCreateDeviceSlabRuntimeBuffers(buffers, runtime_config);
-    ok &= TryUploadSlabToDevice(host_buffer, buffers);
-    ok &= TryUploadCurrentGenerationToDevice(current_generation, buffers);
-    ok &= TryUploadAssemblyPlanToDevice(plan, buffers);
-    if (!ok) {
-        DestroyDeviceSlabRuntimeBuffers(buffers);
-        return false;
-    }
-
-    ok &= ExpectTrue(!TryPrepareSlabForExpandedActionCountOnDevice(buffers, kExpandedActionCount),
-                     "Expected growth repacking to fail when planned children cannot fit");
-
-    DeviceSlabRuntimeStatusCode status_code = DeviceSlabRuntimeStatusCode::kOk;
-    ok &= TryReadDeviceSlabRuntimeStatus(buffers, status_code);
-
-    HostGenotypeSlab downloaded_buffer{};
-    SlabGeneration downloaded_current_generation{};
-    ok &= TryDownloadSlabFromDevice(buffers, downloaded_buffer);
-    ok &= TryDownloadCurrentGenerationFromDevice(buffers, downloaded_current_generation);
-    DestroyDeviceSlabRuntimeBuffers(buffers);
-    if (!ok) {
-        return false;
-    }
-
-    ok &= ExpectTrue(status_code == DeviceSlabRuntimeStatusCode::kSlabRepackFailed,
-                     "Expected failed growth to report kSlabRepackFailed");
-    ok &= ExpectTrue(downloaded_buffer.layout.action_count == kInitialActionCount,
-                     "Expected failed growth to preserve the original action count");
-    ok &= ExpectTrue(downloaded_buffer.free_slot_count == 3,
-                     "Expected failed growth to preserve the original free-slot count");
-    for (std::size_t parent_index = 0; parent_index < current_generation.active_individual_count; ++parent_index) {
-        ok &= ExpectTrue(downloaded_current_generation.slot_indices[parent_index] == parent_slots[parent_index],
-                         "Expected failed growth to preserve current-generation slot handles");
-        ok &= ExpectTrue(downloaded_buffer.slot_states[parent_slots[parent_index]].occupied,
-                         "Expected failed growth to preserve live parent slot state");
-        ok &= ExpectTrue(downloaded_buffer.slot_states[parent_slots[parent_index]].reference_count == 1U,
-                         "Expected failed growth to preserve live parent slot references");
-        ok &= ExpectNear(
-            ToFloat(GenomePolicyModelParameters(HostSlabSlotBytesAt(downloaded_buffer, parent_slots[parent_index]))
-                        .dense_trunk.hidden1_to_output.biases[0]),
-            5.0f + static_cast<float>(parent_index), "failed growth preserved parent bias");
-    }
-
-    return ok;
-}
-
 bool TestDeviceSlabRuntimeAssemblesChildBatchConcurrently() {
     constexpr std::size_t kParentCount = 32;
     constexpr std::size_t kChildCount = 32;
@@ -1241,7 +1159,6 @@ int main() {
         !TestDeviceSlabRuntimeCanScaleOutputTailRows() ||
         !TestDeviceAssemblyPlanAppliesFinalChildPriority() ||
         !TestDeviceSlabRuntimeRepacksAndAssemblesAfterActionCountGrowth() ||
-        !TestDeviceSlabRuntimeRepackFailureDoesNotMutateBuffer() ||
         !TestDeviceSlabRuntimeAssemblesChildBatchConcurrently() ||
         !TestDeviceSlabRuntimeCleansUpPartialAssemblyWhenLaterBatchFails() ||
         !TestDeviceSlabRuntimeFailsCleanlyWhenBufferIsGenuinelyFull()) {

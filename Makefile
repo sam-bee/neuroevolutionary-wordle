@@ -1,4 +1,4 @@
-.PHONY: configure build test test-cpu test-gpu test-gpu-sanitized smoke format clean rebuild agents-rebuild build-and-test run-ga
+.PHONY: configure build test test-cpu test-gpu test-gpu-sanitized smoke format clean rebuild agents-rebuild build-and-test run-ga run-ga-growth-smoke
 
 -include .env
 
@@ -51,6 +51,16 @@ run-ga: .env
 		--word-count-step $(GA_WORD_COUNT_STEP) \
 		--word-count-step-period $(GA_WORD_COUNT_STEP_PERIOD) \
 		--shard-radius-growth-period $(GA_SHARD_RADIUS_GROWTH_PERIOD) $(GA_SEED_ARG)
+
+run-ga-growth-smoke: .env
+	cmake --build build --target run_genetic_algorithm
+	stdbuf -oL -eL ./build/run_genetic_algorithm \
+		--generations 4 \
+		--genotype-vram-gb 1 \
+		--initial-word-count 20 \
+		--word-count-step 20 \
+		--word-count-step-period 2 \
+		--shard-radius-growth-period 2
 
 format:
 	clang-format -i $(FORMAT_FILES)
