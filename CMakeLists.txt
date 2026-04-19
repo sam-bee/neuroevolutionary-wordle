@@ -205,6 +205,26 @@ target_include_directories(model_artifact PUBLIC
 
 enable_project_warnings(model_artifact)
 
+add_library(wordle_inference_runtime STATIC
+    src/inference/single_model_device_runtime.cu
+)
+
+target_include_directories(wordle_inference_runtime PUBLIC
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
+    ${CUDAToolkit_INCLUDE_DIRS}
+)
+
+target_link_libraries(wordle_inference_runtime PUBLIC
+    genetic_algorithm
+    training_folder
+)
+
+enable_project_warnings(wordle_inference_runtime)
+
+set_target_properties(wordle_inference_runtime PROPERTIES
+    CUDA_SEPARABLE_COMPILATION ON
+)
+
 add_executable(run_genetic_algorithm
     src/cli/run_genetic_algorithm.cu
 )
@@ -527,6 +547,26 @@ set_target_properties(dynamic_policy_test PROPERTIES
 add_test(NAME dynamic_policy_test COMMAND dynamic_policy_test)
 set_tests_properties(dynamic_policy_test PROPERTIES
     LABELS "gpu;unit"
+    RESOURCE_LOCK cuda_device
+)
+
+add_executable(single_model_device_runtime_test
+    tests/inference/single_model_device_runtime_test.cu
+)
+
+target_link_libraries(single_model_device_runtime_test PRIVATE
+    wordle_inference_runtime
+)
+
+enable_project_warnings(single_model_device_runtime_test)
+
+set_target_properties(single_model_device_runtime_test PROPERTIES
+    CUDA_SEPARABLE_COMPILATION ON
+)
+
+add_test(NAME single_model_device_runtime_test COMMAND single_model_device_runtime_test)
+set_tests_properties(single_model_device_runtime_test PROPERTIES
+    LABELS "gpu;integration"
     RESOURCE_LOCK cuda_device
 )
 
