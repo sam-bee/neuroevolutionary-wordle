@@ -13,28 +13,17 @@
 #include <string_view>
 
 #include "genetic_algorithm/device/slab_runtime.hpp"
-#include "genetic_algorithm/genome/dynamic_layout.hpp"
 #include "genetic_algorithm/spatial/grid.hpp"
-#include "genetic_algorithm/genotype_slab/generation.hpp"
 #include "genetic_algorithm/genotype_slab/slab_allocator.hpp"
 #include "training_folder/training_data.hpp"
 
 namespace {
 
 using neuroevolution::genetic_algorithm::GenerationAssemblyConfig;
-using neuroevolution::genetic_algorithm::genome::HostGenomeBytesAt;
-using neuroevolution::genetic_algorithm::genome::HostPopulation;
-using neuroevolution::genetic_algorithm::genome::TryInitializeRandomHostPopulation;
 using neuroevolution::genetic_algorithm::genotype_slab::ComputeSlabSlotStrideBytes;
-using neuroevolution::genetic_algorithm::genotype_slab::HostGenotypeSlab;
-using neuroevolution::genetic_algorithm::genotype_slab::SlabGeneration;
 using neuroevolution::genetic_algorithm::genotype_slab::SlabSlotCountForByteBudget;
-using neuroevolution::genetic_algorithm::genotype_slab::TryAllocateSlabSlot;
-using neuroevolution::genetic_algorithm::genotype_slab::TryCopyGenomeBytesIntoSlabSlot;
-using neuroevolution::genetic_algorithm::genotype_slab::TryCreateHostGenotypeSlab;
-using neuroevolution::genetic_algorithm::genotype_slab::TryCreateSlabGeneration;
-using neuroevolution::genetic_algorithm::genotype_slab::TrySetSlabGenerationSlot;
 using neuroevolution::genetic_algorithm::slab_device::DestroyDeviceSlabGARuntimeBuffers;
+using neuroevolution::genetic_algorithm::slab_device::DeviceSlabBootstrapConfig;
 using neuroevolution::genetic_algorithm::slab_device::DeviceSlabGARuntimeBuffers;
 using neuroevolution::genetic_algorithm::slab_device::DeviceSlabGARuntimeConfig;
 using neuroevolution::genetic_algorithm::slab_device::DeviceSlabGARuntimeStatusCode;
@@ -43,11 +32,11 @@ using neuroevolution::genetic_algorithm::slab_device::PendingOutputEmbeddingInje
 using neuroevolution::genetic_algorithm::slab_device::PopulationFitnessSummary;
 using neuroevolution::genetic_algorithm::slab_device::RuntimeWordCounts;
 using neuroevolution::genetic_algorithm::slab_device::TryAdvanceGenerationOnDevice;
+using neuroevolution::genetic_algorithm::slab_device::TryBootstrapRandomCurrentGenerationOnDevice;
 using neuroevolution::genetic_algorithm::slab_device::TryCreateDeviceSlabGARuntimeBuffers;
 using neuroevolution::genetic_algorithm::slab_device::TryEvaluateCurrentGenerationFitnessOnDevice;
 using neuroevolution::genetic_algorithm::slab_device::TryReadDeviceSlabGARuntimeStatus;
 using neuroevolution::genetic_algorithm::slab_device::TryReadPopulationFitnessSummaryFromDevice;
-using neuroevolution::genetic_algorithm::slab_device::TryUploadCurrentSlabPopulationToDevice;
 using neuroevolution::genetic_algorithm::spatial::CellularGridShape;
 using neuroevolution::genetic_algorithm::spatial::FloorSquarePopulationSize;
 using neuroevolution::genetic_algorithm::spatial::TryMakeCellularGridShape;
@@ -357,27 +346,6 @@ PendingOutputEmbeddingInjection MakePendingOutputEmbeddingInjection(const std::s
     return pending_output_embedding_injection;
 }
 
-bool TryPopulateSlabGenerationFromHostPopulation(const HostPopulation &population, const std::size_t slot_count,
-                                                 const std::size_t generation_index, HostGenotypeSlab &buffer,
-                                                 SlabGeneration &generation) {
-    bool ok = TryCreateHostGenotypeSlab(buffer, slot_count, population.layout.action_count);
-    ok &= TryCreateSlabGeneration(generation, population.layout.active_individual_count, generation_index);
-    if (!ok) {
-        return false;
-    }
-
-    for (std::size_t individual_index = 0; individual_index < population.layout.active_individual_count;
-         ++individual_index) {
-        std::uint32_t slot_index = 0;
-        ok &= TryAllocateSlabSlot(buffer, slot_index);
-        ok &= TrySetSlabGenerationSlot(generation, individual_index, slot_index);
-        ok &= TryCopyGenomeBytesIntoSlabSlot(buffer, slot_index, HostGenomeBytesAt(population, individual_index),
-                                             population.layout.genome_stride_bytes);
-    }
-
-    return ok;
-}
-
 } // namespace
 
 int main(int argc, char **argv) {
@@ -493,21 +461,6 @@ int main(int argc, char **argv) {
             return 1;
         }
 
-        HostPopulation population{};
-        if (!TryInitializeRandomHostPopulation(population, initial_population_size,
-                                               runtime_word_counts.action_space_word_count, cli_config.seed)) {
-            std::cerr << "Could not initialize the starting population.\n";
-            return 1;
-        }
-
-        HostGenotypeSlab host_buffer{};
-        SlabGeneration current_generation{};
-        if (!TryPopulateSlabGenerationFromHostPopulation(population, slab_slot_count, 0, host_buffer,
-                                                         current_generation)) {
-            std::cerr << "Could not populate the starting slab generation.\n";
-            return 1;
-        }
-
         DeviceSlabGARuntimeConfig runtime_config{};
         runtime_config.genotype_slab_byte_budget_bytes = genotype_memory_budget_bytes;
         runtime_config.generation_byte_budget_bytes = generation_memory_budget_bytes;
@@ -522,9 +475,11 @@ int main(int argc, char **argv) {
         }
 
         const GenerationAssemblyConfig assembly_config = MakeAssemblyConfig();
+        const DeviceSlabBootstrapConfig bootstrap_config{};
 
-        if (!TryUploadCurrentSlabPopulationToDevice(host_buffer, current_generation, buffers)) {
-            std::cerr << "Could not upload the initial slab population to device memory.\n";
+        if (!TryBootstrapRandomCurrentGenerationOnDevice(buffers, initial_population_size, cli_config.seed, 0,
+                                                         bootstrap_config)) {
+            std::cerr << "Could not bootstrap the initial device slab population.\n";
             DestroyDeviceSlabGARuntimeBuffers(buffers);
             return 1;
         }
@@ -536,7 +491,7 @@ int main(int argc, char **argv) {
                   << ", slab_slot_count=" << slab_slot_count
                   << ", generation_population_capacity=" << generation_population_capacity
                   << ", action_count=" << runtime_word_counts.action_space_word_count
-                  << ", genome_stride_bytes=" << host_buffer.layout.slot_stride_bytes
+                  << ", genome_stride_bytes=" << buffers.genotype_slab.slab_layout.slot_stride_bytes
                   << ", generation_vram_budget_bytes=" << generation_memory_budget_bytes
                   << ", generation_vram_budget_gib="
                   << (static_cast<double>(generation_memory_budget_bytes) / kBytesPerVramGiB)

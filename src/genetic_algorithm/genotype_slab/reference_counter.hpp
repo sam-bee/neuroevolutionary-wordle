@@ -29,7 +29,7 @@ inline NEUROEVOLUTION_HOST_DEVICE bool AtomicTryIncrementReferenceCount(std::uin
 
 #if defined(__CUDA_ARCH__)
     std::uint32_t observed = *counter;
-    while (observed != kMaxSlabSlotReferenceCount) {
+    while (observed != kMaxReferenceCount) {
         const std::uint32_t previous = atomicCAS(counter, observed, observed + 1);
         if (previous == observed) {
             return true;
@@ -41,7 +41,7 @@ inline NEUROEVOLUTION_HOST_DEVICE bool AtomicTryIncrementReferenceCount(std::uin
     return false;
 #else
     std::uint32_t observed = __atomic_load_n(counter, __ATOMIC_RELAXED);
-    while (observed != kMaxSlabSlotReferenceCount) {
+    while (observed != kMaxReferenceCount) {
         const std::uint32_t next = observed + 1;
         if (__atomic_compare_exchange_n(counter, &observed, next, false, __ATOMIC_ACQ_REL, __ATOMIC_RELAXED)) {
             return true;

@@ -244,11 +244,11 @@ bool TestHostSlabAllocatesReleasesAndReusesFixedWidthSlots() {
     ok &= ExpectTrue(buffer.free_slot_count == 0, "Expected a full slab to report no free slots");
 
     ok &= TryRetainSlabSlot(buffer, slot1);
-    ok &= ExpectTrue(buffer.slot_states[slot1].reference_count == 2,
+    ok &= ExpectTrue(buffer.slot_states[slot1].liveness_count == 2,
                      "Expected retaining a slot to increment its reference count");
     ok &= TryReleaseSlabSlot(buffer, slot1);
     ok &= ExpectTrue(buffer.slot_states[slot1].occupied, "Expected the slot to stay occupied while references remain");
-    ok &= ExpectTrue(buffer.slot_states[slot1].reference_count == 1,
+    ok &= ExpectTrue(buffer.slot_states[slot1].liveness_count == 1,
                      "Expected releasing one reference to leave the slot live");
     ok &= TryReleaseSlabSlot(buffer, slot1);
     ok &= ExpectTrue(!buffer.slot_states[slot1].occupied,

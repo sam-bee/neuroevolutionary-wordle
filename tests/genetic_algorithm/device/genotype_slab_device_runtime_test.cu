@@ -267,7 +267,7 @@ __global__ void SlabFreeListWarpContentionKernel(std::uint8_t *slab_storage, Sla
                 atomicCAS(status, 0, 4);
             }
 
-            if (!slot_states[checked_slot].occupied || (slot_states[checked_slot].reference_count != 1U)) {
+            if (!slot_states[checked_slot].occupied || (slot_states[checked_slot].liveness_count != 1U)) {
                 atomicCAS(status, 0, 5);
             }
         }
@@ -285,7 +285,7 @@ __global__ void SlabFreeListWarpContentionKernel(std::uint8_t *slab_storage, Sla
         }
 
         for (std::uint32_t checked_slot = 0; checked_slot < slab_layout.slot_count; ++checked_slot) {
-            if (slot_states[checked_slot].occupied || (slot_states[checked_slot].reference_count != 0U)) {
+            if (slot_states[checked_slot].occupied || (slot_states[checked_slot].liveness_count != 0U)) {
                 atomicCAS(status, 0, 8);
             }
         }
@@ -366,7 +366,7 @@ bool TestDeviceSlabFreeListIsThreadSafeUnderWarpContention() {
                          "Expected each genotype slab slot to be allocated exactly once under warp contention");
         ok &= ExpectTrue(!downloaded_buffer.slot_states[slot_index].occupied,
                          "Expected released contended slot to be unoccupied");
-        ok &= ExpectTrue(downloaded_buffer.slot_states[slot_index].reference_count == 0U,
+        ok &= ExpectTrue(downloaded_buffer.slot_states[slot_index].liveness_count == 0U,
                          "Expected released contended slot to have no references");
     }
 
@@ -423,7 +423,7 @@ bool TestDeviceSlabRuntimeUploadsAndDownloadsBufferAndGenerationState() {
     ok &= ExpectTrue(downloaded_buffer.free_slot_count == 2, "Expected downloaded slab to preserve free-slot count");
     ok &= ExpectTrue(downloaded_buffer.slot_states[slot0].occupied,
                      "Expected downloaded slab to preserve live slot state");
-    ok &= ExpectTrue(downloaded_buffer.slot_states[slot0].reference_count == 2,
+    ok &= ExpectTrue(downloaded_buffer.slot_states[slot0].liveness_count == 2,
                      "Expected downloaded slab to preserve slot reference counts");
     ok &= ExpectTrue(!downloaded_buffer.slot_states[slot1].occupied,
                      "Expected downloaded slab to preserve released slot state");
@@ -1073,7 +1073,7 @@ bool TestDeviceSlabRuntimeCleansUpPartialAssemblyWhenLaterBatchFails() {
                        "Expected partial assembly cleanup to leave unreleased parent slots intact");
         ok &= ExpectTrue(downloaded_buffer.slot_states[original_parent_slots[parent_index]].occupied,
                          "Expected partial assembly cleanup to keep original parent slots occupied");
-        ok &= ExpectTrue(downloaded_buffer.slot_states[original_parent_slots[parent_index]].reference_count == 1U,
+        ok &= ExpectTrue(downloaded_buffer.slot_states[original_parent_slots[parent_index]].liveness_count == 1U,
                          "Expected partial assembly cleanup to preserve parent slot references");
     }
 

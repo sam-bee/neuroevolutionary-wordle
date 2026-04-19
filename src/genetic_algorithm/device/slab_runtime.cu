@@ -180,7 +180,7 @@ __global__ void EvaluateSlabGenerationFitnessKernel(
         return;
     }
 
-    if (!slot_states[slot_index].occupied || (slot_states[slot_index].reference_count == 0)) {
+    if (!slot_states[slot_index].occupied || (slot_states[slot_index].liveness_count == 0)) {
         SetFailureStatus(status, DeviceSlabGARuntimeStatusCode::kInvalidSlab);
         return;
     }
@@ -605,12 +605,13 @@ void DestroyDeviceSlabGARuntimeBuffers(DeviceSlabGARuntimeBuffers &buffers) noex
     buffers = {};
 }
 
-bool TryUploadCurrentSlabPopulationToDevice(const genotype_slab::HostGenotypeSlab &host_buffer,
-                                            const genotype_slab::SlabGeneration &current_generation,
-                                            DeviceSlabGARuntimeBuffers &buffers) {
-    if ((current_generation.active_individual_count > buffers.max_generation_size) ||
-        !genotype_slab::device::TryUploadSlabToDevice(host_buffer, buffers.genotype_slab) ||
-        !genotype_slab::device::TryUploadCurrentGenerationToDevice(current_generation, buffers.genotype_slab)) {
+bool TryBootstrapRandomCurrentGenerationOnDevice(DeviceSlabGARuntimeBuffers &buffers, const std::size_t generation_size,
+                                                 const std::uint32_t generation_seed,
+                                                 const std::size_t generation_index,
+                                                 const DeviceSlabBootstrapConfig &config) {
+    if (!genotype_slab::device::TryBootstrapRandomCurrentGenerationOnDevice(buffers.genotype_slab, generation_size,
+                                                                            generation_seed, generation_index,
+                                                                            config)) {
         return false;
     }
 

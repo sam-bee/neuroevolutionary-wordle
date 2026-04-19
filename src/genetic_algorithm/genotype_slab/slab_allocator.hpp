@@ -11,7 +11,7 @@ namespace neuroevolution::genetic_algorithm::genotype_slab {
 
 struct SlabSlotState {
     bool occupied = false;
-    std::uint32_t reference_count = 0;
+    std::uint32_t liveness_count = 0;
 };
 
 struct AlignedBufferStorageDeleter {
@@ -47,10 +47,11 @@ struct ConstGenotypeSlabView {
     const std::uint32_t *free_slot_lock = nullptr;
 };
 
-constexpr std::uint32_t kMaxSlabSlotReferenceCount = static_cast<std::uint32_t>(-1);
+constexpr std::uint32_t kMaxReferenceCount = static_cast<std::uint32_t>(-1);
+constexpr std::uint32_t kMaxSlabSlotLivenessCount = kMaxReferenceCount;
 
 constexpr NEUROEVOLUTION_HOST_DEVICE bool IsValidSlabSlotState(const SlabSlotState &slot_state) noexcept {
-    return slot_state.occupied ? (slot_state.reference_count > 0) : (slot_state.reference_count == 0);
+    return slot_state.occupied ? (slot_state.liveness_count > 0) : (slot_state.liveness_count == 0);
 }
 
 inline GenotypeSlabView MakeGenotypeSlabView(HostGenotypeSlab &buffer) noexcept {
@@ -123,14 +124,14 @@ inline NEUROEVOLUTION_HOST_DEVICE void UnlockSlabFreeList(std::uint32_t *lock) n
 #endif
 }
 
-inline NEUROEVOLUTION_HOST_DEVICE bool AtomicTryIncrementSlabSlotReferenceCount(std::uint32_t *counter) noexcept {
+inline NEUROEVOLUTION_HOST_DEVICE bool AtomicTryIncrementSlabSlotLivenessCount(std::uint32_t *counter) noexcept {
     if (counter == nullptr) {
         return false;
     }
 
 #if defined(__CUDA_ARCH__)
     std::uint32_t observed = *counter;
-    while (observed != 0U && observed != kMaxSlabSlotReferenceCount) {
+    while (observed != 0U && observed != kMaxSlabSlotLivenessCount) {
         const std::uint32_t previous = atomicCAS(counter, observed, observed + 1U);
         if (previous == observed) {
             return true;
@@ -140,7 +141,7 @@ inline NEUROEVOLUTION_HOST_DEVICE bool AtomicTryIncrementSlabSlotReferenceCount(
     }
 #else
     std::uint32_t observed = __atomic_load_n(counter, __ATOMIC_RELAXED);
-    while (observed != 0U && observed != kMaxSlabSlotReferenceCount) {
+    while (observed != 0U && observed != kMaxSlabSlotLivenessCount) {
         const std::uint32_t next = observed + 1U;
         if (__atomic_compare_exchange_n(counter, &observed, next, false, __ATOMIC_ACQ_REL, __ATOMIC_RELAXED)) {
             return true;
@@ -152,7 +153,7 @@ inline NEUROEVOLUTION_HOST_DEVICE bool AtomicTryIncrementSlabSlotReferenceCount(
 }
 
 inline NEUROEVOLUTION_HOST_DEVICE bool
-AtomicTryDecrementSlabSlotReferenceCount(std::uint32_t *counter, std::uint32_t &previous_count) noexcept {
+AtomicTryDecrementSlabSlotLivenessCount(std::uint32_t *counter, std::uint32_t &previous_count) noexcept {
     previous_count = 0;
     if (counter == nullptr) {
         return false;
@@ -303,7 +304,7 @@ inline NEUROEVOLUTION_HOST_DEVICE bool TryAllocateSlabSlot(const GenotypeSlabVie
     }
 
     SlabSlotState &slot_state = buffer.slot_states[slot_index];
-    if (slot_state.occupied || (slot_state.reference_count != 0)) {
+    if (slot_state.occupied || (slot_state.liveness_count != 0)) {
         buffer.free_slot_stack[*buffer.free_slot_count] = slot_index;
         ++(*buffer.free_slot_count);
         detail::UnlockSlabFreeList(buffer.free_slot_lock);
@@ -311,7 +312,7 @@ inline NEUROEVOLUTION_HOST_DEVICE bool TryAllocateSlabSlot(const GenotypeSlabVie
     }
 
     slot_state.occupied = true;
-    slot_state.reference_count = 1;
+    slot_state.liveness_count = 1;
     detail::UnlockSlabFreeList(buffer.free_slot_lock);
     detail::ClearSlabSlotBytesUnchecked(buffer, slot_index);
     return true;
@@ -326,7 +327,7 @@ inline NEUROEVOLUTION_HOST_DEVICE bool TryRetainSlabSlot(const GenotypeSlabView 
     }
 
     SlabSlotState &slot_state = buffer.slot_states[slot_index];
-    return detail::AtomicTryIncrementSlabSlotReferenceCount(&slot_state.reference_count);
+    return detail::AtomicTryIncrementSlabSlotLivenessCount(&slot_state.liveness_count);
 }
 
 bool TryRetainSlabSlot(HostGenotypeSlab &buffer, std::uint32_t slot_index);
@@ -338,12 +339,12 @@ inline NEUROEVOLUTION_HOST_DEVICE bool TryReleaseSlabSlot(const GenotypeSlabView
     }
 
     SlabSlotState &slot_state = buffer.slot_states[slot_index];
-    std::uint32_t previous_reference_count = 0;
-    if (!detail::AtomicTryDecrementSlabSlotReferenceCount(&slot_state.reference_count, previous_reference_count)) {
+    std::uint32_t previous_liveness_count = 0;
+    if (!detail::AtomicTryDecrementSlabSlotLivenessCount(&slot_state.liveness_count, previous_liveness_count)) {
         return false;
     }
 
-    if (previous_reference_count != 1U) {
+    if (previous_liveness_count != 1U) {
         return true;
     }
 

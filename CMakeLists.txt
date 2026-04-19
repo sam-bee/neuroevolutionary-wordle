@@ -175,7 +175,6 @@ set_target_properties(genotype_slab_device PROPERTIES
 )
 
 add_library(genetic_algorithm_slab_device STATIC
-    src/genetic_algorithm/genome/dynamic_layout.cpp
     src/genetic_algorithm/device/slab_runtime.cu
 )
 

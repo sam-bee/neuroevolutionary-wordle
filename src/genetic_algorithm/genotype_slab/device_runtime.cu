@@ -17,12 +17,16 @@ namespace {
 
 using device_genome_ops::BreedAndMutateGenome;
 using device_genome_ops::DeviceRandomState;
+using device_genome_ops::InitializeRandomGenome;
+using device_genome_ops::IsValidRandomGenomeInitializationConfig;
 using device_genome_ops::MakeDeviceRandomState;
+using device_genome_ops::RandomGenomeInitializationConfig;
 using device_injection_ops::DeviceOutputEmbeddingInjectionStatusCode;
 using device_injection_ops::TryInjectExpandedOutputEmbeddingTails;
 
 constexpr int kSlabAssemblyThreadBlockSize = 128;
 constexpr int kMaxSlabAssemblyThreadBlocks = 32;
+constexpr int kSlabBootstrapThreadBlockSize = 256;
 constexpr std::size_t kMaxSlabAssemblyConcurrentChildren =
     static_cast<std::size_t>(kSlabAssemblyThreadBlockSize) * static_cast<std::size_t>(kMaxSlabAssemblyThreadBlocks);
 
@@ -211,6 +215,99 @@ __global__ void ApplyFinalChildPriorityToAssemblyPlanKernel(SlabParentPair *pare
         --parent_reference_counts[selected_child.first_parent_index];
         --parent_reference_counts[selected_child.second_parent_index];
     }
+}
+
+__global__ void InitializeEmptySlabMetadataKernel(SlabSlotState *slot_states, std::uint32_t *free_slot_stack,
+                                                  std::uint32_t *free_slot_count, std::uint32_t *free_slot_lock,
+                                                  const GenotypeSlabLayout slab_layout, int *status) {
+    if (!IsDeviceStatusOk(status)) {
+        return;
+    }
+
+    if ((slot_states == nullptr) || (free_slot_stack == nullptr) || (free_slot_count == nullptr) ||
+        (free_slot_lock == nullptr) || !IsValidGenotypeSlabLayout(slab_layout)) {
+        if ((blockIdx.x == 0) && (threadIdx.x == 0)) {
+            SetFailureStatus(status, DeviceSlabRuntimeStatusCode::kInvalidSlab);
+        }
+        return;
+    }
+
+    const std::size_t slot_index =
+        (static_cast<std::size_t>(blockIdx.x) * static_cast<std::size_t>(blockDim.x)) + threadIdx.x;
+    if (slot_index < slab_layout.slot_count) {
+        slot_states[slot_index] = {};
+        free_slot_stack[slot_index] = static_cast<std::uint32_t>((slab_layout.slot_count - 1U) - slot_index);
+    }
+
+    if ((blockIdx.x == 0) && (threadIdx.x == 0)) {
+        *free_slot_count = static_cast<std::uint32_t>(slab_layout.slot_count);
+        *free_slot_lock = 0U;
+    }
+}
+
+__global__ void BootstrapRandomGenerationKernel(
+    std::uint8_t *slab_storage, SlabSlotState *slot_states, std::uint32_t *free_slot_stack,
+    std::uint32_t *free_slot_count, std::uint32_t *free_slot_lock, const GenotypeSlabLayout slab_layout,
+    std::uint32_t *current_slot_indices, const std::size_t generation_size, const std::size_t generation_index,
+    const std::uint32_t generation_seed, const DeviceSlabBootstrapConfig bootstrap_config, int *status) {
+    if (!IsDeviceStatusOk(status)) {
+        return;
+    }
+
+    const std::size_t organism_index = blockIdx.x;
+    if (organism_index >= generation_size) {
+        return;
+    }
+
+    if ((slab_storage == nullptr) || (slot_states == nullptr) || (free_slot_stack == nullptr) ||
+        (free_slot_count == nullptr) || (free_slot_lock == nullptr) || (current_slot_indices == nullptr) ||
+        !IsValidGenotypeSlabLayout(slab_layout) || !IsValidDeviceSlabBootstrapConfig(bootstrap_config)) {
+        if ((blockIdx.x == 0) && (threadIdx.x == 0)) {
+            SetFailureStatus(status, DeviceSlabRuntimeStatusCode::kInvalidRuntimeConfig);
+        }
+        return;
+    }
+
+    GenotypeSlabView slab{
+        .layout = slab_layout,
+        .storage = slab_storage,
+        .slot_states = slot_states,
+        .free_slot_stack = free_slot_stack,
+        .free_slot_count = free_slot_count,
+        .free_slot_lock = free_slot_lock,
+    };
+
+    __shared__ std::uint32_t slot_index;
+    if (threadIdx.x == 0) {
+        slot_index = kInvalidSlabSlotIndex;
+        if (!TryAllocateSlabSlot(slab, slot_index)) {
+            SetFailureStatus(status, DeviceSlabRuntimeStatusCode::kSlabFull);
+        } else {
+            current_slot_indices[organism_index] = slot_index;
+        }
+    }
+    __syncthreads();
+
+    if (!IsDeviceStatusOk(status) || (slot_index == kInvalidSlabSlotIndex)) {
+        return;
+    }
+
+    RandomGenomeInitializationConfig genome_init_config{};
+    genome_init_config.dense_weight_gain = bootstrap_config.dense_weight_gain;
+    genome_init_config.output_embedding_tail_stddev = bootstrap_config.output_embedding_tail_stddev;
+    if (!IsValidRandomGenomeInitializationConfig(genome_init_config)) {
+        SetFailureStatus(status, DeviceSlabRuntimeStatusCode::kInvalidRuntimeConfig);
+        return;
+    }
+
+    const std::uint64_t random_stream =
+        (((static_cast<std::uint64_t>(generation_index) * static_cast<std::uint64_t>(generation_size)) +
+          static_cast<std::uint64_t>(organism_index)) *
+         static_cast<std::uint64_t>(blockDim.x)) +
+        static_cast<std::uint64_t>(threadIdx.x);
+    DeviceRandomState random_state = MakeDeviceRandomState(generation_seed, random_stream);
+    InitializeRandomGenome(SlabSlotBytesAt(slab.storage, slab.layout, slot_index), slab.layout.action_count,
+                           random_state, genome_init_config, threadIdx.x, blockDim.x);
 }
 
 __global__ void ValidateAssemblyInputsKernel(
@@ -538,6 +635,20 @@ inline bool FinishKernelWithoutCleanup(const DeviceSlabRuntimeBuffers &buffers) 
     return CheckCuda(cudaGetLastError()) && CheckCuda(cudaDeviceSynchronize()) && IsDeviceStatusOk(buffers);
 }
 
+inline bool ResetSlabMetadataOnDevice(DeviceSlabRuntimeBuffers &buffers) {
+    if (!ResetDeviceStatus(buffers)) {
+        return false;
+    }
+
+    const std::size_t block_count =
+        (buffers.slab_layout.slot_count + static_cast<std::size_t>(kSlabAssemblyThreadBlockSize) - 1U) /
+        static_cast<std::size_t>(kSlabAssemblyThreadBlockSize);
+    InitializeEmptySlabMetadataKernel<<<static_cast<int>(block_count), kSlabAssemblyThreadBlockSize>>>(
+        buffers.slot_states, buffers.free_slot_stack, buffers.free_slot_count, buffers.free_slot_lock,
+        buffers.slab_layout, buffers.status);
+    return FinishKernelWithoutCleanup(buffers);
+}
+
 inline bool FinishAssemblyKernelOrCleanup(DeviceSlabRuntimeBuffers &buffers) {
     const bool launch_ok = CheckCuda(cudaGetLastError());
     const bool sync_ok = CheckCuda(cudaDeviceSynchronize());
@@ -632,7 +743,6 @@ bool TryCreateDeviceSlabRuntimeBuffers(DeviceSlabRuntimeBuffers &buffers, const 
         return false;
     }
 
-    ok &= CheckCuda(cudaMemset(buffers.slab_storage, 0, buffers.slab_layout.slab_bytes));
     ok &= CheckCuda(cudaMemset(buffers.slot_states, 0, buffers.slab_layout.slot_count * sizeof(SlabSlotState)));
     ok &= CheckCuda(cudaMemset(buffers.free_slot_stack, 0, buffers.slab_layout.slot_count * sizeof(std::uint32_t)));
     ok &= CheckCuda(cudaMemset(buffers.free_slot_count, 0, sizeof(std::uint32_t)));
@@ -743,6 +853,71 @@ bool TryUploadCurrentGenerationToDevice(const SlabGeneration &generation, Device
     ok &= CheckCuda(cudaMemcpy(buffers.current_has_fitness, generation.has_fitness.get(),
                                generation.active_individual_count * sizeof(std::uint8_t), cudaMemcpyHostToDevice));
     return ok;
+}
+
+bool TryBootstrapRandomCurrentGenerationOnDevice(DeviceSlabRuntimeBuffers &buffers, const std::size_t generation_size,
+                                                 const std::uint32_t generation_seed,
+                                                 const std::size_t generation_index,
+                                                 const DeviceSlabBootstrapConfig &config) {
+    if ((generation_size == 0) || (generation_size > buffers.max_generation_size) ||
+        !IsValidDeviceSlabBootstrapConfig(config) || !IsValidGenotypeSlabLayout(buffers.slab_layout)) {
+        return false;
+    }
+
+    bool ok = true;
+    ok &= ClearGenerationBuffers(buffers.current_slot_indices, buffers.current_fitness, buffers.current_evaluation_counts,
+                                 buffers.current_has_fitness, buffers.max_generation_size);
+    ok &= ClearGenerationBuffers(buffers.next_slot_indices, buffers.next_fitness, buffers.next_evaluation_counts,
+                                 buffers.next_has_fitness, buffers.max_generation_size);
+    ok &= CheckCuda(cudaMemset(buffers.assembly_parent_pairs, 0, buffers.max_generation_size * sizeof(SlabParentPair)));
+    ok &= CheckCuda(cudaMemset(buffers.parent_reference_counts, 0,
+                               buffers.max_generation_size * sizeof(std::uint32_t)));
+    if (!ok || !ResetSlabMetadataOnDevice(buffers) || !ResetDeviceStatus(buffers)) {
+        buffers.current_generation_index = 0;
+        buffers.current_generation_size = 0;
+        buffers.next_generation_index = 0;
+        buffers.next_generation_size = 0;
+        buffers.planned_child_count = 0;
+        return false;
+    }
+
+    BootstrapRandomGenerationKernel<<<static_cast<int>(generation_size), kSlabBootstrapThreadBlockSize>>>(
+        buffers.slab_storage, buffers.slot_states, buffers.free_slot_stack, buffers.free_slot_count,
+        buffers.free_slot_lock, buffers.slab_layout, buffers.current_slot_indices, generation_size, generation_index,
+        generation_seed, config, buffers.status);
+
+    int original_status = DeviceStatusValue(DeviceSlabRuntimeStatusCode::kCudaFailure);
+    const bool launch_ok = CheckCuda(cudaGetLastError());
+    const bool sync_ok = CheckCuda(cudaDeviceSynchronize());
+    if (!launch_ok || !sync_ok) {
+        (void)WriteDeviceStatus(buffers, DeviceSlabRuntimeStatusCode::kCudaFailure);
+    }
+    if ((!launch_ok || !sync_ok) || !IsDeviceStatusOk(buffers)) {
+        (void)ReadDeviceStatus(buffers, original_status);
+        (void)ResetSlabMetadataOnDevice(buffers);
+        (void)ClearGenerationBuffers(buffers.current_slot_indices, buffers.current_fitness,
+                                     buffers.current_evaluation_counts, buffers.current_has_fitness,
+                                     buffers.max_generation_size);
+        (void)ClearGenerationBuffers(buffers.next_slot_indices, buffers.next_fitness,
+                                     buffers.next_evaluation_counts, buffers.next_has_fitness,
+                                     buffers.max_generation_size);
+        if (original_status != DeviceStatusValue(DeviceSlabRuntimeStatusCode::kOk)) {
+            (void)WriteDeviceStatus(buffers, static_cast<DeviceSlabRuntimeStatusCode>(original_status));
+        }
+        buffers.current_generation_index = 0;
+        buffers.current_generation_size = 0;
+        buffers.next_generation_index = 0;
+        buffers.next_generation_size = 0;
+        buffers.planned_child_count = 0;
+        return false;
+    }
+
+    buffers.current_generation_index = generation_index;
+    buffers.current_generation_size = generation_size;
+    buffers.next_generation_index = 0;
+    buffers.next_generation_size = 0;
+    buffers.planned_child_count = 0;
+    return true;
 }
 
 bool TryDownloadCurrentGenerationFromDevice(const DeviceSlabRuntimeBuffers &buffers, SlabGeneration &generation) {

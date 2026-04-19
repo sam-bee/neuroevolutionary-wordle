@@ -94,6 +94,7 @@ The current high-signal docs are:
 - [`docs/genetic-algorithm/fitness-evaluation.md`](docs/genetic-algorithm/fitness-evaluation.md)
 - [`docs/genetic-algorithm/output-embedding-recombination.md`](docs/genetic-algorithm/output-embedding-recombination.md)
 - [`docs/genetic-algorithm/genotype-slab-design.md`](docs/genetic-algorithm/genotype-slab-design.md)
+- [`docs/genetic-algorithm/startup-bootstrap.md`](docs/genetic-algorithm/startup-bootstrap.md)
 
 ## Repository Layout
 

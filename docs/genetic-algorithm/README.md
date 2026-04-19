@@ -6,5 +6,7 @@
   The current implemented fitness signal.
 - [`genotype-slab-design.md`](genotype-slab-design.md)
   The shared genotype slab, slab allocator, GC, and spillover design.
+- [`startup-bootstrap.md`](startup-bootstrap.md)
+  How startup bootstraps generation 0 directly into device slab slots.
 - [`output-embedding-recombination.md`](output-embedding-recombination.md)
   The current special heredity rules for trainable output-tail rows.

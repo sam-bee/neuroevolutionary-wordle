@@ -100,7 +100,7 @@ inline NEUROEVOLUTION_HOST_DEVICE bool TryPreflightCompactionAndRepackForExpande
 
         const std::uint32_t slot_index = generation_slot_indices[parent_index];
         if ((slot_index == kInvalidSlabSlotIndex) || (slot_index >= slab_layout.slot_count) ||
-            !slot_states[slot_index].occupied || (slot_states[slot_index].reference_count == 0) ||
+            !slot_states[slot_index].occupied || (slot_states[slot_index].liveness_count == 0) ||
             !ReferencedParentSlotIsUnique(generation_slot_indices, parent_reference_counts, parent_index)) {
             return false;
         }
@@ -204,7 +204,7 @@ inline NEUROEVOLUTION_HOST_DEVICE bool TryCompactAndRepackSlabForExpandedActionC
         }
 
         slot_states[slot_index].occupied = true;
-        slot_states[slot_index].reference_count = 1;
+        slot_states[slot_index].liveness_count = 1;
     }
 
     free_slot_count = static_cast<std::uint32_t>(destination_base_slot);

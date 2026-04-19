@@ -66,14 +66,15 @@ struct DeviceSlabGARuntimeBuffers {
 };
 
 using PendingOutputEmbeddingInjection = genotype_slab::device::PendingOutputEmbeddingInjection;
+using DeviceSlabBootstrapConfig = genotype_slab::device::DeviceSlabBootstrapConfig;
 
 bool TryCreateDeviceSlabGARuntimeBuffers(DeviceSlabGARuntimeBuffers &buffers, const DeviceSlabGARuntimeConfig &config);
 
 void DestroyDeviceSlabGARuntimeBuffers(DeviceSlabGARuntimeBuffers &buffers) noexcept;
 
-bool TryUploadCurrentSlabPopulationToDevice(const genotype_slab::HostGenotypeSlab &host_buffer,
-                                            const genotype_slab::SlabGeneration &current_generation,
-                                            DeviceSlabGARuntimeBuffers &buffers);
+bool TryBootstrapRandomCurrentGenerationOnDevice(DeviceSlabGARuntimeBuffers &buffers, std::size_t generation_size,
+                                                 std::uint32_t generation_seed, std::size_t generation_index = 0,
+                                                 const DeviceSlabBootstrapConfig &config = {});
 
 bool TryDownloadSlabFromDevice(const DeviceSlabGARuntimeBuffers &buffers, genotype_slab::HostGenotypeSlab &host_buffer);
 

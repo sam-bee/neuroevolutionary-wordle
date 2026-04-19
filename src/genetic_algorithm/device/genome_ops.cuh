@@ -4,6 +4,8 @@
 #include <cstddef>
 #include <cstdint>
 
+#include <curand_kernel.h>
+
 #include "common/float16.hpp"
 #include "genetic_algorithm/breeding.hpp"
 #include "genetic_algorithm/genome/dynamic_layout.hpp"
@@ -13,33 +15,17 @@
 namespace neuroevolution::genetic_algorithm::device_genome_ops {
 
 struct DeviceRandomState {
-    std::uint64_t state = 0;
+    curandStatePhilox4_32_10_t philox{};
 };
 
-__device__ inline std::uint64_t NextUInt64(DeviceRandomState &state) {
-    std::uint64_t x = state.state;
-    x ^= x >> 12;
-    x ^= x << 25;
-    x ^= x >> 27;
-    state.state = x;
-    return x * 2685821657736338717ULL;
-}
-
-__device__ inline DeviceRandomState MakeDeviceRandomState(const std::uint32_t seed, const std::uint32_t stream) {
+__device__ inline DeviceRandomState MakeDeviceRandomState(const std::uint32_t seed, const std::uint64_t stream) {
     DeviceRandomState state{};
-    state.state =
-        (static_cast<std::uint64_t>(seed) << 32) ^ (static_cast<std::uint64_t>(stream) + 0x9E3779B97F4A7C15ULL);
-    if (state.state == 0) {
-        state.state = 0xA5A5A5A5ULL;
-    }
-
-    (void)NextUInt64(state);
+    curand_init(static_cast<unsigned long long>(seed), static_cast<unsigned long long>(stream), 0ULL, &state.philox);
     return state;
 }
 
 __device__ inline float NextUniform01(DeviceRandomState &state) {
-    const std::uint32_t bits = static_cast<std::uint32_t>(NextUInt64(state) >> 32);
-    return (static_cast<float>(bits) + 1.0f) / 4294967297.0f;
+    return curand_uniform(&state.philox);
 }
 
 __device__ inline bool SampleBernoulli(DeviceRandomState &state, const float probability) {
@@ -51,14 +37,107 @@ __device__ inline std::size_t SampleIndex(DeviceRandomState &state, const std::s
         return 0;
     }
 
-    return static_cast<std::size_t>(NextUInt64(state) % upper_bound_exclusive);
+    return static_cast<std::size_t>(curand(&state.philox) % upper_bound_exclusive);
 }
 
 __device__ inline float SampleStandardNormal(DeviceRandomState &state) {
-    constexpr float kTwoPi = 6.28318530717958647692f;
-    const float u1 = NextUniform01(state);
-    const float u2 = NextUniform01(state);
-    return sqrtf(-2.0f * logf(u1)) * cosf(kTwoPi * u2);
+    return curand_normal(&state.philox);
+}
+
+struct RandomGenomeInitializationConfig {
+    float dense_weight_gain = 1.0f;
+    float output_embedding_tail_stddev = 0.05f;
+};
+
+constexpr NEUROEVOLUTION_HOST_DEVICE bool
+IsValidRandomGenomeInitializationConfig(const RandomGenomeInitializationConfig &config) noexcept {
+    return (config.dense_weight_gain > 0.0f) && (config.output_embedding_tail_stddev >= 0.0f);
+}
+
+inline NEUROEVOLUTION_HOST_DEVICE float HeNormalStddev(const std::size_t fan_in, const float gain) noexcept {
+    return gain * sqrtf(2.0f / static_cast<float>(fan_in));
+}
+
+template <std::size_t Size>
+__device__ inline void FillFloat16BufferWithConstant(common::FixedBuffer<common::Float16, Size> &buffer,
+                                                     const float value, const std::size_t worker_index,
+                                                     const std::size_t worker_count) {
+    for (std::size_t index = worker_index; index < Size; index += worker_count) {
+        buffer[index] = common::ToFloat16(value);
+    }
+}
+
+template <std::size_t Size>
+__device__ inline void FillFloat16BufferWithNormal(common::FixedBuffer<common::Float16, Size> &buffer,
+                                                   DeviceRandomState &random_state, const float stddev,
+                                                   const std::size_t worker_index,
+                                                   const std::size_t worker_count) {
+    for (std::size_t index = worker_index; index < Size; index += worker_count) {
+        buffer[index] = common::ToFloat16(stddev * SampleStandardNormal(random_state));
+    }
+}
+
+template <std::size_t InputSize, std::size_t OutputSize>
+__device__ inline void InitializeDenseLayerRandom(
+    model::input_encoder::DenseLayerParameters<InputSize, OutputSize> &layer, DeviceRandomState &random_state,
+    const float weight_stddev, const std::size_t worker_index, const std::size_t worker_count) {
+    FillFloat16BufferWithNormal(layer.weights, random_state, weight_stddev, worker_index, worker_count);
+    FillFloat16BufferWithConstant(layer.biases, 0.0f, worker_index, worker_count);
+}
+
+template <std::size_t InputSize, std::size_t OutputSize>
+__device__ inline void InitializeDenseLayerRandom(
+    model::dense_trunk::DenseLayerParameters<InputSize, OutputSize> &layer, DeviceRandomState &random_state,
+    const float weight_stddev, const std::size_t worker_index, const std::size_t worker_count) {
+    FillFloat16BufferWithNormal(layer.weights, random_state, weight_stddev, worker_index, worker_count);
+    FillFloat16BufferWithConstant(layer.biases, 0.0f, worker_index, worker_count);
+}
+
+__device__ inline void InitializeRandomPolicyModelParameters(
+    genome::PolicyModelParameters &parameters, DeviceRandomState &random_state,
+    const RandomGenomeInitializationConfig &config, const std::size_t worker_index,
+    const std::size_t worker_count) {
+    InitializeDenseLayerRandom(parameters.input_encoder.input_to_hidden, random_state,
+                               HeNormalStddev(model::input_encoder::kTurnFeatureCount, config.dense_weight_gain),
+                               worker_index, worker_count);
+    InitializeDenseLayerRandom(parameters.input_encoder.hidden_to_output, random_state,
+                               HeNormalStddev(model::input_encoder::kEncoderHiddenSize, config.dense_weight_gain),
+                               worker_index, worker_count);
+    InitializeDenseLayerRandom(parameters.dense_trunk.input_to_hidden0, random_state,
+                               HeNormalStddev(model::dense_trunk::kDenseTrunkInputSize, config.dense_weight_gain),
+                               worker_index, worker_count);
+    InitializeDenseLayerRandom(parameters.dense_trunk.hidden0_to_hidden1, random_state,
+                               HeNormalStddev(model::dense_trunk::kDenseTrunkHiddenSize0, config.dense_weight_gain),
+                               worker_index, worker_count);
+    InitializeDenseLayerRandom(parameters.dense_trunk.hidden1_to_output, random_state,
+                               HeNormalStddev(model::dense_trunk::kDenseTrunkHiddenSize1, config.dense_weight_gain),
+                               worker_index, worker_count);
+}
+
+__device__ inline void InitializeRandomOutputEmbeddingTailRows(
+    genome::TrainableActionEmbeddingTail *tail_rows, const std::size_t action_count, DeviceRandomState &random_state,
+    const RandomGenomeInitializationConfig &config, const std::size_t worker_index,
+    const std::size_t worker_count) {
+    constexpr std::size_t kTailFeatureCount = model::output_embedding::kTrainableFeatureDimension;
+    const std::size_t flattened_tail_value_count = action_count * kTailFeatureCount;
+    for (std::size_t flattened_index = worker_index; flattened_index < flattened_tail_value_count;
+         flattened_index += worker_count) {
+        const std::size_t action_index = flattened_index / kTailFeatureCount;
+        const std::size_t feature_index = flattened_index % kTailFeatureCount;
+        tail_rows[action_index][feature_index] =
+            common::ToFloat16(config.output_embedding_tail_stddev * SampleStandardNormal(random_state));
+    }
+}
+
+__device__ inline void InitializeRandomGenome(std::uint8_t *genome_bytes, const std::size_t action_count,
+                                              DeviceRandomState &random_state,
+                                              const RandomGenomeInitializationConfig &config,
+                                              const std::size_t worker_index,
+                                              const std::size_t worker_count) {
+    InitializeRandomPolicyModelParameters(genome::GenomePolicyModelParameters(genome_bytes), random_state, config,
+                                          worker_index, worker_count);
+    InitializeRandomOutputEmbeddingTailRows(genome::GenomeTailRows(genome_bytes), action_count, random_state, config,
+                                            worker_index, worker_count);
 }
 
 template <std::size_t Size>
