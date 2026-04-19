@@ -2,33 +2,11 @@
 
 This document describes the current shared genotype-slab design used by the genetic-algorithm runtime.
 
-It is intended as a design overview for the storage layer and its garbage-collection behaviour. It does not attempt to
-fully specify parent selection, fitness policy, or the wider training loop.
+It is a storage-layer overview. It does not attempt to fully specify parent selection, fitness policy, or the wider
+training loop.
 
 For the original design work that motivated this implementation direction, see the blog post
 ["Neuroevolutionary Wordle, Garbage Collection, and the Older Generation"](https://sam-burns.com/posts/neuroevolutionary-wordle-garbage-collection-and-the-older-generation/).
-
-## Relevant Source Layout
-
-The implementation for this design lives mainly under:
-
-- `src/genetic_algorithm/device/`
-  Runtime orchestration, fitness evaluation, parent-pair planning, and wrapper-level spill orchestration.
-- `src/genetic_algorithm/genotype_slab/`
-  The slab data structure itself, slot allocation, device assembly, reference counting, and growth repacking.
-- `src/genetic_algorithm/genome/`
-  Dynamic genome layout helpers used to interpret bytes inside slab slots.
-
-The most relevant files are:
-
-- `src/genetic_algorithm/device/slab_runtime.hpp`
-- `src/genetic_algorithm/device/slab_runtime.cu`
-- `src/genetic_algorithm/genotype_slab/slab_allocator.hpp`
-- `src/genetic_algorithm/genotype_slab/slab_allocator.cpp`
-- `src/genetic_algorithm/genotype_slab/device_runtime.hpp`
-- `src/genetic_algorithm/genotype_slab/device_runtime.cu`
-- `src/genetic_algorithm/genotype_slab/reference_counter.hpp`
-- `src/genetic_algorithm/genotype_slab/repacking.hpp`
 
 ## Design Goals
 
@@ -41,7 +19,7 @@ The slab exists to support a GPU-first genetic algorithm where:
 - even spill behavior should extend memory capacity rather than reimplement breeding on host
 - memory use should be expressed in byte budgets rather than only in population counts
 
-The current design explicitly prioritises correctness and bounded behaviour over maximum concurrency.
+The design currently prioritises correctness and bounded behaviour over maximum concurrency.
 
 ## High-Level Model
 
@@ -54,7 +32,7 @@ At any moment it mainly holds:
 - the next child generation being assembled
 - free reusable slots
 
-The runtime is therefore bi-generational in behaviour, but it uses one shared slab rather than two separate
+So the runtime is bi-generational in behaviour, but it uses one shared slab rather than two separate
 population-sized genome buffers.
 
 ## Slot Layout
@@ -79,22 +57,18 @@ The slab allocator is responsible for:
 - the free-slot stack
 - slot allocation and release
 
-The host-side structure is `HostGenotypeSlab`. Device code uses the corresponding slab views and runtime buffers.
-
 Allocation is stack-based:
 
 - allocating a slot pops a free slot index
 - releasing a slot pushes the index back
 - released slot bytes are treated as reusable storage immediately
 
-The current implementation makes the free-list operations thread-safe and keeps slot reference counts atomic.
+The current implementation keeps the free list thread-safe and the slot reference counts atomic.
 
 ## Reference-Counted Garbage Collection
 
-The current garbage collector is reference-count based.
-
-The important references here are not arbitrary object-graph references. They are the remaining planned uses of parent
-organisms during next-generation assembly.
+The current garbage collector is reference-count based. The relevant references are not arbitrary object-graph edges;
+they are the remaining planned uses of parent organisms during next-generation assembly.
 
 The runtime:
 
@@ -108,15 +82,9 @@ ordinary generation turnover.
 
 ## Final-Child Priority
 
-The runtime applies a simple pressure-reduction heuristic before child assembly.
-
-Children are reordered so that, where possible, assembly prefers a child that is the final remaining user of one or
-more parents. That tends to free parent slots earlier and reduce transient slab pressure.
-
-This is a heuristic, not a correctness guarantee. It helps the common case but does not replace the need for either:
-
-- enough slab slack
-- or a spill/failover path
+The runtime also applies a simple `final-child priority` heuristic before child assembly: where possible, it prefers a
+child that is the final remaining user of one or more parents. That tends to free parent slots earlier and reduce
+transient slab pressure.
 
 ## Device Assembly
 
@@ -150,14 +118,13 @@ The widening repack does this:
 5. repack them into the widened slot layout
 6. rebuild slot state and free-list metadata
 
-This phase is intentionally simple and correctness-oriented at present. It is not yet a low-latency concurrent
-collector.
+This phase is intentionally simple and stop-the-world. It is not yet a low-latency concurrent collector.
 
 ## Byte-Budget-Driven Sizing
 
 The runtime sizes generations and the slab from byte budgets rather than only from explicit slot counts.
 
-The key ideas are:
+The key sizing rules are:
 
 - a population byte budget
 - an on-device slab byte budget
@@ -193,7 +160,7 @@ In particular, the host side does not need:
 - fitness-evaluation logic
 - host-only GA code written purely so it can be unit tested without a GPU
 
-The intended spill path is generation-scoped:
+The spill path is generation-scoped:
 
 1. preserve the evaluated parent-generation summary
 2. allocate a temporary fixed-width host spill slab using the configured spillover budget
@@ -204,14 +171,8 @@ The intended spill path is generation-scoped:
    back into the on-device slab
 7. free the temporary host spill slab
 
-So during spill:
-
-- recombination stays on device
-- mutation stays on device
-- parent garbage collection stays on device
-- host memory is used only as temporary child-slot storage
-
-The CLI should still emit a loud warning when this happens so repeated spills are visible.
+So during spill, recombination, mutation, and parent garbage collection stay on device. Host memory is used only as
+temporary child-slot storage.
 
 ## Current Limitations
 
@@ -219,23 +180,10 @@ The current design does not yet try to solve every possible GC problem.
 
 Notably:
 
-- there is no same-width compaction pass because it is unnecessary for fixed-width slots
+- there is no same-width compaction pass
 - widening repack is stop-the-world
-- host spillover is an escape hatch, not the intended steady-state path
-- spillover is intended to extend slab capacity only, not to mirror CUDA breeding logic on host
+- host spillover is an escape hatch, not the normal path
+- spillover extends slab capacity only; it does not duplicate CUDA breeding logic on host
 - there is no background collector
-- there is no tracing collector for long-lived object graphs beyond the current reference-counted generation-turnover
-  logic
 
-## Current Status
-
-For the present milestone, the slab design is intended to be:
-
-- GPU-first on the normal path
-- byte-budget driven
-- reference-counted for ordinary parent reclamation
-- stop-the-world for genotype-width growth
-- able to spill child-slot storage to host memory when unavoidable without moving breeding or evaluation off device
-
-That is the current design baseline from which later optimisation or more advanced garbage-collection behaviour can be
-added.
+That is the current slab baseline.

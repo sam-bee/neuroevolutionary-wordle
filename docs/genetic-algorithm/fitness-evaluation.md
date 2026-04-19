@@ -2,54 +2,40 @@
 
 This document describes the fitness function the project currently uses in the CUDA runtime.
 
-It is a description of the implemented evaluation scheme, not a proposal for the next redesign.
-
-## Scope
-
-This is the fitness signal used when the slab-backed device runtime evaluates a population before parent selection and
-next-generation assembly.
-
-At present, the runtime uses:
-
-- an active training-word count
-- an active selectable action-space count
-
-In the current runtime, those two counts are kept equal.
+It is a description of the implemented evaluator, not a future proposal.
 
 ## High-Level Character
 
 Fitness is based on simulated Wordle play.
 
-It is not:
+Each genome is evaluated on the GPU before next-generation assembly. The evaluator uses:
 
-- a supervised loss
-- a differentiable objective
-- a static label-matching score
+- one globally introduced action-space prefix
+- one local training-word union for the genome's grid cell
 
-Instead, each genome is used to play Wordle episodes over the current active training-word shard, and its score is
-derived from the outcomes of those episodes.
+The selectable action-space count is global. The evaluation word set is local.
 
 ## Per-Genome Evaluation Loop
 
-For each genome in the current generation:
+For one genome:
 
-1. iterate over every active training word
-2. treat that word as the solution
+1. build the union of all in-range training-data shards for that cell
+2. treat each local word as the solution
 3. run three Wordle episodes against that solution
 4. sum the episode scores
-5. normalize the summed score to a bounded floating-point fitness value
+5. normalize by the theoretical maximum for that local word count
 
-So if the active training-word count is `W`, each genome is evaluated on `3 * W` Wordle episodes.
+So if a cell sees `W` local training words, that genome is evaluated on `3 * W` Wordle episodes.
 
-## The Three Episodes Per Training Word
+## The Three Episodes Per Local Training Word
 
-For each active training word, the evaluator runs:
+For each local training word, the evaluator runs:
 
 1. one fresh-grid episode
 2. one prefilled-grid episode with two fixed guesses already appended
 3. one second prefilled-grid episode with a different pair of fixed guesses already appended
 
-The current prefilled-grid setup is deterministic and shard-relative:
+The prefilled-grid setup is deterministic and local-set-relative:
 
 - prefilled episode A starts with guesses at offsets `entry_index + 1` and `entry_index + 2`
 - prefilled episode B starts with guesses at offsets `entry_index + 3` and `entry_index + 4`
@@ -93,21 +79,21 @@ This means earlier wins are rewarded more strongly, but all failures collapse to
 
 ## Raw Fitness Range
 
-Each training word contributes three episode scores.
+Each local training word contributes three episode scores.
 
 So:
 
 - maximum per training word: `3 * 15 = 45`
 - minimum per training word: `0`
 
-If the active training-word count is `W`, the raw summed fitness range is:
+If a cell sees `W` local training words, the raw summed fitness range is:
 
 - minimum raw fitness: `0`
 - maximum raw fitness: `45 * W`
 
 ## Normalized Fitness Range
 
-The runtime then divides the raw score by the theoretical maximum for the current word count.
+The runtime then divides the raw score by the theoretical maximum for that genome's local word count.
 
 That gives a normalized score in principle over `[0, 1]`.
 
@@ -116,9 +102,10 @@ stored range is:
 
 - `(epsilon, 1.0]`
 
-where `epsilon` is the project’s current positive selection-fitness floor.
+where `epsilon` is the project's current positive selection-fitness floor.
 
-So even a genome with raw score `0` does not remain at exact zero after normalization.
+So even a genome with raw score `0` does not remain at exact zero after normalization. The small positive floor exists
+to keep roulette selection well-defined.
 
 ## What Gets Stored and Reported
 
@@ -136,12 +123,12 @@ A few practical properties follow from this evaluator:
 
 - the score depends on actual game outcomes, not proxy labels
 - the score mixes virgin-grid and partially prefilled-grid play
-- the score rewards faster wins but gives no graded reward for “almost solved”
+- the score rewards faster wins but gives no graded reward for "almost solved"
 - the score is normalized by the theoretical ceiling, not by empirical task difficulty
-- changing the active training-word count changes the evaluation task even though the reported range stays near `0..1`
+- different cells can be evaluated on different local word counts in the same generation
+- generation summaries now aggregate across mixed local tasks
 
-That last point matters when comparing generations across an aggressive word-count growth schedule: the values remain
-normalized, but they are not guaranteed to be directly comparable as if the task difficulty were unchanged.
+So the values remain bounded, but they are not perfectly apples-to-apples across all cells and generations.
 
 ## Things This Fitness Function Does Not Currently Include
 

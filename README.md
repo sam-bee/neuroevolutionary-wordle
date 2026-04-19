@@ -3,8 +3,8 @@
 Requires `cmake` 3.22+ and a CUDA 13.1-compatible toolkit/driver setup. A `docker compose` development container is
 included with the required dependencies if you want to work inside a container instead of on the host.
 
-A CUDA/C++ experiment in building a Wordle-playing policy model and then training it. Genetic algorithms and
-reinforcement learning will be used.
+A CUDA/C++ experiment in building a Wordle-playing policy model and then training it with neuroevolution.
+Reinforcement learning may come later.
 
 This project combines three main ideas:
 
@@ -26,28 +26,19 @@ The structure of the model is as follows:
 The current action space is **4,739 valid 5-letter guesses**. It is smaller than the full guess list, but still includes
 all allowed solutions while biasing the action space toward common words derived from subtitle-frequency data.
 
-More information on data is available at [`docs/data/data-docs.md`](docs/data/data-docs.md).
-The current active-prefix baseline and intended spatial shard curriculum are described in
-[`docs/data/training-data-sharding-curriculum.md`](docs/data/training-data-sharding-curriculum.md).
-
-More detailed design information lives under the [`docs/`](docs/) folder. In particular:
-
-- [`docs/neural-net-design/`](docs/neural-net-design/) covers the policy-model structure
-- [`docs/data/`](docs/data/) covers the curated Wordle wordlists
-- [`docs/genetic-algorithm/`](docs/genetic-algorithm/) covers GA design, slab-backed runtime design, and garbage
-  collection
+More detailed design information lives under [`docs/`](docs/). Start with [`docs/README.md`](docs/README.md).
 
 The current GA demo uploads the full 4,739-word action catalog from `data/action-space-randomised.txt` to GPU
 constant memory once at process start.
 
-During a run, `run_genetic_algorithm` still introduces new words from the top of that catalog on a configurable phased
-schedule. Training-word count and selectable action-space count are kept equal, so output-embedding growth remains
-global. Fitness exposure is now spatial instead of panmictic: the initial foundation words are global, later word
-phases become training-data shards on the cellular grid, and each organism is evaluated against the equal-weight union
-of the shards whose radius covers its cell. Recombination, mutation, and fitness evaluation stay on device. If
-transient slab pressure exceeds the configured device budget, already-assembled children may spill to temporary
-host-side slab storage and later be packed back into the on-device slab. Under a fixed genotype VRAM budget, the
-population may shrink as active action count grows.
+During a run:
+
+- new words are introduced from the top of that catalog on a phased schedule
+- action-space growth is global, so genotype width still grows globally
+- fitness exposure is spatial, via local training-data shards on the cellular grid
+- recombination, mutation, and fitness evaluation stay on device
+- the shared genotype slab may spill already-assembled children to temporary host storage if device pressure gets too
+  high
 
 ## Why this exists
 
@@ -92,37 +83,19 @@ Each action word has a 64-dimensional embedding vector.
 The network therefore does **not** emit one output per word. Instead, it emits a 64-dimensional vector in the same space
 as the output embedding.
 
-## Scope of the detailed design
+## Design docs
 
-For implementation detail on the neural network itself, see:
+The current high-signal docs are:
 
-- [`docs/neural-net-design.md`](docs/neural-net-design/neural-net-design.md)
-- [accompanying design diagram](docs/neural-net-design/neural-net-design-diagram.png)
-- [`docs/genetic-algorithm/genetic-algorithm-design.md`](docs/genetic-algorithm/genetic-algorithm-design.md) for the
-  overall character of the genetic algorithm
-- [`docs/genetic-algorithm/current-fitness-evaluation.md`](docs/genetic-algorithm/current-fitness-evaluation.md) for
-  the current implemented fitness function
-- [`docs/genetic-algorithm/output-embedding-recombination-design.md`](docs/genetic-algorithm/output-embedding-recombination-design.md)
-  for the planned output-tail recombination policy
-- [`docs/genetic-algorithm/cellular-genetic-algorithm-design.md`](docs/genetic-algorithm/cellular-genetic-algorithm-design.md)
-  for an experimental cellular-GA / spatial-parent-selection design
-- [`docs/genetic-algorithm/genotype-slab-and-garbage-collector/genotype-slab-design.md`](docs/genetic-algorithm/genotype-slab-and-garbage-collector/genotype-slab-design.md)
-  for the shared genotype slab and slab allocator design
-
-That document is intended to be concrete enough for CUDA implementation of the model structure, while deliberately
-staying focused on the policy model rather than the wider genetic algorithm, reinforcement learning, and training-loop
-design.
+- [`docs/neural-net-design/neural-net-design.md`](docs/neural-net-design/neural-net-design.md)
+- [`docs/data/wordlists.md`](docs/data/wordlists.md)
+- [`docs/data/training-data-sharding-curriculum.md`](docs/data/training-data-sharding-curriculum.md)
+- [`docs/genetic-algorithm/genetic-algorithm-design.md`](docs/genetic-algorithm/genetic-algorithm-design.md)
+- [`docs/genetic-algorithm/fitness-evaluation.md`](docs/genetic-algorithm/fitness-evaluation.md)
+- [`docs/genetic-algorithm/output-embedding-recombination.md`](docs/genetic-algorithm/output-embedding-recombination.md)
+- [`docs/genetic-algorithm/genotype-slab-design.md`](docs/genetic-algorithm/genotype-slab-design.md)
 
 ## Repository Layout
-
-The current documentation tree is organised as:
-
-- [`docs/data/`](docs/data/)
-  Data files, action-space notes, and training-word catalog context.
-- [`docs/neural-net-design/`](docs/neural-net-design/)
-  Policy-model structure and related diagrams.
-- [`docs/genetic-algorithm/`](docs/genetic-algorithm/)
-  High-level GA design plus slab-backed runtime and memory-management design.
 
 The current genetic-algorithm source tree is organised as:
 
@@ -188,14 +161,7 @@ binary directly, it will inherit whatever values your shell or profiling tool al
 
 ## Status
 
-This repository is currently at the **model implementation plus slab-backed genetic-algorithm runtime** stage.
+This repository is currently at the **model implementation plus slab-backed spatial GA runtime** stage.
 
-Immediate goals:
-
-- continue validating forward inference end-to-end
-- continue hardening the slab-backed genetic-algorithm runtime
-- continue refining growth handling, garbage collection, and host-spillover behaviour
-- build out broader training-data and GA experiment handling
-- later explore reinforcement-learning ideas if they prove useful
-
-Broader training design still comes later.
+Immediate goals are continued runtime hardening, broader GA experimentation, and later reinforcement-learning work if
+it proves useful.
