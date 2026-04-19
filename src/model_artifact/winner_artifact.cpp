@@ -10,8 +10,11 @@ namespace neuroevolution::model_artifact {
 
 namespace {
 
-bool IsValidWinnerArtifactMetadata(const WinnerArtifactMetadata &metadata) noexcept {
-    return (metadata.action_count > 0) && (metadata.genome_byte_count > 0);
+bool IsValidWinnerArtifactInputs(const WinnerArtifactMetadata &metadata,
+                                 const training_folder::TrainingWordCatalog &action_space_words) noexcept {
+    return (metadata.action_count > 0) && (metadata.genome_byte_count > 0) &&
+           training_folder::IsValidTrainingWordCatalog(action_space_words) &&
+           (metadata.action_count <= action_space_words.word_count);
 }
 
 std::string EscapeJsonString(const std::string_view input) {
@@ -65,6 +68,15 @@ std::string FormatTimestampForJson(const std::tm &local_time) {
     return stream.str();
 }
 
+std::string WordToAsciiString(const wordle::Word &word) {
+    std::string text(wordle::kWordLength, 'A');
+    for (std::size_t position = 0; position < wordle::kWordLength; ++position) {
+        text[position] = static_cast<char>('A' + word.letter_indices[position]);
+    }
+
+    return text;
+}
+
 bool TryOpenUniqueArtifactFiles(const std::filesystem::path &directory, const std::string &stem,
                                 std::ofstream &binary_stream_out, std::ofstream &metadata_stream_out,
                                 WinnerArtifactPaths &paths_out) {
@@ -103,9 +115,10 @@ bool TryOpenUniqueArtifactFiles(const std::filesystem::path &directory, const st
 } // namespace
 
 bool TryWriteWinnerArtifact(const std::filesystem::path &directory, const std::uint8_t *genome_bytes,
+                            const training_folder::TrainingWordCatalog &action_space_words,
                             const WinnerArtifactMetadata &metadata, WinnerArtifactPaths &paths_out) {
     paths_out = {};
-    if ((genome_bytes == nullptr) || !IsValidWinnerArtifactMetadata(metadata)) {
+    if ((genome_bytes == nullptr) || !IsValidWinnerArtifactInputs(metadata, action_space_words)) {
         return false;
     }
 
@@ -144,7 +157,7 @@ bool TryWriteWinnerArtifact(const std::filesystem::path &directory, const std::u
     binary_stream.close();
 
     metadata_stream << "{\n"
-                    << "  \"format_version\": 1,\n"
+                    << "  \"format_version\": 2,\n"
                     << "  \"timestamp_local\": \"" << EscapeJsonString(paths_out.timestamp_local) << "\",\n"
                     << "  \"generation_index\": " << metadata.generation_index << ",\n"
                     << "  \"best_fitness\": " << metadata.best_fitness << ",\n"
@@ -153,8 +166,17 @@ bool TryWriteWinnerArtifact(const std::filesystem::path &directory, const std::u
                     << "  \"action_count\": " << metadata.action_count << ",\n"
                     << "  \"genome_byte_count\": " << metadata.genome_byte_count << ",\n"
                     << "  \"seed\": " << metadata.seed << ",\n"
-                    << "  \"action_space_path\": \"" << EscapeJsonString(metadata.action_space_path.string()) << "\"\n"
-                    << "}\n";
+                    << "  \"action_space_path\": \"" << EscapeJsonString(metadata.action_space_path.string())
+                    << "\",\n"
+                    << "  \"action_space_words\": [";
+    for (std::size_t word_index = 0; word_index < metadata.action_count; ++word_index) {
+        if (word_index != 0) {
+            metadata_stream << ", ";
+        }
+
+        metadata_stream << '"' << EscapeJsonString(WordToAsciiString(action_space_words.words[word_index])) << '"';
+    }
+    metadata_stream << "]\n}\n";
     if (!metadata_stream.good()) {
         metadata_stream.close();
         std::filesystem::remove(paths_out.binary_path);

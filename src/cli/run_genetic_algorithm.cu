@@ -353,7 +353,9 @@ PendingOutputEmbeddingInjection MakePendingOutputEmbeddingInjection(const std::s
 }
 
 bool TryPersistWinningGenome(const DeviceSlabGARuntimeBuffers &buffers, const PopulationFitnessSummary &summary,
-                             const std::uint32_t seed, const std::filesystem::path &action_space_path,
+                             const std::uint32_t seed,
+                             const neuroevolution::training_folder::TrainingWordCatalog &action_space_words,
+                             const std::filesystem::path &action_space_path,
                              WinnerArtifactPaths &artifact_paths_out) {
     std::unique_ptr<std::uint8_t[]> genome_bytes{};
     std::size_t genome_byte_count = 0;
@@ -370,7 +372,7 @@ bool TryPersistWinningGenome(const DeviceSlabGARuntimeBuffers &buffers, const Po
     metadata.genome_byte_count = genome_byte_count;
     metadata.seed = seed;
     metadata.action_space_path = action_space_path;
-    return TryWriteWinnerArtifact("models", genome_bytes.get(), metadata, artifact_paths_out);
+    return TryWriteWinnerArtifact("models", genome_bytes.get(), action_space_words, metadata, artifact_paths_out);
 }
 
 } // namespace
@@ -588,7 +590,8 @@ int main(int argc, char **argv) {
         }
 
         WinnerArtifactPaths artifact_paths{};
-        if (!TryPersistWinningGenome(buffers, final_summary, cli_config.seed, training_data_path, artifact_paths)) {
+        if (!TryPersistWinningGenome(buffers, final_summary, cli_config.seed, training_word_catalog, training_data_path,
+                                     artifact_paths)) {
             std::cerr << "Could not persist the final-generation winner to models/.\n";
             DestroyDeviceSlabGARuntimeBuffers(buffers);
             return 1;

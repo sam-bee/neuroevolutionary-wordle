@@ -5,6 +5,8 @@
 #include <filesystem>
 #include <string>
 
+#include "training_folder/training_data.hpp"
+
 namespace neuroevolution::model_artifact {
 
 struct WinnerArtifactMetadata {
@@ -25,6 +27,7 @@ struct WinnerArtifactPaths {
 };
 
 bool TryWriteWinnerArtifact(const std::filesystem::path &directory, const std::uint8_t *genome_bytes,
+                            const training_folder::TrainingWordCatalog &action_space_words,
                             const WinnerArtifactMetadata &metadata, WinnerArtifactPaths &paths_out);
 
 } // namespace neuroevolution::model_artifact

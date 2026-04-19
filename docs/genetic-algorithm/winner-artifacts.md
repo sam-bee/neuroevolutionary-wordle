@@ -54,6 +54,12 @@ The `.json` file records the metadata needed to interpret the binary payload:
 - `genome_byte_count`
 - `seed`
 - `action_space_path`
+- `action_space_words`
+
+`action_space_words` is the authoritative runtime list. It contains exactly the active action-space prefix that matches
+the saved genotype's output-tail rows.
+
+`action_space_path` remains as provenance only.
 
 ## Scope
 

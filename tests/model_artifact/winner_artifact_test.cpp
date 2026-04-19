@@ -7,12 +7,16 @@
 #include <string_view>
 
 #include "model_artifact/winner_artifact.hpp"
+#include "training_folder/training_data.hpp"
+#include "wordle/word.hpp"
 
 namespace {
 
 using neuroevolution::model_artifact::TryWriteWinnerArtifact;
 using neuroevolution::model_artifact::WinnerArtifactMetadata;
 using neuroevolution::model_artifact::WinnerArtifactPaths;
+using neuroevolution::training_folder::TrainingWordCatalog;
+using neuroevolution::wordle::TryMakeWordFromAscii;
 
 bool ExpectTrue(const bool condition, const std::string_view message) {
     if (!condition) {
@@ -33,24 +37,33 @@ bool ReadWholeFile(const std::filesystem::path &path, std::string &contents_out)
     return stream.good() || stream.eof();
 }
 
+bool MakeWord(const char (&letters)[neuroevolution::wordle::kWordLength + 1], neuroevolution::wordle::Word &word_out) {
+    return TryMakeWordFromAscii(letters, word_out);
+}
+
 bool TestWinnerArtifactWriterPersistsBinaryAndMetadata() {
     const std::filesystem::path output_directory =
         std::filesystem::current_path() / "Testing" / "winner-artifact-test-output";
     std::filesystem::remove_all(output_directory);
 
     const std::uint8_t genome_bytes[]{1U, 2U, 3U, 4U, 5U, 6U};
+    TrainingWordCatalog action_space_words{};
+    bool ok = MakeWord("CRANE", action_space_words.words[0]);
+    ok &= MakeWord("SLATE", action_space_words.words[1]);
+    action_space_words.word_count = 2;
+
     WinnerArtifactMetadata metadata{};
     metadata.best_fitness = 0.75f;
     metadata.generation_index = 7;
     metadata.best_index = 3;
     metadata.best_slot_index = 11U;
-    metadata.action_count = 20;
+    metadata.action_count = 2;
     metadata.genome_byte_count = sizeof(genome_bytes);
     metadata.seed = 12345U;
     metadata.action_space_path = "data/action-space-randomised.txt";
 
     WinnerArtifactPaths paths{};
-    bool ok = TryWriteWinnerArtifact(output_directory, genome_bytes, metadata, paths);
+    ok &= TryWriteWinnerArtifact(output_directory, genome_bytes, action_space_words, metadata, paths);
     ok &= ExpectTrue(!paths.timestamp_local.empty(), "Expected writer to return a human-readable local timestamp");
     ok &= ExpectTrue(paths.binary_path.extension() == ".bin", "Expected writer to create a .bin artifact");
     ok &= ExpectTrue(paths.metadata_path.extension() == ".json", "Expected writer to create a .json sidecar");
@@ -79,6 +92,8 @@ bool TestWinnerArtifactWriterPersistsBinaryAndMetadata() {
                      "Expected metadata sidecar to record the seed");
     ok &= ExpectTrue(metadata_contents.find("data/action-space-randomised.txt") != std::string::npos,
                      "Expected metadata sidecar to record the action-space path");
+    ok &= ExpectTrue(metadata_contents.find("\"action_space_words\": [\"CRANE\", \"SLATE\"]") != std::string::npos,
+                     "Expected metadata sidecar to embed the active action-space words");
 
     std::filesystem::remove_all(output_directory);
     return ok;
