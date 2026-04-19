@@ -1,4 +1,4 @@
-.PHONY: configure build test test-cpu test-gpu test-gpu-sanitized smoke format clean rebuild agents-rebuild build-and-test run-ga run-ga-growth-smoke
+.PHONY: configure build test test-cpu test-gpu test-gpu-sanitized smoke format clean rebuild agents-rebuild build-and-test run-ga run-ga-laptop run-ga-growth-smoke
 
 -include .env
 
@@ -12,6 +12,7 @@ AGENTS_CUDA_VISIBLE_DEVICES := $(if $(CUDA_VISIBLE_DEVICES),$(CUDA_VISIBLE_DEVIC
 
 GA_GENERATIONS ?= 1000
 GA_GENOTYPE_VRAM_GB ?= 12
+GA_LAPTOP_GENOTYPE_VRAM_GB ?= 6
 GA_INITIAL_WORD_COUNT ?= 20
 GA_WORD_COUNT_STEP ?= 20
 GA_WORD_COUNT_STEP_PERIOD ?= 25
@@ -47,6 +48,16 @@ run-ga: .env
 	./build/run_genetic_algorithm \
 		--generations $(GA_GENERATIONS) \
 		--genotype-vram-gb $(GA_GENOTYPE_VRAM_GB) \
+		--initial-word-count $(GA_INITIAL_WORD_COUNT) \
+		--word-count-step $(GA_WORD_COUNT_STEP) \
+		--word-count-step-period $(GA_WORD_COUNT_STEP_PERIOD) \
+		--shard-radius-growth-period $(GA_SHARD_RADIUS_GROWTH_PERIOD) $(GA_SEED_ARG)
+
+run-ga-laptop: .env
+	cmake --build build --target run_genetic_algorithm
+	./build/run_genetic_algorithm \
+		--generations $(GA_GENERATIONS) \
+		--genotype-vram-gb $(GA_LAPTOP_GENOTYPE_VRAM_GB) \
 		--initial-word-count $(GA_INITIAL_WORD_COUNT) \
 		--word-count-step $(GA_WORD_COUNT_STEP) \
 		--word-count-step-period $(GA_WORD_COUNT_STEP_PERIOD) \
