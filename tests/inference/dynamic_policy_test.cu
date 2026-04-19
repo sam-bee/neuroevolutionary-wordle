@@ -18,6 +18,7 @@
 namespace {
 
 using neuroevolution::inference::dynamic_policy::DynamicInferenceStatusCode;
+using neuroevolution::inference::dynamic_policy::HasGridAlreadyGuessedWord;
 using neuroevolution::inference::dynamic_policy::SelectNextGuessFromDynamicGenome;
 using neuroevolution::inference::dynamic_policy::TrySelectBestDynamicAction;
 using neuroevolution::model::output_embedding::SelectedAction;
@@ -25,6 +26,7 @@ using neuroevolution::model::policy_model::PolicyVector;
 using neuroevolution::training_folder::TrainingWordCatalog;
 using neuroevolution::wordle::LetterIndexFromAscii;
 using neuroevolution::wordle::MakeWordleGrid;
+using neuroevolution::wordle::TryAppendGuess;
 using neuroevolution::wordle::TryMakeWordFromAscii;
 using neuroevolution::wordle::Word;
 using neuroevolution::wordle::WordleGrid;
@@ -33,6 +35,7 @@ constexpr int kSelectedVisibleDeviceIndex = 0;
 constexpr std::size_t kActionCount = 2;
 constexpr int kStatusBestActionSelectionFailed = 1;
 constexpr int kStatusNextGuessSelectionFailed = 2;
+constexpr int kStatusRepeatMaskCheckFailed = 3;
 
 Word MakeWord(const char (&letters)[neuroevolution::wordle::kWordLength + 1]) {
     Word word{};
@@ -102,7 +105,12 @@ __global__ void DynamicPolicyKernel(const TrainingWordCatalog *catalog, const st
         return;
     }
 
-    const WordleGrid grid = MakeWordleGrid(catalog->words[0]);
+    WordleGrid grid = MakeWordleGrid(catalog->words[0]);
+    if (!TryAppendGuess(grid, catalog->words[0]) || !HasGridAlreadyGuessedWord(grid, catalog->words[0])) {
+        *status_out = kStatusRepeatMaskCheckFailed;
+        return;
+    }
+
     const DynamicInferenceStatusCode inference_status =
         SelectNextGuessFromDynamicGenome(grid, *catalog, genome_bytes, kActionCount, *next_action_out);
     if (inference_status != DynamicInferenceStatusCode::kOk) {
@@ -168,9 +176,10 @@ bool TestDynamicPolicyHelpersOnDevice() {
         ok &= ExpectTrue(host_best_action.action_index == 1, "Expected best-action helper to pick the second word");
         ok &= ExpectWordEquals(host_best_action.word, catalog.words[1],
                                "Expected best-action helper to select SLATE");
-        ok &= ExpectTrue(host_next_action.action_index == 0, "Expected next-guess helper to pick the first word");
-        ok &= ExpectWordEquals(host_next_action.word, catalog.words[0],
-                               "Expected next-guess helper to select CRANE");
+        ok &= ExpectTrue(host_next_action.action_index == 1,
+                         "Expected repeat-guess masking to skip the previously guessed first word");
+        ok &= ExpectWordEquals(host_next_action.word, catalog.words[1],
+                               "Expected next-guess helper to select SLATE after masking CRANE");
     }
 
     if (device_status != nullptr) {
