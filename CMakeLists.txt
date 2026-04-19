@@ -509,6 +509,27 @@ set_tests_properties(output_embedding_device_e2e_test PROPERTIES
     RESOURCE_LOCK cuda_device
 )
 
+add_executable(dynamic_policy_test
+    tests/inference/dynamic_policy_test.cu
+)
+
+target_link_libraries(dynamic_policy_test PRIVATE
+    genetic_algorithm
+    training_folder
+)
+
+enable_project_warnings(dynamic_policy_test)
+
+set_target_properties(dynamic_policy_test PROPERTIES
+    CUDA_SEPARABLE_COMPILATION ON
+)
+
+add_test(NAME dynamic_policy_test COMMAND dynamic_policy_test)
+set_tests_properties(dynamic_policy_test PROPERTIES
+    LABELS "gpu;unit"
+    RESOURCE_LOCK cuda_device
+)
+
 add_executable(training_data_device_test
     tests/training_folder/training_data_device_test.cu
 )

@@ -5,21 +5,17 @@
 
 #include "common/cuda_compat.hpp"
 #include "genetic_algorithm/device/runtime_common.hpp"
-#include "genetic_algorithm/genome/dynamic_layout.hpp"
+#include "inference/dynamic_policy.hpp"
 #include "genetic_algorithm/spatial/grid.hpp"
-#include "model/output_embedding/output_embedding.hpp"
-#include "model/policy_model/policy_model.hpp"
 #include "training_folder/training_data.hpp"
 #include "wordle/wordle_grid.hpp"
 
 namespace neuroevolution::genetic_algorithm::device_evaluation_ops {
 
-using neuroevolution::model::output_embedding::ActionEmbedding;
-using neuroevolution::model::output_embedding::ScoreActionEmbedding;
 using neuroevolution::model::output_embedding::SelectedAction;
-using neuroevolution::model::policy_model::PolicyVector;
-using neuroevolution::model::policy_model::TryForwardPolicyModel;
 using neuroevolution::spatial::CellularGridShape;
+using neuroevolution::inference::dynamic_policy::DynamicInferenceStatusCode;
+using neuroevolution::inference::dynamic_policy::SelectNextGuessFromDynamicGenome;
 using neuroevolution::training_folder::DeviceTrainingWordCatalog;
 using neuroevolution::training_folder::DoesTrainingDataShardCoverCell;
 using neuroevolution::training_folder::IsValidTrainingWordCatalog;
@@ -83,41 +79,6 @@ NormalizeFitnessForSelection(const float raw_fitness, const std::size_t training
 constexpr NEUROEVOLUTION_HOST_DEVICE float NormalizeFitnessForSelection(
     const float raw_fitness, const device_common::RuntimeWordCounts runtime_word_counts) noexcept {
     return NormalizeFitnessForSelection(raw_fitness, runtime_word_counts.training_word_count);
-}
-
-__device__ inline float ScoreDynamicActionEmbedding(const PolicyVector &policy_vector, const Word &action_word,
-                                                    const genome::TrainableActionEmbeddingTail &trainable_tail) {
-    ActionEmbedding action_embedding{};
-    action_embedding.word = action_word;
-    action_embedding.trainable_tail = trainable_tail;
-    return ScoreActionEmbedding(policy_vector, action_embedding);
-}
-
-__device__ inline bool TrySelectBestDynamicAction(const PolicyVector &policy_vector,
-                                                  const TrainingWordCatalog &training_word_catalog,
-                                                  const std::uint8_t *genome_bytes, const std::size_t action_count,
-                                                  SelectedAction &selected_action) {
-    if ((action_count == 0) || (action_count > training_word_catalog.word_count)) {
-        return false;
-    }
-
-    const genome::TrainableActionEmbeddingTail *tail_rows = genome::GenomeTailRows(genome_bytes);
-
-    selected_action.action_index = 0;
-    selected_action.word = training_word_catalog.words[0];
-    selected_action.score = ScoreDynamicActionEmbedding(policy_vector, selected_action.word, tail_rows[0]);
-
-    for (std::size_t action_index = 1; action_index < action_count; ++action_index) {
-        const float score = ScoreDynamicActionEmbedding(policy_vector, training_word_catalog.words[action_index],
-                                                        tail_rows[action_index]);
-        if (score > selected_action.score) {
-            selected_action.action_index = action_index;
-            selected_action.word = training_word_catalog.words[action_index];
-            selected_action.score = score;
-        }
-    }
-
-    return true;
 }
 
 __device__ inline std::size_t WrapTrainingWordIndex(const std::size_t index, const std::size_t word_count) {
@@ -209,14 +170,14 @@ __device__ inline DeviceGenomeEvaluationStatusCode
 TryPlayWordleToCompletion(const std::uint8_t *genome_bytes, const TrainingWordCatalog &training_word_catalog,
                           const std::size_t action_count, WordleGrid &grid, float &episode_score_out) {
     while (!grid.IsFinished()) {
-        PolicyVector policy_vector{};
-        if (!TryForwardPolicyModel(genome::GenomePolicyModelParameters(genome_bytes), grid, policy_vector)) {
+        SelectedAction selected_action{};
+        const DynamicInferenceStatusCode inference_status =
+            SelectNextGuessFromDynamicGenome(grid, training_word_catalog, genome_bytes, action_count, selected_action);
+        if (inference_status == DynamicInferenceStatusCode::kPolicyForwardFailed) {
             return DeviceGenomeEvaluationStatusCode::kPolicyForwardFailed;
         }
 
-        SelectedAction selected_action{};
-        if (!TrySelectBestDynamicAction(policy_vector, training_word_catalog, genome_bytes, action_count,
-                                        selected_action)) {
+        if (inference_status != DynamicInferenceStatusCode::kOk) {
             return DeviceGenomeEvaluationStatusCode::kActionSelectionFailed;
         }
 
