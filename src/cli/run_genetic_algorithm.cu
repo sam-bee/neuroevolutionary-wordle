@@ -513,31 +513,34 @@ int main(int argc, char **argv) {
             return 1;
         }
 
-        std::cout << "Running device GA demo with requested_initial_population=" << requested_initial_population_size
-                  << ", initial_population=" << initial_population_size
-                  << ", initial_grid_side_length=" << initial_grid_shape.side_length
-                  << ", population_ceiling=" << PopulationCeilingLabel(cli_config.population_size_ceiling)
-                  << ", slab_slot_count=" << slab_slot_count
-                  << ", generation_population_capacity=" << generation_population_capacity
-                  << ", action_count=" << runtime_word_counts.action_space_word_count
-                  << ", genome_stride_bytes=" << buffers.genotype_slab.slab_layout.slot_stride_bytes
-                  << ", generation_vram_budget_bytes=" << generation_memory_budget_bytes
-                  << ", generation_vram_budget_gib="
-                  << (static_cast<double>(generation_memory_budget_bytes) / kBytesPerVramGiB)
-                  << ", genotype_vram_budget_bytes=" << genotype_memory_budget_bytes << ", genotype_vram_budget_gib="
-                  << (static_cast<double>(genotype_memory_budget_bytes) / kBytesPerVramGiB)
-                  << ", generations=" << cli_config.generation_count << ", seed=" << cli_config.seed
-                  << ", training_word_catalog_entries=" << training_word_catalog.word_count
-                  << ", configured_training_word_count=" << runtime_word_counts.training_word_count
-                  << ", configured_action_space_word_count=" << runtime_word_counts.action_space_word_count
-                  << ", schedule_initial_word_count=" << word_count_schedule.initial_word_count
-                  << ", schedule_word_count_step=" << word_count_schedule.word_count_step
-                  << ", schedule_word_count_step_period_generations="
-                  << word_count_schedule.word_count_step_period_generations
-                  << ", shard_radius_growth_period_generations="
-                  << runtime_word_counts.shard_radius_growth_period_generations
-                  << ", training_source=" << training_data_path.filename().string()
-                  << ", training_storage=constant_memory\n";
+        std::cout << "Running device GA demo with:\n"
+                  << "  requested_initial_population=" << requested_initial_population_size << '\n'
+                  << "  initial_population=" << initial_population_size << '\n'
+                  << "  initial_grid_side_length=" << initial_grid_shape.side_length << '\n'
+                  << "  population_ceiling=" << PopulationCeilingLabel(cli_config.population_size_ceiling) << '\n'
+                  << "  slab_slot_count=" << slab_slot_count << '\n'
+                  << "  generation_population_capacity=" << generation_population_capacity << '\n'
+                  << "  action_count=" << runtime_word_counts.action_space_word_count << '\n'
+                  << "  genome_stride_bytes=" << buffers.genotype_slab.slab_layout.slot_stride_bytes << '\n'
+                  << "  generation_vram_budget_bytes=" << generation_memory_budget_bytes << '\n'
+                  << "  generation_vram_budget_gib="
+                  << (static_cast<double>(generation_memory_budget_bytes) / kBytesPerVramGiB) << '\n'
+                  << "  genotype_vram_budget_bytes=" << genotype_memory_budget_bytes << '\n'
+                  << "  genotype_vram_budget_gib="
+                  << (static_cast<double>(genotype_memory_budget_bytes) / kBytesPerVramGiB) << '\n'
+                  << "  generations=" << cli_config.generation_count << '\n'
+                  << "  seed=" << cli_config.seed << '\n'
+                  << "  training_word_catalog_entries=" << training_word_catalog.word_count << '\n'
+                  << "  configured_training_word_count=" << runtime_word_counts.training_word_count << '\n'
+                  << "  configured_action_space_word_count=" << runtime_word_counts.action_space_word_count << '\n'
+                  << "  schedule_initial_word_count=" << word_count_schedule.initial_word_count << '\n'
+                  << "  schedule_word_count_step=" << word_count_schedule.word_count_step << '\n'
+                  << "  schedule_word_count_step_period_generations="
+                  << word_count_schedule.word_count_step_period_generations << '\n'
+                  << "  shard_radius_growth_period_generations="
+                  << runtime_word_counts.shard_radius_growth_period_generations << '\n'
+                  << "  training_source=" << training_data_path.filename().string() << '\n'
+                  << "  training_storage=constant_memory\n";
         std::cout << std::fixed << std::setprecision(4);
 
         PopulationFitnessSummary final_summary{};
