@@ -24,6 +24,8 @@ using neuroevolution::inference::TrySelectNextGuessWithSingleModelDeviceRuntime;
 using neuroevolution::model::output_embedding::SelectedAction;
 using neuroevolution::tests::policy_model::PolicyModelGoldenFixture;
 using neuroevolution::training_folder::TrainingWordCatalog;
+using neuroevolution::wordle::MakeWordleGrid;
+using neuroevolution::wordle::TryAppendGuess;
 using neuroevolution::wordle::TryMakeWordFromAscii;
 using neuroevolution::wordle::Word;
 
@@ -127,6 +129,48 @@ bool TestSingleModelDeviceRuntimeSelectsBestAction() {
     return ok;
 }
 
+bool TestSingleModelDeviceRuntimeMasksRepeatedGuesses() {
+    TrainingWordCatalog action_space_words{};
+    action_space_words.words[0] = MakeWord("CRANE");
+    action_space_words.words[1] = MakeWord("SLATE");
+    action_space_words.words[2] = MakeWord("TRACE");
+    action_space_words.word_count = 3;
+
+    const std::size_t genome_byte_count =
+        neuroevolution::genetic_algorithm::genome::ComputeDynamicGenomeStrideBytes(action_space_words.word_count);
+    std::unique_ptr<std::uint8_t[]> genome_bytes(new std::uint8_t[genome_byte_count]());
+
+    SingleModelDeviceRuntime runtime{};
+    bool ok = TryCreateSingleModelDeviceRuntime(genome_bytes.get(), genome_byte_count, action_space_words, runtime);
+    ok &= ExpectTrue(ok, "Expected zeroed-runtime creation to succeed for repeat-mask testing");
+    if (!ok) {
+        DestroySingleModelDeviceRuntime(runtime);
+        return false;
+    }
+
+    auto grid = MakeWordleGrid(action_space_words.words[2]);
+    ok &= TryAppendGuess(grid, action_space_words.words[0]);
+    ok &= ExpectTrue(ok, "Expected setup grid to accept the initial repeated-candidate guess");
+    if (!ok) {
+        DestroySingleModelDeviceRuntime(runtime);
+        return false;
+    }
+
+    SelectedAction selected_action{};
+    SingleModelDeviceRuntimeStatusCode status = SingleModelDeviceRuntimeStatusCode::kInvalidRuntime;
+    ok &= TrySelectNextGuessWithSingleModelDeviceRuntime(runtime, grid, selected_action, &status);
+    ok &= ExpectTrue(status == SingleModelDeviceRuntimeStatusCode::kOk,
+                     "Expected repeat-masked device inference to succeed");
+    ok &= ExpectTrue(selected_action.action_index == 1,
+                     "Expected runtime to skip the previously guessed first action");
+    ok &= ExpectNear(selected_action.score, 0.0f, "repeat-masked selected action score");
+    ok &= ExpectWordEquals(selected_action.word, action_space_words.words[1],
+                           "Expected runtime to select the first unguessed action");
+
+    DestroySingleModelDeviceRuntime(runtime);
+    return ok;
+}
+
 } // namespace
 
 int main() {
@@ -135,6 +179,10 @@ int main() {
     }
 
     if (!TestSingleModelDeviceRuntimeSelectsBestAction()) {
+        return 1;
+    }
+
+    if (!TestSingleModelDeviceRuntimeMasksRepeatedGuesses()) {
         return 1;
     }
 

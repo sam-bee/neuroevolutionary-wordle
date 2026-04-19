@@ -9,6 +9,7 @@ namespace neuroevolution::inference {
 
 namespace {
 
+using neuroevolution::inference::dynamic_policy::HasGridAlreadyGuessedWord;
 using neuroevolution::inference::dynamic_policy::ScoreDynamicActionEmbedding;
 using neuroevolution::model::output_embedding::SelectedAction;
 using neuroevolution::model::policy_model::PolicyVector;
@@ -49,6 +50,12 @@ void FreeDeviceRuntimeBuffers(SingleModelDeviceRuntime &runtime) noexcept {
 
 bool CheckCuda(const cudaError_t error) noexcept { return error == cudaSuccess; }
 
+__device__ inline bool IsBetterSelectedActionCandidate(const SelectedAction &candidate,
+                                                       const SelectedAction &current_best) noexcept {
+    return (candidate.score > current_best.score) ||
+           ((candidate.score == current_best.score) && (candidate.action_index < current_best.action_index));
+}
+
 __global__ void SelectNextGuessKernel(const TrainingWordCatalog *action_space_words, const std::uint8_t *genome_bytes,
                                       const std::size_t action_count, const WordleGrid *grid,
                                       SelectedAction *selected_action_out, int *status_out) {
@@ -88,12 +95,19 @@ __global__ void SelectNextGuessKernel(const TrainingWordCatalog *action_space_wo
     bool has_local_candidate = false;
     for (std::size_t action_index = static_cast<std::size_t>(threadIdx.x); action_index < action_count;
          action_index += static_cast<std::size_t>(blockDim.x)) {
-        const float score = ScoreDynamicActionEmbedding(shared_policy_vector, action_space_words->words[action_index],
-                                                        tail_rows[action_index]);
-        if (!has_local_candidate || (score > local_best_action.score)) {
-            local_best_action.action_index = action_index;
-            local_best_action.word = action_space_words->words[action_index];
-            local_best_action.score = score;
+        const wordle::Word &candidate_word = action_space_words->words[action_index];
+        if (HasGridAlreadyGuessedWord(*grid, candidate_word)) {
+            continue;
+        }
+
+        const float score = ScoreDynamicActionEmbedding(shared_policy_vector, candidate_word, tail_rows[action_index]);
+        const SelectedAction candidate_action = {
+            .word = candidate_word,
+            .score = score,
+            .action_index = action_index,
+        };
+        if (!has_local_candidate || IsBetterSelectedActionCandidate(candidate_action, local_best_action)) {
+            local_best_action = candidate_action;
             has_local_candidate = true;
         }
     }
@@ -110,7 +124,7 @@ __global__ void SelectNextGuessKernel(const TrainingWordCatalog *action_space_wo
             const int peer_index = threadIdx.x + offset;
             if ((shared_has_candidate[peer_index] != 0) &&
                 ((shared_has_candidate[threadIdx.x] == 0) ||
-                 (shared_best_actions[peer_index].score > shared_best_actions[threadIdx.x].score))) {
+                 IsBetterSelectedActionCandidate(shared_best_actions[peer_index], shared_best_actions[threadIdx.x]))) {
                 shared_best_actions[threadIdx.x] = shared_best_actions[peer_index];
                 shared_has_candidate[threadIdx.x] = 1;
             }
