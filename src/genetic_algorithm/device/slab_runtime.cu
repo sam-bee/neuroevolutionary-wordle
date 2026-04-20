@@ -37,6 +37,7 @@ using device_selection_ops::TrySelectCellularParentPairDevice;
 using neuroevolution::common::PrintTimestampedProgressDuration;
 using neuroevolution::common::PrintTimestampedProgressLine;
 using neuroevolution::common::ProgressClock;
+using neuroevolution::inference::dynamic_policy::kDynamicPolicyThreadsPerBlock;
 using spatial::CellularGridShape;
 using spatial::FloorSquarePopulationSize;
 using spatial::TryMakeCellularGridShape;
@@ -44,7 +45,6 @@ using training_folder::TrainingDataShardRuntimeSet;
 using training_folder::TryBuildTrainingDataShardRuntimeSet;
 
 constexpr std::size_t kSlabGARuntimeThreadBlockSize = 256;
-constexpr std::size_t kSlabGAEvaluationThreadBlockSize = 128;
 NEUROEVOLUTION_HOST_DEVICE constexpr int DeviceStatusValue(const DeviceSlabGARuntimeStatusCode status_code) {
     return static_cast<int>(status_code);
 }
@@ -171,7 +171,7 @@ __global__ void EvaluateSlabGenerationFitnessKernel(
     const std::size_t individual_index = blockIdx.x;
     __shared__ std::uint32_t shared_slot_index;
     __shared__ DeviceSlabGARuntimeStatusCode shared_status_code;
-    __shared__ GenomeEvaluationBlockScratch<kSlabGAEvaluationThreadBlockSize> evaluation_scratch;
+    __shared__ GenomeEvaluationBlockScratch<kDynamicPolicyThreadsPerBlock> evaluation_scratch;
     if (!genotype_slab::IsValidGenotypeSlabLayout(slab_layout) || (slab_storage == nullptr) ||
         (slot_states == nullptr) || (current_slot_indices == nullptr) || (current_fitness == nullptr) ||
         (current_evaluation_counts == nullptr) || (current_has_fitness == nullptr) ||
@@ -208,7 +208,7 @@ __global__ void EvaluateSlabGenerationFitnessKernel(
     float fitness = 0.0f;
     std::size_t local_training_word_count = 0;
     const DeviceGenomeEvaluationStatusCode evaluation_status = TryEvaluateGenomeFitnessConcurrently<
-        kSlabGAEvaluationThreadBlockSize>(
+        kDynamicPolicyThreadsPerBlock>(
         genotype_slab::SlabSlotBytesAt(slab_storage, slab_layout, shared_slot_index), slab_layout.action_count,
         runtime_word_counts, active_training_shards, active_training_shard_count, current_grid_shape, individual_index,
         evaluation_scratch, fitness, local_training_word_count);
@@ -733,7 +733,7 @@ bool TryEvaluateCurrentGenerationFitnessOnDevice(DeviceSlabGARuntimeBuffers &buf
     }
 
     const std::size_t block_count = buffers.genotype_slab.current_generation_size;
-    EvaluateSlabGenerationFitnessKernel<<<block_count, kSlabGAEvaluationThreadBlockSize>>>(
+    EvaluateSlabGenerationFitnessKernel<<<block_count, kDynamicPolicyThreadsPerBlock>>>(
         buffers.genotype_slab.slab_storage, buffers.genotype_slab.slot_states, buffers.genotype_slab.slab_layout,
         buffers.genotype_slab.current_slot_indices, buffers.genotype_slab.current_generation_size,
         buffers.genotype_slab.current_fitness, buffers.genotype_slab.current_evaluation_counts,

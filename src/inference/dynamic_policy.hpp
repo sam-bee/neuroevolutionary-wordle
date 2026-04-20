@@ -22,6 +22,8 @@ using neuroevolution::training_folder::TrainingWordCatalog;
 using neuroevolution::wordle::Word;
 using neuroevolution::wordle::WordleGrid;
 
+constexpr int kDynamicPolicyThreadsPerBlock = 128;
+
 enum class DynamicInferenceStatusCode : int {
     kOk = 0,
     kPolicyForwardFailed = 1,

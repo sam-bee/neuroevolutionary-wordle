@@ -9,8 +9,6 @@
 
 namespace neuroevolution::inference {
 
-constexpr int kSingleModelInferenceThreadsPerBlock = 128;
-
 enum class SingleModelDeviceRuntimeStatusCode : int {
     kOk = 0,
     kInvalidRuntime = 1,
