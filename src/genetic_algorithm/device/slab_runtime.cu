@@ -28,7 +28,8 @@ namespace neuroevolution::genetic_algorithm::slab_device {
 namespace {
 
 using device_evaluation_ops::DeviceGenomeEvaluationStatusCode;
-using device_evaluation_ops::TryEvaluateGenomeFitness;
+using device_evaluation_ops::GenomeEvaluationBlockScratch;
+using device_evaluation_ops::TryEvaluateGenomeFitnessConcurrently;
 using device_genome_ops::DeviceRandomState;
 using device_genome_ops::MakeDeviceRandomState;
 using device_selection_ops::IsBetterFitness;
@@ -43,6 +44,7 @@ using training_folder::TrainingDataShardRuntimeSet;
 using training_folder::TryBuildTrainingDataShardRuntimeSet;
 
 constexpr std::size_t kSlabGARuntimeThreadBlockSize = 256;
+constexpr std::size_t kSlabGAEvaluationThreadBlockSize = 128;
 NEUROEVOLUTION_HOST_DEVICE constexpr int DeviceStatusValue(const DeviceSlabGARuntimeStatusCode status_code) {
     return static_cast<int>(status_code);
 }
@@ -166,7 +168,10 @@ __global__ void EvaluateSlabGenerationFitnessKernel(
     const RuntimeWordCounts runtime_word_counts,
     const training_folder::TrainingDataShardRuntime *active_training_shards,
     const std::size_t active_training_shard_count, const CellularGridShape current_grid_shape, int *status) {
-    const std::size_t individual_index = (blockIdx.x * blockDim.x) + threadIdx.x;
+    const std::size_t individual_index = blockIdx.x;
+    __shared__ std::uint32_t shared_slot_index;
+    __shared__ DeviceSlabGARuntimeStatusCode shared_status_code;
+    __shared__ GenomeEvaluationBlockScratch<kSlabGAEvaluationThreadBlockSize> evaluation_scratch;
     if (!genotype_slab::IsValidGenotypeSlabLayout(slab_layout) || (slab_storage == nullptr) ||
         (slot_states == nullptr) || (current_slot_indices == nullptr) || (current_fitness == nullptr) ||
         (current_evaluation_counts == nullptr) || (current_has_fitness == nullptr) ||
@@ -182,32 +187,44 @@ __global__ void EvaluateSlabGenerationFitnessKernel(
         return;
     }
 
-    const std::uint32_t slot_index = current_slot_indices[individual_index];
-    if ((slot_index == genotype_slab::kInvalidSlabSlotIndex) || (slot_index >= slab_layout.slot_count)) {
-        SetFailureStatus(status, DeviceSlabGARuntimeStatusCode::kInvalidGeneration);
-        return;
+    if (threadIdx.x == 0) {
+        shared_slot_index = current_slot_indices[individual_index];
+        shared_status_code = DeviceSlabGARuntimeStatusCode::kOk;
+        if ((shared_slot_index == genotype_slab::kInvalidSlabSlotIndex) || (shared_slot_index >= slab_layout.slot_count)) {
+            shared_status_code = DeviceSlabGARuntimeStatusCode::kInvalidGeneration;
+        } else if (!slot_states[shared_slot_index].occupied || (slot_states[shared_slot_index].liveness_count == 0)) {
+            shared_status_code = DeviceSlabGARuntimeStatusCode::kInvalidSlab;
+        }
     }
+    __syncthreads();
 
-    if (!slot_states[slot_index].occupied || (slot_states[slot_index].liveness_count == 0)) {
-        SetFailureStatus(status, DeviceSlabGARuntimeStatusCode::kInvalidSlab);
+    if (shared_status_code != DeviceSlabGARuntimeStatusCode::kOk) {
+        if (threadIdx.x == 0) {
+            SetFailureStatus(status, shared_status_code);
+        }
         return;
     }
 
     float fitness = 0.0f;
     std::size_t local_training_word_count = 0;
-    const DeviceGenomeEvaluationStatusCode evaluation_status = TryEvaluateGenomeFitness(
-        genotype_slab::SlabSlotBytesAt(slab_storage, slab_layout, slot_index), slab_layout.action_count,
+    const DeviceGenomeEvaluationStatusCode evaluation_status = TryEvaluateGenomeFitnessConcurrently<
+        kSlabGAEvaluationThreadBlockSize>(
+        genotype_slab::SlabSlotBytesAt(slab_storage, slab_layout, shared_slot_index), slab_layout.action_count,
         runtime_word_counts, active_training_shards, active_training_shard_count, current_grid_shape, individual_index,
-        fitness, local_training_word_count);
+        evaluation_scratch, fitness, local_training_word_count);
     if (evaluation_status != DeviceGenomeEvaluationStatusCode::kOk) {
-        SetFailureStatus(status, MapEvaluationStatus(evaluation_status));
+        if (threadIdx.x == 0) {
+            SetFailureStatus(status, MapEvaluationStatus(evaluation_status));
+        }
         return;
     }
 
-    current_fitness[individual_index] = fitness;
-    current_local_training_word_counts[individual_index] = static_cast<std::uint32_t>(local_training_word_count);
-    ++current_evaluation_counts[individual_index];
-    current_has_fitness[individual_index] = 1;
+    if (threadIdx.x == 0) {
+        current_fitness[individual_index] = fitness;
+        current_local_training_word_counts[individual_index] = static_cast<std::uint32_t>(local_training_word_count);
+        ++current_evaluation_counts[individual_index];
+        current_has_fitness[individual_index] = 1;
+    }
 }
 
 __global__ void SummarizeSlabGenerationKernel(const float *current_fitness, const std::uint8_t *current_has_fitness,
@@ -715,10 +732,8 @@ bool TryEvaluateCurrentGenerationFitnessOnDevice(DeviceSlabGARuntimeBuffers &buf
         return false;
     }
 
-    const std::size_t block_count =
-        (buffers.genotype_slab.current_generation_size + kSlabGARuntimeThreadBlockSize - 1) /
-        kSlabGARuntimeThreadBlockSize;
-    EvaluateSlabGenerationFitnessKernel<<<block_count, kSlabGARuntimeThreadBlockSize>>>(
+    const std::size_t block_count = buffers.genotype_slab.current_generation_size;
+    EvaluateSlabGenerationFitnessKernel<<<block_count, kSlabGAEvaluationThreadBlockSize>>>(
         buffers.genotype_slab.slab_storage, buffers.genotype_slab.slot_states, buffers.genotype_slab.slab_layout,
         buffers.genotype_slab.current_slot_indices, buffers.genotype_slab.current_generation_size,
         buffers.genotype_slab.current_fitness, buffers.genotype_slab.current_evaluation_counts,

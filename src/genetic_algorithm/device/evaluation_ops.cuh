@@ -14,8 +14,9 @@ namespace neuroevolution::genetic_algorithm::device_evaluation_ops {
 
 using neuroevolution::model::output_embedding::SelectedAction;
 using neuroevolution::spatial::CellularGridShape;
+using neuroevolution::inference::dynamic_policy::DynamicPolicyBlockScratch;
 using neuroevolution::inference::dynamic_policy::DynamicInferenceStatusCode;
-using neuroevolution::inference::dynamic_policy::SelectNextGuessFromDynamicGenome;
+using neuroevolution::inference::dynamic_policy::SelectNextGuessFromDynamicGenomeConcurrently;
 using neuroevolution::training_folder::DeviceTrainingWordCatalog;
 using neuroevolution::training_folder::DoesTrainingDataShardCoverCell;
 using neuroevolution::training_folder::IsValidTrainingWordCatalog;
@@ -38,6 +39,15 @@ enum class DeviceGenomeEvaluationStatusCode : int {
     kGuessAppendFailed = 2,
     kPolicyForwardFailed = 3,
     kActionSelectionFailed = 4,
+};
+
+template <int ThreadsPerBlock> struct GenomeEvaluationBlockScratch {
+    DynamicPolicyBlockScratch<ThreadsPerBlock> dynamic_policy{};
+    WordleGrid grid{};
+    float score_sum = 0.0f;
+    float episode_score = 0.0f;
+    std::size_t local_training_word_count = 0;
+    DeviceGenomeEvaluationStatusCode status = DeviceGenomeEvaluationStatusCode::kActionSelectionFailed;
 };
 
 constexpr NEUROEVOLUTION_HOST_DEVICE bool
@@ -166,13 +176,16 @@ __device__ inline DeviceGenomeEvaluationStatusCode TryInitializePrefilledGrid(
     return DeviceGenomeEvaluationStatusCode::kOk;
 }
 
-__device__ inline DeviceGenomeEvaluationStatusCode
-TryPlayWordleToCompletion(const std::uint8_t *genome_bytes, const TrainingWordCatalog &training_word_catalog,
-                          const std::size_t action_count, WordleGrid &grid, float &episode_score_out) {
-    while (!grid.IsFinished()) {
+template <int ThreadsPerBlock>
+__device__ inline DeviceGenomeEvaluationStatusCode TryPlayWordleToCompletionConcurrently(
+    const std::uint8_t *genome_bytes, const TrainingWordCatalog &training_word_catalog,
+    const std::size_t action_count, GenomeEvaluationBlockScratch<ThreadsPerBlock> &scratch) {
+    while (!scratch.grid.IsFinished()) {
         SelectedAction selected_action{};
         const DynamicInferenceStatusCode inference_status =
-            SelectNextGuessFromDynamicGenome(grid, training_word_catalog, genome_bytes, action_count, selected_action);
+            SelectNextGuessFromDynamicGenomeConcurrently<ThreadsPerBlock>(
+                scratch.grid, training_word_catalog, genome_bytes, action_count, scratch.dynamic_policy,
+                selected_action);
         if (inference_status == DynamicInferenceStatusCode::kPolicyForwardFailed) {
             return DeviceGenomeEvaluationStatusCode::kPolicyForwardFailed;
         }
@@ -181,26 +194,37 @@ TryPlayWordleToCompletion(const std::uint8_t *genome_bytes, const TrainingWordCa
             return DeviceGenomeEvaluationStatusCode::kActionSelectionFailed;
         }
 
-        if (!TryAppendGuess(grid, selected_action.word)) {
-            return DeviceGenomeEvaluationStatusCode::kGuessAppendFailed;
+        if (threadIdx.x == 0) {
+            scratch.status = TryAppendGuess(scratch.grid, selected_action.word)
+                                 ? DeviceGenomeEvaluationStatusCode::kOk
+                                 : DeviceGenomeEvaluationStatusCode::kGuessAppendFailed;
+        }
+        __syncthreads();
+
+        if (scratch.status != DeviceGenomeEvaluationStatusCode::kOk) {
+            return scratch.status;
         }
     }
 
-    if (!grid.IsWon()) {
-        episode_score_out = 0.0f;
-        return DeviceGenomeEvaluationStatusCode::kOk;
+    if (threadIdx.x == 0) {
+        scratch.episode_score = scratch.grid.IsWon()
+                                    ? (kWinScoreBase +
+                                       static_cast<float>(neuroevolution::wordle::kMaxTurnCount -
+                                                          scratch.grid.turn_count))
+                                    : 0.0f;
     }
-
-    episode_score_out = kWinScoreBase + static_cast<float>(neuroevolution::wordle::kMaxTurnCount - grid.turn_count);
+    __syncthreads();
     return DeviceGenomeEvaluationStatusCode::kOk;
 }
 
-__device__ inline DeviceGenomeEvaluationStatusCode
-TryEvaluateGenomeFitness(const std::uint8_t *genome_bytes, const std::size_t genome_action_count,
-                         const device_common::RuntimeWordCounts runtime_word_counts,
-                         const TrainingDataShardRuntime *active_training_shards, const std::size_t active_shard_count,
-                         const CellularGridShape &grid_shape, const std::size_t cell_index, float &fitness_out,
-                         std::size_t &local_training_word_count_out) {
+template <int ThreadsPerBlock>
+__device__ inline DeviceGenomeEvaluationStatusCode TryEvaluateGenomeFitnessConcurrently(
+    const std::uint8_t *genome_bytes, const std::size_t genome_action_count,
+    const device_common::RuntimeWordCounts runtime_word_counts,
+    const TrainingDataShardRuntime *active_training_shards, const std::size_t active_shard_count,
+    const CellularGridShape &grid_shape, const std::size_t cell_index,
+    GenomeEvaluationBlockScratch<ThreadsPerBlock> &scratch, float &fitness_out,
+    std::size_t &local_training_word_count_out) {
     const TrainingWordCatalog &training_word_catalog = DeviceTrainingWordCatalog();
     const std::size_t selectable_action_count = (genome_action_count < runtime_word_counts.action_space_word_count)
                                                     ? genome_action_count
@@ -208,79 +232,109 @@ TryEvaluateGenomeFitness(const std::uint8_t *genome_bytes, const std::size_t gen
 
     if (!IsValidTrainingWordCatalog(training_word_catalog) ||
         !IsValidRuntimeWordCounts(training_word_catalog, runtime_word_counts) || (genome_bytes == nullptr) ||
-        (genome_action_count == 0) || (selectable_action_count == 0) || (selectable_action_count > genome_action_count)) {
+        (genome_action_count == 0) || (selectable_action_count == 0) ||
+        (selectable_action_count > genome_action_count)) {
         return DeviceGenomeEvaluationStatusCode::kInvalidTrainingShard;
     }
 
-    const DeviceGenomeEvaluationStatusCode local_count_status = TryCountLocalTrainingWords(
-        active_training_shards, active_shard_count, grid_shape, cell_index, local_training_word_count_out);
-    if (local_count_status != DeviceGenomeEvaluationStatusCode::kOk) {
-        return local_count_status;
+    if (threadIdx.x == 0) {
+        scratch.status = TryCountLocalTrainingWords(active_training_shards, active_shard_count, grid_shape, cell_index,
+                                                    scratch.local_training_word_count);
+        scratch.score_sum = 0.0f;
+    }
+    __syncthreads();
+
+    if (scratch.status != DeviceGenomeEvaluationStatusCode::kOk) {
+        return scratch.status;
     }
 
-    float score_sum = 0.0f;
-
-    for (std::size_t entry_index = 0; entry_index < local_training_word_count_out; ++entry_index) {
+    for (std::size_t entry_index = 0; entry_index < scratch.local_training_word_count; ++entry_index) {
         Word solution{};
-        const DeviceGenomeEvaluationStatusCode solution_status =
-            TryResolveLocalTrainingWord(training_word_catalog, active_training_shards, active_shard_count, grid_shape,
-                                        cell_index, entry_index, solution);
-        if (solution_status != DeviceGenomeEvaluationStatusCode::kOk) {
-            return solution_status;
+        if (threadIdx.x == 0) {
+            scratch.status =
+                TryResolveLocalTrainingWord(training_word_catalog, active_training_shards, active_shard_count,
+                                            grid_shape, cell_index, entry_index, solution);
+            if (scratch.status == DeviceGenomeEvaluationStatusCode::kOk) {
+                scratch.grid = MakeWordleGrid(solution);
+            }
+        }
+        __syncthreads();
+
+        if (scratch.status != DeviceGenomeEvaluationStatusCode::kOk) {
+            return scratch.status;
         }
 
-        {
-            WordleGrid fresh_grid = MakeWordleGrid(solution);
-            float episode_score = 0.0f;
-            const DeviceGenomeEvaluationStatusCode episode_status = TryPlayWordleToCompletion(
-                genome_bytes, training_word_catalog, selectable_action_count, fresh_grid, episode_score);
-            if (episode_status != DeviceGenomeEvaluationStatusCode::kOk) {
-                return episode_status;
-            }
-
-            score_sum += episode_score;
+        const DeviceGenomeEvaluationStatusCode fresh_episode_status =
+            TryPlayWordleToCompletionConcurrently<ThreadsPerBlock>(genome_bytes, training_word_catalog,
+                                                                   selectable_action_count, scratch);
+        if (threadIdx.x == 0) {
+            scratch.status = fresh_episode_status;
+        }
+        __syncthreads();
+        if (scratch.status != DeviceGenomeEvaluationStatusCode::kOk) {
+            return scratch.status;
         }
 
-        {
-            WordleGrid prefilled_grid{};
-            const DeviceGenomeEvaluationStatusCode initialize_status = TryInitializePrefilledGrid(
-                training_word_catalog, active_training_shards, active_shard_count, grid_shape, cell_index, solution,
-                entry_index + 1, entry_index + 2, local_training_word_count_out, prefilled_grid);
-            if (initialize_status != DeviceGenomeEvaluationStatusCode::kOk) {
-                return initialize_status;
-            }
+        if (threadIdx.x == 0) {
+            scratch.score_sum += scratch.episode_score;
+            scratch.status = TryInitializePrefilledGrid(training_word_catalog, active_training_shards, active_shard_count,
+                                                        grid_shape, cell_index, solution, entry_index + 1,
+                                                        entry_index + 2, scratch.local_training_word_count,
+                                                        scratch.grid);
+        }
+        __syncthreads();
 
-            float episode_score = 0.0f;
-            const DeviceGenomeEvaluationStatusCode episode_status = TryPlayWordleToCompletion(
-                genome_bytes, training_word_catalog, selectable_action_count, prefilled_grid, episode_score);
-            if (episode_status != DeviceGenomeEvaluationStatusCode::kOk) {
-                return episode_status;
-            }
-
-            score_sum += episode_score;
+        if (scratch.status != DeviceGenomeEvaluationStatusCode::kOk) {
+            return scratch.status;
         }
 
-        {
-            WordleGrid prefilled_grid{};
-            const DeviceGenomeEvaluationStatusCode initialize_status = TryInitializePrefilledGrid(
-                training_word_catalog, active_training_shards, active_shard_count, grid_shape, cell_index, solution,
-                entry_index + 3, entry_index + 4, local_training_word_count_out, prefilled_grid);
-            if (initialize_status != DeviceGenomeEvaluationStatusCode::kOk) {
-                return initialize_status;
-            }
-
-            float episode_score = 0.0f;
-            const DeviceGenomeEvaluationStatusCode episode_status = TryPlayWordleToCompletion(
-                genome_bytes, training_word_catalog, selectable_action_count, prefilled_grid, episode_score);
-            if (episode_status != DeviceGenomeEvaluationStatusCode::kOk) {
-                return episode_status;
-            }
-
-            score_sum += episode_score;
+        const DeviceGenomeEvaluationStatusCode second_episode_status =
+            TryPlayWordleToCompletionConcurrently<ThreadsPerBlock>(genome_bytes, training_word_catalog,
+                                                                   selectable_action_count, scratch);
+        if (threadIdx.x == 0) {
+            scratch.status = second_episode_status;
         }
+        __syncthreads();
+        if (scratch.status != DeviceGenomeEvaluationStatusCode::kOk) {
+            return scratch.status;
+        }
+
+        if (threadIdx.x == 0) {
+            scratch.score_sum += scratch.episode_score;
+            scratch.status = TryInitializePrefilledGrid(training_word_catalog, active_training_shards, active_shard_count,
+                                                        grid_shape, cell_index, solution, entry_index + 3,
+                                                        entry_index + 4, scratch.local_training_word_count,
+                                                        scratch.grid);
+        }
+        __syncthreads();
+
+        if (scratch.status != DeviceGenomeEvaluationStatusCode::kOk) {
+            return scratch.status;
+        }
+
+        const DeviceGenomeEvaluationStatusCode third_episode_status =
+            TryPlayWordleToCompletionConcurrently<ThreadsPerBlock>(genome_bytes, training_word_catalog,
+                                                                   selectable_action_count, scratch);
+        if (threadIdx.x == 0) {
+            scratch.status = third_episode_status;
+        }
+        __syncthreads();
+        if (scratch.status != DeviceGenomeEvaluationStatusCode::kOk) {
+            return scratch.status;
+        }
+
+        if (threadIdx.x == 0) {
+            scratch.score_sum += scratch.episode_score;
+        }
+        __syncthreads();
     }
 
-    fitness_out = NormalizeFitnessForSelection(score_sum, local_training_word_count_out);
+    if (threadIdx.x == 0) {
+        local_training_word_count_out = scratch.local_training_word_count;
+        fitness_out = NormalizeFitnessForSelection(scratch.score_sum, scratch.local_training_word_count);
+    }
+    __syncthreads();
+
     return DeviceGenomeEvaluationStatusCode::kOk;
 }
 
