@@ -29,11 +29,14 @@ namespace {
 
 using device_evaluation_ops::DeviceGenomeEvaluationStatusCode;
 using device_evaluation_ops::GenomeEvaluationBlockScratch;
+using device_evaluation_ops::GenomeEvaluationTensorActionTileScratch;
 using device_evaluation_ops::GenomeEvaluationWarpScratch;
 using device_evaluation_ops::NormalizeFitnessForSelection;
+using device_evaluation_ops::ScoreCompletedEpisode;
 using device_evaluation_ops::TryCountLocalTrainingWords;
 using device_evaluation_ops::TryEvaluateGenomeFitnessConcurrently;
-using device_evaluation_ops::TryEvaluateGenomeEpisodeConcurrently;
+using device_evaluation_ops::TryInitializeEpisodeGrid;
+using device_evaluation_ops::TryPlayWordleEpisodeTileWithTensorCoresConcurrently;
 using device_genome_ops::DeviceRandomState;
 using device_genome_ops::MakeDeviceRandomState;
 using device_selection_ops::IsBetterFitness;
@@ -45,6 +48,8 @@ using neuroevolution::inference::dynamic_policy::kDynamicPolicyWarpSize;
 using spatial::CellularGridShape;
 using spatial::FloorSquarePopulationSize;
 using spatial::TryMakeCellularGridShape;
+using training_folder::DeviceTrainingWordCatalog;
+using training_folder::TrainingWordCatalog;
 using training_folder::TrainingDataShardRuntimeSet;
 using training_folder::TryBuildTrainingDataShardRuntimeSet;
 
@@ -275,6 +280,7 @@ __global__ void EvaluateSlabGenerationFitnessByEpisodeKernel(
     __shared__ std::size_t shared_local_training_word_count;
     __shared__ float shared_partial_sums[kEvaluationWarpsPerBlock];
     __shared__ GenomeEvaluationWarpScratch<kDynamicPolicyWarpSize> evaluation_scratch[kEvaluationWarpsPerBlock];
+    __shared__ GenomeEvaluationTensorActionTileScratch<kEvaluationWarpsPerBlock> tensor_tile_scratch;
     if (!genotype_slab::IsValidGenotypeSlabLayout(slab_layout) || (slab_storage == nullptr) ||
         (slot_states == nullptr) || (current_slot_indices == nullptr) || (fitness_partial_sums == nullptr) ||
         (current_local_training_word_counts == nullptr) || (current_generation_size == 0) ||
@@ -319,25 +325,64 @@ __global__ void EvaluateSlabGenerationFitnessByEpisodeKernel(
     float warp_score_sum = 0.0f;
     const std::size_t episode_count =
         shared_local_training_word_count * device_evaluation_ops::kEpisodesPerTrainingWordCount;
-    for (std::size_t episode_index = (block_tile_index * kEvaluationWarpsPerBlock) + warp_index;
-         episode_index < episode_count; episode_index += (blocks_per_individual * kEvaluationWarpsPerBlock)) {
-        float episode_score = 0.0f;
+    const std::uint8_t *genome_bytes = genotype_slab::SlabSlotBytesAt(slab_storage, slab_layout, shared_slot_index);
+    const TrainingWordCatalog &training_word_catalog = DeviceTrainingWordCatalog();
+    const std::size_t selectable_action_count = (slab_layout.action_count < runtime_word_counts.action_space_word_count)
+                                                    ? slab_layout.action_count
+                                                    : runtime_word_counts.action_space_word_count;
+    const std::size_t episode_tile_stride = blocks_per_individual * kEvaluationWarpsPerBlock;
+
+    for (std::size_t episode_tile_base = (block_tile_index * kEvaluationWarpsPerBlock); episode_tile_base < episode_count;
+         episode_tile_base += episode_tile_stride) {
+        const std::size_t episode_index = episode_tile_base + warp_index;
+        if (lane_index == 0) {
+            const bool warp_has_episode = episode_index < episode_count;
+            tensor_tile_scratch.warp_has_episode[warp_index] = warp_has_episode ? 1U : 0U;
+            tensor_tile_scratch.warp_active[warp_index] = warp_has_episode ? 1U : 0U;
+            evaluation_scratch[warp_index].status = static_cast<int>(DeviceGenomeEvaluationStatusCode::kOk);
+            if (warp_has_episode) {
+                evaluation_scratch[warp_index].status = static_cast<int>(TryInitializeEpisodeGrid(
+                    training_word_catalog, active_training_shards, active_shard_count, current_grid_shape,
+                    individual_index, episode_index, shared_local_training_word_count, evaluation_scratch[warp_index].grid));
+            }
+        }
+        __syncthreads();
+
+        if (threadIdx.x == 0) {
+            shared_status_code = DeviceSlabGARuntimeStatusCode::kOk;
+            for (std::size_t active_warp_index = 0; active_warp_index < kEvaluationWarpsPerBlock; ++active_warp_index) {
+                if ((tensor_tile_scratch.warp_has_episode[active_warp_index] != 0) &&
+                    (evaluation_scratch[active_warp_index].status !=
+                     static_cast<int>(DeviceGenomeEvaluationStatusCode::kOk))) {
+                    shared_status_code = MapEvaluationStatus(
+                        static_cast<DeviceGenomeEvaluationStatusCode>(evaluation_scratch[active_warp_index].status));
+                    break;
+                }
+            }
+        }
+        __syncthreads();
+
+        if (shared_status_code != DeviceSlabGARuntimeStatusCode::kOk) {
+            if (threadIdx.x == 0) {
+                SetFailureStatus(status, shared_status_code);
+            }
+            return;
+        }
+
         const DeviceGenomeEvaluationStatusCode evaluation_status =
-            TryEvaluateGenomeEpisodeConcurrently<kDynamicPolicyWarpSize>(
-                genotype_slab::SlabSlotBytesAt(slab_storage, slab_layout, shared_slot_index), slab_layout.action_count,
-                runtime_word_counts, active_training_shards, active_shard_count, current_grid_shape,
-                individual_index, episode_index, shared_local_training_word_count, evaluation_scratch[warp_index],
-                episode_score);
+            TryPlayWordleEpisodeTileWithTensorCoresConcurrently<kDynamicPolicyWarpSize, kEvaluationWarpsPerBlock>(
+                genome_bytes, training_word_catalog, selectable_action_count, evaluation_scratch, tensor_tile_scratch);
         if (evaluation_status != DeviceGenomeEvaluationStatusCode::kOk) {
-            if (lane_index == 0) {
+            if (threadIdx.x == 0) {
                 SetFailureStatus(status, MapEvaluationStatus(evaluation_status));
             }
             return;
         }
 
-        if (lane_index == 0) {
-            warp_score_sum += episode_score;
+        if ((lane_index == 0) && (tensor_tile_scratch.warp_has_episode[warp_index] != 0)) {
+            warp_score_sum += ScoreCompletedEpisode(evaluation_scratch[warp_index].grid);
         }
+        __syncthreads();
     }
 
     if (lane_index == 0) {
