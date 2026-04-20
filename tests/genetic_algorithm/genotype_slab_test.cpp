@@ -197,6 +197,66 @@ bool TestHostSlabCompactsAndRepacksForExpandedActionCount() {
     return ok;
 }
 
+bool TestHostSlabCompactingLeavesInRangeSurvivorsInPlace() {
+    constexpr std::size_t kInitialActionCount = 4;
+    constexpr std::size_t kExpandedActionCount = 8;
+
+    HostGenotypeSlab buffer{};
+    SlabGeneration current_generation{};
+    bool ok = TryCreateHostGenotypeSlab(buffer, 6, kInitialActionCount);
+    ok &= TryCreateSlabGeneration(current_generation, 3, 10);
+    ok &= ExpectTrue(ok, "Expected compacting-range fixtures to allocate");
+    if (!ok) {
+        return false;
+    }
+
+    std::uint32_t slots[6]{};
+    for (std::size_t slot_offset = 0; slot_offset < 6; ++slot_offset) {
+        ok &= TryAllocateSlabSlot(buffer, slots[slot_offset]);
+    }
+    ok &= ExpectTrue(ok, "Expected compacting-range fixtures to allocate six deterministic slab slots");
+    ok &= TrySetSlabGenerationSlot(current_generation, 0, slots[1]);
+    ok &= TrySetSlabGenerationSlot(current_generation, 1, slots[0]);
+    ok &= TrySetSlabGenerationSlot(current_generation, 2, slots[5]);
+    ok &= TryReleaseSlabSlot(buffer, slots[2]);
+    ok &= TryReleaseSlabSlot(buffer, slots[3]);
+    ok &= TryReleaseSlabSlot(buffer, slots[4]);
+    if (!ok) {
+        return false;
+    }
+
+    GenomePolicyModelParameters(HostSlabSlotBytesAt(buffer, slots[1])).dense_trunk.hidden1_to_output.biases[0] = 10.0f;
+    GenomeTailRows(HostSlabSlotBytesAt(buffer, slots[1]))[1][0] = 1.5f;
+    GenomePolicyModelParameters(HostSlabSlotBytesAt(buffer, slots[5])).dense_trunk.hidden1_to_output.biases[0] = 20.0f;
+    GenomeTailRows(HostSlabSlotBytesAt(buffer, slots[5]))[3][0] = 2.5f;
+
+    std::uint32_t parent_reference_counts[3]{1U, 0U, 1U};
+    ok &= TryCompactAndRepackSlabForExpandedActionCount(buffer, current_generation, parent_reference_counts,
+                                                        kExpandedActionCount);
+    ok &= ExpectTrue(ok, "Expected repacking to preserve live parents while widening from compacted range");
+    if (!ok) {
+        return false;
+    }
+
+    ok &= ExpectTrue(current_generation.slot_indices[0] == 4U,
+                     "Expected in-range survivor to keep the higher compacted slot when another survivor fills the hole");
+    ok &= ExpectTrue(current_generation.slot_indices[1] == kInvalidSlabSlotIndex,
+                     "Expected zero-reference parent to be collected during widening");
+    ok &= ExpectTrue(current_generation.slot_indices[2] == 3U,
+                     "Expected out-of-range survivor to fill the compacted prefix hole");
+    ok &= ExpectNear(
+        ToFloat(GenomePolicyModelParameters(HostSlabSlotBytesAt(buffer, 4)).dense_trunk.hidden1_to_output.biases[0]),
+        10.0f, "kept-in-place parent bias");
+    ok &= ExpectNear(ToFloat(GenomeTailRows(HostSlabSlotBytesAt(buffer, 4))[1][0]), 1.5f,
+                     "kept-in-place parent preserved tail");
+    ok &= ExpectNear(
+        ToFloat(GenomePolicyModelParameters(HostSlabSlotBytesAt(buffer, 3)).dense_trunk.hidden1_to_output.biases[0]),
+        20.0f, "moved-into-hole parent bias");
+    ok &= ExpectNear(ToFloat(GenomeTailRows(HostSlabSlotBytesAt(buffer, 3))[3][0]), 2.5f,
+                     "moved-into-hole parent preserved tail");
+    return ok;
+}
+
 bool TestRawViewsMutateUnderlyingBufferAndGenerationState() {
     HostGenotypeSlab buffer{};
     SlabGeneration generation{};
@@ -570,6 +630,10 @@ int main() {
     }
 
     if (!TestHostSlabCompactsAndRepacksForExpandedActionCount()) {
+        return 1;
+    }
+
+    if (!TestHostSlabCompactingLeavesInRangeSurvivorsInPlace()) {
         return 1;
     }
 

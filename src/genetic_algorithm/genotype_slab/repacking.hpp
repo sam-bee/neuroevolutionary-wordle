@@ -146,51 +146,45 @@ inline NEUROEVOLUTION_HOST_DEVICE bool TryPreflightCompactionAndRepackForExpande
     return true;
 }
 
-} // namespace detail
-
-inline NEUROEVOLUTION_HOST_DEVICE bool TryCompactAndRepackSlabForExpandedActionCount(
-    GenotypeSlabLayout &slab_layout, std::uint8_t *slab_storage, SlabSlotState *slot_states,
-    std::uint32_t *free_slot_stack, std::uint32_t &free_slot_count, std::uint32_t *generation_slot_indices,
+inline NEUROEVOLUTION_HOST_DEVICE bool TryCompactReferencedParentsIntoPrefix(
+    const GenotypeSlabLayout &slab_layout, std::uint8_t *slab_storage, std::uint32_t *generation_slot_indices,
     const std::size_t active_individual_count, const std::uint32_t *parent_reference_counts,
-    const std::size_t next_action_count, const std::size_t worker_index = 0,
+    const std::size_t survivor_count, const std::size_t worker_index = 0,
     const std::size_t worker_count = 1) noexcept {
-    // Growth widens the slab by compacting referenced survivors and repacking them to the right
-    // using the expanded slot stride.
-    if (!IsValidGenotypeSlabLayout(slab_layout) || (slab_storage == nullptr) || (slot_states == nullptr) ||
-        (free_slot_stack == nullptr) || (generation_slot_indices == nullptr) || (active_individual_count == 0) ||
-        (parent_reference_counts == nullptr) || (next_action_count <= slab_layout.action_count)) {
+    if (!IsValidGenotypeSlabLayout(slab_layout) || (slab_storage == nullptr) || (generation_slot_indices == nullptr) ||
+        (active_individual_count == 0) || (parent_reference_counts == nullptr) || (survivor_count == 0) ||
+        (survivor_count > slab_layout.slot_count)) {
         return false;
     }
 
-    detail::SlabRepackPreflight preflight{};
-    if (!detail::TryPreflightCompactionAndRepackForExpandedActionCount(
-            slab_layout, slot_states, generation_slot_indices, active_individual_count, parent_reference_counts,
-            next_action_count, preflight)) {
-        return false;
-    }
-
-    const GenotypeSlabLayout next_layout = preflight.next_layout;
-    const std::size_t current_slot_stride_bytes = slab_layout.slot_stride_bytes;
-    std::size_t survivor_count = 0;
-
-    for (std::uint32_t source_slot_index = 0; source_slot_index < slab_layout.slot_count; ++source_slot_index) {
-        const std::uint32_t parent_index = detail::FindReferencedParentIndexOwningSlot(
-            generation_slot_indices, active_individual_count, parent_reference_counts, source_slot_index);
+    std::uint32_t next_source_slot = static_cast<std::uint32_t>(survivor_count);
+    for (std::uint32_t target_slot_index = 0; target_slot_index < survivor_count; ++target_slot_index) {
+        std::uint32_t parent_index = detail::FindReferencedParentIndexOwningSlot(
+            generation_slot_indices, active_individual_count, parent_reference_counts, target_slot_index);
         if (parent_index == kInvalidSlabSlotIndex) {
-            continue;
-        }
+            while (next_source_slot < slab_layout.slot_count) {
+                parent_index = detail::FindReferencedParentIndexOwningSlot(
+                    generation_slot_indices, active_individual_count, parent_reference_counts, next_source_slot);
+                if (parent_index != kInvalidSlabSlotIndex) {
+                    break;
+                }
+                ++next_source_slot;
+            }
 
-        if (survivor_count != source_slot_index) {
-            detail::MoveSlabBytesOverlapping(SlabSlotBytesAt(slab_storage, slab_layout, source_slot_index),
-                                             SlabSlotBytesAt(slab_storage, slab_layout, survivor_count),
-                                             current_slot_stride_bytes, worker_index, worker_count);
+            if ((next_source_slot >= slab_layout.slot_count) || (parent_index == kInvalidSlabSlotIndex)) {
+                return false;
+            }
+
+            detail::MoveSlabBytesOverlapping(SlabSlotBytesAt(slab_storage, slab_layout, next_source_slot),
+                                             SlabSlotBytesAt(slab_storage, slab_layout, target_slot_index),
+                                             slab_layout.slot_stride_bytes, worker_index, worker_count);
+            ++next_source_slot;
         }
 
         if (worker_index == 0) {
-            generation_slot_indices[parent_index] = static_cast<std::uint32_t>(survivor_count);
+            generation_slot_indices[parent_index] = target_slot_index;
         }
         detail::SynchronizeRepackWorkers();
-        ++survivor_count;
     }
 
     if (worker_index == 0) {
@@ -202,16 +196,38 @@ inline NEUROEVOLUTION_HOST_DEVICE bool TryCompactAndRepackSlabForExpandedActionC
     }
     detail::SynchronizeRepackWorkers();
 
-    if (survivor_count != preflight.survivor_count) {
+    for (std::uint32_t source_slot_index = static_cast<std::uint32_t>(survivor_count);
+         source_slot_index < slab_layout.slot_count; ++source_slot_index) {
+        if (detail::FindReferencedParentIndexOwningSlot(generation_slot_indices, active_individual_count,
+                                                        parent_reference_counts, source_slot_index) !=
+            kInvalidSlabSlotIndex) {
+            return false;
+        }
+    }
+
+    return true;
+}
+
+inline NEUROEVOLUTION_HOST_DEVICE bool TryRepackCompactedParentsForExpandedActionCount(
+    const GenotypeSlabLayout &current_layout, const GenotypeSlabLayout &next_layout, std::uint8_t *slab_storage,
+    SlabSlotState *slot_states, std::uint32_t *free_slot_stack, std::uint32_t &free_slot_count,
+    std::uint32_t *generation_slot_indices, const std::size_t active_individual_count,
+    const std::size_t survivor_count, const std::size_t destination_base_slot, const std::size_t worker_index = 0,
+    const std::size_t worker_count = 1) noexcept {
+    if (!IsValidGenotypeSlabLayout(current_layout) || !IsValidGenotypeSlabLayout(next_layout) ||
+        (slab_storage == nullptr) || (slot_states == nullptr) || (free_slot_stack == nullptr) ||
+        (generation_slot_indices == nullptr) || (active_individual_count == 0) || (survivor_count == 0) ||
+        (survivor_count > current_layout.slot_count) || (destination_base_slot >= next_layout.slot_count) ||
+        ((destination_base_slot + survivor_count) > next_layout.slot_count)) {
         return false;
     }
 
-    const std::size_t destination_base_slot = preflight.destination_base_slot;
+    const std::size_t current_slot_stride_bytes = current_layout.slot_stride_bytes;
     for (std::size_t compacted_slot = survivor_count; compacted_slot > 0; --compacted_slot) {
         const std::size_t source_slot_index = compacted_slot - 1;
         const std::size_t destination_slot_index = destination_base_slot + source_slot_index;
         std::uint8_t *destination_bytes = SlabSlotBytesAt(slab_storage, next_layout, destination_slot_index);
-        detail::MoveSlabBytesOverlapping(SlabSlotBytesAt(slab_storage, slab_layout, source_slot_index),
+        detail::MoveSlabBytesOverlapping(SlabSlotBytesAt(slab_storage, current_layout, source_slot_index),
                                          destination_bytes, current_slot_stride_bytes, worker_index, worker_count);
         detail::ZeroSlabBytes(destination_bytes + current_slot_stride_bytes,
                               next_layout.slot_stride_bytes - current_slot_stride_bytes, worker_index, worker_count);
@@ -256,6 +272,43 @@ inline NEUROEVOLUTION_HOST_DEVICE bool TryCompactAndRepackSlabForExpandedActionC
         }
     }
     detail::SynchronizeRepackWorkers();
+
+    return true;
+}
+
+} // namespace detail
+
+inline NEUROEVOLUTION_HOST_DEVICE bool TryCompactAndRepackSlabForExpandedActionCount(
+    GenotypeSlabLayout &slab_layout, std::uint8_t *slab_storage, SlabSlotState *slot_states,
+    std::uint32_t *free_slot_stack, std::uint32_t &free_slot_count, std::uint32_t *generation_slot_indices,
+    const std::size_t active_individual_count, const std::uint32_t *parent_reference_counts,
+    const std::size_t next_action_count, const std::size_t worker_index = 0,
+    const std::size_t worker_count = 1) noexcept {
+    // Growth widens the slab by compacting referenced survivors and repacking them to the right
+    // using the expanded slot stride.
+    if (!IsValidGenotypeSlabLayout(slab_layout) || (slab_storage == nullptr) || (slot_states == nullptr) ||
+        (free_slot_stack == nullptr) || (generation_slot_indices == nullptr) || (active_individual_count == 0) ||
+        (parent_reference_counts == nullptr) || (next_action_count <= slab_layout.action_count)) {
+        return false;
+    }
+
+    detail::SlabRepackPreflight preflight{};
+    if (!detail::TryPreflightCompactionAndRepackForExpandedActionCount(
+            slab_layout, slot_states, generation_slot_indices, active_individual_count, parent_reference_counts,
+            next_action_count, preflight)) {
+        return false;
+    }
+
+    const GenotypeSlabLayout next_layout = preflight.next_layout;
+    if (!detail::TryCompactReferencedParentsIntoPrefix(
+            slab_layout, slab_storage, generation_slot_indices, active_individual_count, parent_reference_counts,
+            preflight.survivor_count, worker_index, worker_count) ||
+        !detail::TryRepackCompactedParentsForExpandedActionCount(
+            slab_layout, next_layout, slab_storage, slot_states, free_slot_stack, free_slot_count,
+            generation_slot_indices, active_individual_count, preflight.survivor_count,
+            preflight.destination_base_slot, worker_index, worker_count)) {
+        return false;
+    }
 
     if (worker_index == 0) {
         slab_layout = next_layout;
