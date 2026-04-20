@@ -23,10 +23,16 @@ the command must be run outside the sandbox.
 ## Coding Guidelines
 
 Writing unit tests first with Test Driven Development may help the agent, or it may not. A coding agent should think
-about how much this suggestion should affect its approach, which could be not at all.
+about how much this suggestion should affect its approach.
 
 Well commented code is good, and files should be self-documenting where possible. Adding additional markdown files with
 more documentation is acceptable sometimes, but a coding agent may choose to check with the user.
+
+When implementing a feature, a coding agent should not go too far beyond the changes that were asked for. The agent will
+not be asked to one-shot the entire project, so take things one step at a time.
+
+
+## Version Control Guidelines
 
 Commit messages can be in any structure, and may be a large paragraph or a number of bullet points. If a change is small
 and the commit message can be small, then this structure is preferred:
@@ -37,8 +43,14 @@ E.g.:
 
 ` To begin specifying the project design, add design docs`
 
-When implementing a feature, a coding agent should not go too far beyond the changes that were asked for. The agent will
-not be asked to one-shot the entire project, so take things one step at a time.
+There should be no merge commits anywhere in the project. Rebase pulls and fast-forward merging from local branches may
+both help, but there should never be a merge commit in the version control history.
+
+By default, new features should be developed in a new branch. The agent will usually be asked to merge it into master if
+the user approves of the changeset. this should be done with `git merge --ff-only` into the master branch.
+
+Unless told otherwise, the agent should commit and push its changes to the branch. An agent may make multiple commits in
+a feature request. Old branches should be cleaned up as we go.
 
 ## Interacting with the User
 
