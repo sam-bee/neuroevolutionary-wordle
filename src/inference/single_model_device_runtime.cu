@@ -9,11 +9,10 @@ namespace neuroevolution::inference {
 
 namespace {
 
-using neuroevolution::inference::dynamic_policy::HasGridAlreadyGuessedWord;
-using neuroevolution::inference::dynamic_policy::ScoreDynamicActionEmbedding;
+using neuroevolution::inference::dynamic_policy::DynamicPolicyBlockScratch;
+using neuroevolution::inference::dynamic_policy::DynamicInferenceStatusCode;
+using neuroevolution::inference::dynamic_policy::SelectNextGuessFromDynamicGenomeConcurrently;
 using neuroevolution::model::output_embedding::SelectedAction;
-using neuroevolution::model::policy_model::PolicyVector;
-using neuroevolution::model::policy_model::TryForwardPolicyModel;
 using neuroevolution::training_folder::IsValidTrainingWordCatalog;
 using neuroevolution::training_folder::TrainingWordCatalog;
 using neuroevolution::wordle::WordleGrid;
@@ -50,20 +49,9 @@ void FreeDeviceRuntimeBuffers(SingleModelDeviceRuntime &runtime) noexcept {
 
 bool CheckCuda(const cudaError_t error) noexcept { return error == cudaSuccess; }
 
-__device__ inline bool IsBetterSelectedActionCandidate(const SelectedAction &candidate,
-                                                       const SelectedAction &current_best) noexcept {
-    return (candidate.score > current_best.score) ||
-           ((candidate.score == current_best.score) && (candidate.action_index < current_best.action_index));
-}
-
 __global__ void SelectNextGuessKernel(const TrainingWordCatalog *action_space_words, const std::uint8_t *genome_bytes,
                                       const std::size_t action_count, const WordleGrid *grid,
                                       SelectedAction *selected_action_out, int *status_out) {
-    __shared__ PolicyVector shared_policy_vector;
-    __shared__ SelectedAction shared_best_actions[kSingleModelInferenceThreadsPerBlock];
-    __shared__ int shared_has_candidate[kSingleModelInferenceThreadsPerBlock];
-    __shared__ int shared_status;
-
     if ((action_space_words == nullptr) || (genome_bytes == nullptr) || (grid == nullptr) ||
         (selected_action_out == nullptr) || (status_out == nullptr) || (action_count == 0) ||
         (action_count > action_space_words->word_count)) {
@@ -73,74 +61,25 @@ __global__ void SelectNextGuessKernel(const TrainingWordCatalog *action_space_wo
         return;
     }
 
-    if (threadIdx.x == 0) {
-        if (!TryForwardPolicyModel(genetic_algorithm::genome::GenomePolicyModelParameters(genome_bytes), *grid,
-                                   shared_policy_vector)) {
-            shared_status = static_cast<int>(SingleModelDeviceRuntimeStatusCode::kPolicyForwardFailed);
-        } else {
-            shared_status = static_cast<int>(SingleModelDeviceRuntimeStatusCode::kOk);
-        }
-    }
-
-    __syncthreads();
-
-    if (shared_status != static_cast<int>(kOk)) {
-        return;
-    }
-
-    const genetic_algorithm::genome::TrainableActionEmbeddingTail *tail_rows =
-        genetic_algorithm::genome::GenomeTailRows(genome_bytes);
-
-    SelectedAction local_best_action{};
-    bool has_local_candidate = false;
-    for (std::size_t action_index = static_cast<std::size_t>(threadIdx.x); action_index < action_count;
-         action_index += static_cast<std::size_t>(blockDim.x)) {
-        const wordle::Word &candidate_word = action_space_words->words[action_index];
-        if (HasGridAlreadyGuessedWord(*grid, candidate_word)) {
-            continue;
-        }
-
-        const float score = ScoreDynamicActionEmbedding(shared_policy_vector, candidate_word, tail_rows[action_index]);
-        const SelectedAction candidate_action = {
-            .word = candidate_word,
-            .score = score,
-            .action_index = action_index,
-        };
-        if (!has_local_candidate || IsBetterSelectedActionCandidate(candidate_action, local_best_action)) {
-            local_best_action = candidate_action;
-            has_local_candidate = true;
-        }
-    }
-
-    shared_has_candidate[threadIdx.x] = has_local_candidate ? 1 : 0;
-    if (has_local_candidate) {
-        shared_best_actions[threadIdx.x] = local_best_action;
-    }
-
-    __syncthreads();
-
-    for (int offset = blockDim.x / 2; offset > 0; offset /= 2) {
-        if (threadIdx.x < offset) {
-            const int peer_index = threadIdx.x + offset;
-            if ((shared_has_candidate[peer_index] != 0) &&
-                ((shared_has_candidate[threadIdx.x] == 0) ||
-                 IsBetterSelectedActionCandidate(shared_best_actions[peer_index], shared_best_actions[threadIdx.x]))) {
-                shared_best_actions[threadIdx.x] = shared_best_actions[peer_index];
-                shared_has_candidate[threadIdx.x] = 1;
-            }
-        }
-
-        __syncthreads();
-    }
+    __shared__ DynamicPolicyBlockScratch<kSingleModelInferenceThreadsPerBlock> scratch;
+    SelectedAction selected_action{};
+    const auto inference_status =
+        SelectNextGuessFromDynamicGenomeConcurrently<kSingleModelInferenceThreadsPerBlock>(
+            *grid, *action_space_words, genome_bytes, action_count, scratch, selected_action);
 
     if (threadIdx.x == 0) {
-        if (shared_has_candidate[0] == 0) {
+        if (inference_status == DynamicInferenceStatusCode::kPolicyForwardFailed) {
+            *status_out = static_cast<int>(SingleModelDeviceRuntimeStatusCode::kPolicyForwardFailed);
+            return;
+        }
+
+        if (inference_status != DynamicInferenceStatusCode::kOk) {
             *status_out = static_cast<int>(SingleModelDeviceRuntimeStatusCode::kActionSelectionFailed);
             return;
         }
 
-        *selected_action_out = shared_best_actions[0];
-        *status_out = static_cast<int>(SingleModelDeviceRuntimeStatusCode::kOk);
+        *selected_action_out = selected_action;
+        *status_out = static_cast<int>(kOk);
     }
 }
 
