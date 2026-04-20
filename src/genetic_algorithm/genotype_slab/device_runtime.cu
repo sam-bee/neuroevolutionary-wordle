@@ -669,6 +669,30 @@ inline bool FinishAssemblyKernelOrCleanup(DeviceSlabRuntimeBuffers &buffers) {
     return true;
 }
 
+__device__ inline void CopySlabBytesWithMoveGroup(const std::uint8_t *source_bytes, std::uint8_t *target_bytes,
+                                                  const std::size_t byte_count, const std::size_t worker_index,
+                                                  const std::size_t worker_count) {
+    if ((source_bytes == nullptr) || (target_bytes == nullptr) || (worker_count == 0)) {
+        return;
+    }
+
+    for (std::size_t byte_index = worker_index; byte_index < byte_count; byte_index += worker_count) {
+        target_bytes[byte_index] = source_bytes[byte_index];
+    }
+}
+
+__device__ inline void ZeroSlabBytesWithMoveGroup(std::uint8_t *bytes, const std::size_t byte_count,
+                                                  const std::size_t worker_index,
+                                                  const std::size_t worker_count) {
+    if ((bytes == nullptr) || (worker_count == 0)) {
+        return;
+    }
+
+    for (std::size_t byte_index = worker_index; byte_index < byte_count; byte_index += worker_count) {
+        bytes[byte_index] = 0;
+    }
+}
+
 __device__ bool TryCompactReferencedParentsIntoPrefixConcurrently(
     const GenotypeSlabLayout slab_layout, std::uint8_t *slab_storage, std::uint32_t *generation_slot_indices,
     const std::size_t active_individual_count, const std::uint32_t *parent_reference_counts,
@@ -738,10 +762,9 @@ __device__ bool TryCompactReferencedParentsIntoPrefixConcurrently(
         if (move_group_index < static_cast<std::size_t>(*move_count)) {
             const std::uint32_t source_slot_index = move_source_slots[move_group_index];
             const std::uint32_t target_slot_index = move_target_slots[move_group_index];
-            detail::MoveSlabBytesOverlapping(SlabSlotBytesAt(slab_storage, slab_layout, source_slot_index),
-                                             SlabSlotBytesAt(slab_storage, slab_layout, target_slot_index),
-                                             slab_layout.slot_stride_bytes, move_group_worker_index,
-                                             kCopyWorkerCount);
+            CopySlabBytesWithMoveGroup(SlabSlotBytesAt(slab_storage, slab_layout, source_slot_index),
+                                       SlabSlotBytesAt(slab_storage, slab_layout, target_slot_index),
+                                       slab_layout.slot_stride_bytes, move_group_worker_index, kCopyWorkerCount);
         }
         __syncthreads();
     }
@@ -768,6 +791,101 @@ __device__ bool TryCompactReferencedParentsIntoPrefixConcurrently(
     return !(*failed);
 }
 
+__device__ bool TryRepackCompactedParentsForExpandedActionCountConcurrently(
+    const GenotypeSlabLayout current_layout, const GenotypeSlabLayout next_layout, std::uint8_t *slab_storage,
+    SlabSlotState *slot_states, std::uint32_t *free_slot_stack, std::uint32_t *free_slot_count,
+    std::uint32_t *generation_slot_indices, const std::size_t active_individual_count,
+    const detail::SlabRepackPreflight &preflight, std::uint32_t *move_source_slots,
+    std::uint32_t *frontier_source_count, std::uint32_t *batch_start_slot, std::uint32_t *next_source_slot,
+    std::uint32_t *move_count, bool *failed) {
+    if (!IsValidGenotypeSlabLayout(current_layout) || !IsValidGenotypeSlabLayout(next_layout) ||
+        (slab_storage == nullptr) || (slot_states == nullptr) || (free_slot_stack == nullptr) ||
+        (free_slot_count == nullptr) || (generation_slot_indices == nullptr) || (move_source_slots == nullptr) ||
+        (frontier_source_count == nullptr) || (batch_start_slot == nullptr) || (next_source_slot == nullptr) ||
+        (move_count == nullptr) || (failed == nullptr)) {
+        return false;
+    }
+
+    constexpr std::size_t kCopyWorkerCount = static_cast<std::size_t>(kSlabRepackCompactionMoveGroupSize);
+    const std::size_t move_group_index = static_cast<std::size_t>(threadIdx.x / kSlabRepackCompactionMoveGroupSize);
+    const std::size_t move_group_worker_index =
+        static_cast<std::size_t>(threadIdx.x % kSlabRepackCompactionMoveGroupSize);
+
+    if (threadIdx.x == 0) {
+        *frontier_source_count = static_cast<std::uint32_t>(preflight.survivor_count);
+        *batch_start_slot = 0;
+        *next_source_slot = 0;
+        *move_count = 0;
+        *failed = false;
+    }
+    __syncthreads();
+
+    while (*frontier_source_count > 0) {
+        if (threadIdx.x == 0) {
+            const std::size_t frontier_bytes =
+                static_cast<std::size_t>(*frontier_source_count) * current_layout.slot_stride_bytes;
+            std::size_t safe_batch_start = static_cast<std::size_t>(*frontier_source_count);
+            for (std::size_t source_slot_index = 0; source_slot_index < *frontier_source_count; ++source_slot_index) {
+                const std::size_t destination_byte_offset =
+                    (preflight.destination_base_slot + source_slot_index) * next_layout.slot_stride_bytes;
+                if (destination_byte_offset >= frontier_bytes) {
+                    safe_batch_start = source_slot_index;
+                    break;
+                }
+            }
+
+            if (safe_batch_start >= *frontier_source_count) {
+                *failed = true;
+            } else {
+                *batch_start_slot = static_cast<std::uint32_t>(safe_batch_start);
+                *next_source_slot = *batch_start_slot;
+            }
+        }
+        __syncthreads();
+
+        if (*failed) {
+            return false;
+        }
+
+        while (*next_source_slot < *frontier_source_count) {
+            if (threadIdx.x == 0) {
+                *move_count = 0;
+                std::uint32_t source_slot_index = *next_source_slot;
+                while ((source_slot_index < *frontier_source_count) &&
+                       (*move_count < static_cast<std::uint32_t>(kSlabRepackConcurrentCompactionMoves))) {
+                    move_source_slots[*move_count] = source_slot_index;
+                    ++(*move_count);
+                    ++source_slot_index;
+                }
+                *next_source_slot = source_slot_index;
+            }
+            __syncthreads();
+
+            if (move_group_index < static_cast<std::size_t>(*move_count)) {
+                const std::size_t source_slot_index = move_source_slots[move_group_index];
+                const std::size_t destination_slot_index = preflight.destination_base_slot + source_slot_index;
+                std::uint8_t *destination_bytes = SlabSlotBytesAt(slab_storage, next_layout, destination_slot_index);
+                CopySlabBytesWithMoveGroup(SlabSlotBytesAt(slab_storage, current_layout, source_slot_index),
+                                          destination_bytes, current_layout.slot_stride_bytes,
+                                          move_group_worker_index, kCopyWorkerCount);
+                ZeroSlabBytesWithMoveGroup(destination_bytes + current_layout.slot_stride_bytes,
+                                          next_layout.slot_stride_bytes - current_layout.slot_stride_bytes,
+                                          move_group_worker_index, kCopyWorkerCount);
+            }
+            __syncthreads();
+        }
+
+        if (threadIdx.x == 0) {
+            *frontier_source_count = *batch_start_slot;
+        }
+        __syncthreads();
+    }
+
+    return detail::FinalizeRepackedParentsForExpandedActionCount(
+        next_layout, slot_states, free_slot_stack, *free_slot_count, generation_slot_indices, active_individual_count,
+        preflight.destination_base_slot, static_cast<std::size_t>(threadIdx.x), static_cast<std::size_t>(blockDim.x));
+}
+
 __global__ void PrepareSlabForExpandedActionCountKernel(
     const GenotypeSlabLayout current_layout, const GenotypeSlabLayout next_layout, std::uint8_t *slab_storage,
     SlabSlotState *slot_states, std::uint32_t *free_slot_stack, std::uint32_t *free_slot_count,
@@ -782,6 +900,8 @@ __global__ void PrepareSlabForExpandedActionCountKernel(
     __shared__ detail::SlabRepackPreflight preflight;
     __shared__ std::uint32_t move_target_slots[kSlabRepackConcurrentCompactionMoves];
     __shared__ std::uint32_t move_source_slots[kSlabRepackConcurrentCompactionMoves];
+    __shared__ std::uint32_t compacted_frontier_source_count;
+    __shared__ std::uint32_t repack_batch_start_slot;
     __shared__ std::uint32_t next_target_slot;
     __shared__ std::uint32_t next_source_slot;
     __shared__ std::uint32_t move_count;
@@ -810,10 +930,11 @@ __global__ void PrepareSlabForExpandedActionCountKernel(
             current_layout, slab_storage, current_slot_indices, current_generation_size, parent_reference_counts,
             preflight.survivor_count, move_target_slots, move_source_slots, &next_target_slot, &next_source_slot,
             &move_count, &repack_failed) ||
-        !detail::TryRepackCompactedParentsForExpandedActionCount(
-            current_layout, next_layout, slab_storage, slot_states, free_slot_stack, *free_slot_count,
-            current_slot_indices, current_generation_size, preflight.survivor_count, preflight.destination_base_slot,
-            static_cast<std::size_t>(threadIdx.x), static_cast<std::size_t>(blockDim.x))) {
+        !TryRepackCompactedParentsForExpandedActionCountConcurrently(
+            current_layout, next_layout, slab_storage, slot_states, free_slot_stack, free_slot_count,
+            current_slot_indices, current_generation_size, preflight, move_source_slots,
+            &compacted_frontier_source_count, &repack_batch_start_slot, &next_source_slot, &move_count,
+            &repack_failed)) {
         __syncthreads();
         if (threadIdx.x == 0) {
             SetFailureStatus(status, DeviceSlabRuntimeStatusCode::kSlabRepackFailed);
