@@ -56,8 +56,8 @@ struct DeviceSlabBootstrapConfig {
     float output_embedding_tail_stddev = 0.05f;
 };
 
-constexpr NEUROEVOLUTION_HOST_DEVICE bool IsValidDeviceSlabBootstrapConfig(
-    const DeviceSlabBootstrapConfig &config) noexcept {
+constexpr NEUROEVOLUTION_HOST_DEVICE bool
+IsValidDeviceSlabBootstrapConfig(const DeviceSlabBootstrapConfig &config) noexcept {
     return (config.dense_weight_gain > 0.0f) && (config.output_embedding_tail_stddev >= 0.0f);
 }
 
@@ -114,7 +114,8 @@ bool TryUploadAssemblyPlanToDevice(const SlabAssemblyPlan &plan, DeviceSlabRunti
 
 bool TryApplyFinalChildPriorityToAssemblyPlanOnDevice(DeviceSlabRuntimeBuffers &buffers);
 
-bool TryPrepareSlabForExpandedActionCountOnDevice(DeviceSlabRuntimeBuffers &buffers, std::size_t next_action_count);
+bool TryPrepareSlabForExpandedActionCountOnDevice(DeviceSlabRuntimeBuffers &buffers, std::size_t next_action_count,
+                                                  bool verbose = false);
 
 bool TryInitializeNextGenerationAssemblyOnDevice(DeviceSlabRuntimeBuffers &buffers,
                                                  const SlabDeviceAssemblyConfig &config = {});

@@ -80,8 +80,7 @@ bool TryBootstrapRandomCurrentGenerationOnDevice(DeviceSlabGARuntimeBuffers &buf
 bool TryDownloadSlabFromDevice(const DeviceSlabGARuntimeBuffers &buffers, genotype_slab::HostGenotypeSlab &host_buffer);
 
 bool TryDownloadSlabSlotBytesFromDevice(const DeviceSlabGARuntimeBuffers &buffers, std::uint32_t slot_index,
-                                        std::unique_ptr<std::uint8_t[]> &slot_bytes,
-                                        std::size_t &slot_byte_count);
+                                        std::unique_ptr<std::uint8_t[]> &slot_bytes, std::size_t &slot_byte_count);
 
 bool TryDownloadCurrentGenerationFromDevice(const DeviceSlabGARuntimeBuffers &buffers,
                                             genotype_slab::SlabGeneration &generation);
@@ -99,7 +98,8 @@ bool TryAdvanceGenerationOnDevice(DeviceSlabGARuntimeBuffers &buffers, std::uint
                                   const RuntimeWordCounts &runtime_word_counts,
                                   const GenerationAssemblyConfig &config = {},
                                   const PendingOutputEmbeddingInjection &pending_output_embedding_injection = {},
-                                  const training_folder::TrainingWordCatalog *host_training_word_catalog = nullptr);
+                                  const training_folder::TrainingWordCatalog *host_training_word_catalog = nullptr,
+                                  bool verbose = false);
 
 void SwapDeviceSlabGenerationBuffers(DeviceSlabGARuntimeBuffers &buffers) noexcept;
 

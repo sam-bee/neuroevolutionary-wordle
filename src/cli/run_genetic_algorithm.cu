@@ -11,10 +11,10 @@
 #include <iostream>
 #include <limits>
 #include <memory>
-#include <sstream>
 #include <string>
 #include <string_view>
 
+#include "common/progress_log.hpp"
 #include "genetic_algorithm/device/slab_runtime.hpp"
 #include "genetic_algorithm/genotype_slab/slab_allocator.hpp"
 #include "genetic_algorithm/spatial/grid.hpp"
@@ -23,6 +23,7 @@
 
 namespace {
 
+using neuroevolution::common::FormatCurrentLocalTimestamp;
 using neuroevolution::genetic_algorithm::GenerationAssemblyConfig;
 using neuroevolution::genetic_algorithm::genotype_slab::ComputeSlabSlotStrideBytes;
 using neuroevolution::genetic_algorithm::genotype_slab::SlabSlotCountForByteBudget;
@@ -42,12 +43,12 @@ using neuroevolution::genetic_algorithm::slab_device::TryDownloadSlabSlotBytesFr
 using neuroevolution::genetic_algorithm::slab_device::TryEvaluateCurrentGenerationFitnessOnDevice;
 using neuroevolution::genetic_algorithm::slab_device::TryReadDeviceSlabGARuntimeStatus;
 using neuroevolution::genetic_algorithm::slab_device::TryReadPopulationFitnessSummaryFromDevice;
-using neuroevolution::model_artifact::TryWriteWinnerArtifact;
-using neuroevolution::model_artifact::WinnerArtifactMetadata;
-using neuroevolution::model_artifact::WinnerArtifactPaths;
 using neuroevolution::genetic_algorithm::spatial::CellularGridShape;
 using neuroevolution::genetic_algorithm::spatial::FloorSquarePopulationSize;
 using neuroevolution::genetic_algorithm::spatial::TryMakeCellularGridShape;
+using neuroevolution::model_artifact::TryWriteWinnerArtifact;
+using neuroevolution::model_artifact::WinnerArtifactMetadata;
+using neuroevolution::model_artifact::WinnerArtifactPaths;
 using neuroevolution::training_folder::DefaultActionSpacePath;
 using neuroevolution::training_folder::IsValidWordCountSchedule;
 using neuroevolution::training_folder::LoadTrainingWordCatalogFromActionSpace;
@@ -76,6 +77,7 @@ struct CliConfig {
     bool generation_vram_gb_was_provided = false;
     std::uint32_t seed = 0;
     bool seed_was_provided = false;
+    bool verbose = false;
 };
 
 enum class ArgumentParseResult {
@@ -85,7 +87,7 @@ enum class ArgumentParseResult {
 };
 
 void PrintUsage() {
-    std::cout << "Usage: run_genetic_algorithm [--seed N] [--generations N] [--population-size N] "
+    std::cout << "Usage: run_genetic_algorithm [--verbose] [--seed N] [--generations N] [--population-size N] "
                  "[--genotype-vram-gb F] [--generation-vram-gb F] [--initial-word-count N] [--word-count-step N] "
                  "[--word-count-step-period N] [--shard-radius-growth-period N]\n"
               << "If --population-size is omitted, the program does not apply an extra population ceiling.\n"
@@ -108,7 +110,9 @@ void PrintUsage() {
                  "sized to that population at the starting action count.\n"
               << "The VRAM budget flag is interpreted in binary GiB-style units (" << kBytesPerVramGiB
               << " bytes per unit).\n"
-              << "If --seed is omitted, the program uses the current time in microseconds.\n";
+              << "If --seed is omitted, the program uses the current time in microseconds.\n"
+              << "--verbose prints timestamped stage progress during generation advancement, including "
+                 "slot-growth compaction/repacking.\n";
 }
 
 bool CheckCuda(const cudaError_t error, const std::string_view action) {
@@ -118,22 +122,6 @@ bool CheckCuda(const cudaError_t error, const std::string_view action) {
     }
 
     return true;
-}
-
-std::string FormatCurrentLocalTimestamp() {
-    const auto now = std::chrono::system_clock::now();
-    const std::time_t now_time = std::chrono::system_clock::to_time_t(now);
-
-    std::tm local_time{};
-#if defined(_WIN32)
-    localtime_s(&local_time, &now_time);
-#else
-    localtime_r(&now_time, &local_time);
-#endif
-
-    std::ostringstream stream;
-    stream << std::put_time(&local_time, "%Y-%m-%d %H:%M:%S");
-    return stream.str();
 }
 
 bool SelectVisibleCudaDevice() {
@@ -193,6 +181,11 @@ ArgumentParseResult TryParseArguments(const int argc, char **argv, CliConfig &co
         if (argument == "--help") {
             PrintUsage();
             return ArgumentParseResult::kHelpRequested;
+        }
+
+        if (argument == "--verbose") {
+            config.verbose = true;
+            continue;
         }
 
         if ((argument == "--seed") || (argument == "--generations") || (argument == "--population-size") ||
@@ -373,8 +366,7 @@ PendingOutputEmbeddingInjection MakePendingOutputEmbeddingInjection(const std::s
 bool TryPersistWinningGenome(const DeviceSlabGARuntimeBuffers &buffers, const PopulationFitnessSummary &summary,
                              const std::uint32_t seed,
                              const neuroevolution::training_folder::TrainingWordCatalog &action_space_words,
-                             const std::filesystem::path &action_space_path,
-                             WinnerArtifactPaths &artifact_paths_out) {
+                             const std::filesystem::path &action_space_path, WinnerArtifactPaths &artifact_paths_out) {
     std::unique_ptr<std::uint8_t[]> genome_bytes{};
     std::size_t genome_byte_count = 0;
     if (!TryDownloadSlabSlotBytesFromDevice(buffers, summary.best_slot_index, genome_bytes, genome_byte_count)) {
@@ -443,8 +435,7 @@ int main(int argc, char **argv) {
         runtime_word_counts.training_word_count = initial_active_word_count;
         runtime_word_counts.action_space_word_count = initial_active_word_count;
         runtime_word_counts.training_word_schedule = word_count_schedule;
-        runtime_word_counts.shard_radius_growth_period_generations =
-            cli_config.shard_radius_growth_period_generations;
+        runtime_word_counts.shard_radius_growth_period_generations = cli_config.shard_radius_growth_period_generations;
 
         std::size_t genotype_memory_budget_bytes = 0;
         if (!TryComputeTotalGenotypeBudgetBytes(cli_config, genotype_memory_budget_bytes)) {
@@ -579,7 +570,8 @@ int main(int argc, char **argv) {
                 const std::uint32_t generation_seed =
                     cli_config.seed + 2U + static_cast<std::uint32_t>(generation_step);
                 if (!TryAdvanceGenerationOnDevice(buffers, generation_seed, runtime_word_counts, assembly_config,
-                                                  pending_output_embedding_injection, &training_word_catalog)) {
+                                                  pending_output_embedding_injection, &training_word_catalog,
+                                                  cli_config.verbose)) {
                     (void)ReportDeviceSlabRuntimeFailure(buffers, "Next-generation assembly");
                     DestroyDeviceSlabGARuntimeBuffers(buffers);
                     return 1;
@@ -605,9 +597,9 @@ int main(int argc, char **argv) {
             final_summary = summary;
 
             std::cout << '[' << FormatCurrentLocalTimestamp() << "] Generation " << summary.generation_index
-                      << ": best=" << summary.best_fitness
-                      << ", average=" << summary.average_fitness << ", best_index=" << summary.best_index
-                      << ", population=" << summary.population_size << ", action_count=" << summary.action_count
+                      << ": best=" << summary.best_fitness << ", average=" << summary.average_fitness
+                      << ", best_index=" << summary.best_index << ", population=" << summary.population_size
+                      << ", action_count=" << summary.action_count
                       << ", genome_stride_bytes=" << ComputeSlabSlotStrideBytes(summary.action_count) << '\n';
         }
 

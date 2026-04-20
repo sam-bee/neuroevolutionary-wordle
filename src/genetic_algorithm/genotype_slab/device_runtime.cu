@@ -4,8 +4,12 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <iostream>
+#include <sstream>
+#include <string>
 #include <utility>
 
+#include "common/progress_log.hpp"
 #include "genetic_algorithm/device/genome_ops.cuh"
 #include "genetic_algorithm/device/injection_ops.cuh"
 #include "genetic_algorithm/genotype_slab/reference_counter.hpp"
@@ -23,6 +27,9 @@ using device_genome_ops::MakeDeviceRandomState;
 using device_genome_ops::RandomGenomeInitializationConfig;
 using device_injection_ops::DeviceOutputEmbeddingInjectionStatusCode;
 using device_injection_ops::TryInjectExpandedOutputEmbeddingTails;
+using neuroevolution::common::PrintTimestampedProgressDuration;
+using neuroevolution::common::PrintTimestampedProgressLine;
+using neuroevolution::common::ProgressClock;
 
 constexpr int kSlabAssemblyThreadBlockSize = 128;
 constexpr int kMaxSlabAssemblyThreadBlocks = 32;
@@ -197,8 +204,7 @@ __global__ void ApplyFinalChildPriorityToAssemblyPlanKernel(SlabParentPair *pare
         int best_priority = -1;
         for (std::size_t candidate_child_index = ordered_child_index; candidate_child_index < child_count;
              ++candidate_child_index) {
-            const int priority =
-                FinalChildPriorityScore(parent_pairs[candidate_child_index], parent_reference_counts);
+            const int priority = FinalChildPriorityScore(parent_pairs[candidate_child_index], parent_reference_counts);
             if (priority > best_priority) {
                 best_priority = priority;
                 chosen_child_index = candidate_child_index;
@@ -248,11 +254,12 @@ __global__ void InitializeEmptySlabMetadataKernel(SlabSlotState *slot_states, st
     }
 }
 
-__global__ void BootstrapRandomGenerationKernel(
-    std::uint8_t *slab_storage, SlabSlotState *slot_states, std::uint32_t *free_slot_stack,
-    std::uint32_t *free_slot_count, std::uint32_t *free_slot_lock, const GenotypeSlabLayout slab_layout,
-    std::uint32_t *current_slot_indices, const std::size_t generation_size, const std::size_t generation_index,
-    const std::uint32_t generation_seed, const DeviceSlabBootstrapConfig bootstrap_config, int *status) {
+__global__ void BootstrapRandomGenerationKernel(std::uint8_t *slab_storage, SlabSlotState *slot_states,
+                                                std::uint32_t *free_slot_stack, std::uint32_t *free_slot_count,
+                                                std::uint32_t *free_slot_lock, const GenotypeSlabLayout slab_layout,
+                                                std::uint32_t *current_slot_indices, const std::size_t generation_size,
+                                                const std::size_t generation_index, const std::uint32_t generation_seed,
+                                                const DeviceSlabBootstrapConfig bootstrap_config, int *status) {
     if (!IsDeviceStatusOk(status)) {
         return;
     }
@@ -682,8 +689,7 @@ __device__ inline void CopySlabBytesWithMoveGroup(const std::uint8_t *source_byt
 }
 
 __device__ inline void ZeroSlabBytesWithMoveGroup(std::uint8_t *bytes, const std::size_t byte_count,
-                                                  const std::size_t worker_index,
-                                                  const std::size_t worker_count) {
+                                                  const std::size_t worker_index, const std::size_t worker_count) {
     if ((bytes == nullptr) || (worker_count == 0)) {
         return;
     }
@@ -705,7 +711,8 @@ __device__ bool TryCompactReferencedParentsIntoPrefixConcurrently(
 
     constexpr std::size_t kCopyWorkerCount = static_cast<std::size_t>(kSlabRepackCompactionMoveGroupSize);
     const std::size_t move_group_index = static_cast<std::size_t>(threadIdx.x / kSlabRepackCompactionMoveGroupSize);
-    const std::size_t move_group_worker_index = static_cast<std::size_t>(threadIdx.x % kSlabRepackCompactionMoveGroupSize);
+    const std::size_t move_group_worker_index =
+        static_cast<std::size_t>(threadIdx.x % kSlabRepackCompactionMoveGroupSize);
 
     if (threadIdx.x == 0) {
         *next_target_slot = 0;
@@ -779,8 +786,8 @@ __device__ bool TryCompactReferencedParentsIntoPrefixConcurrently(
         for (std::uint32_t source_slot_index = static_cast<std::uint32_t>(survivor_count);
              source_slot_index < slab_layout.slot_count; ++source_slot_index) {
             if (detail::FindReferencedParentIndexOwningSlot(generation_slot_indices, active_individual_count,
-                                                            parent_reference_counts, source_slot_index) !=
-                kInvalidSlabSlotIndex) {
+                                                            parent_reference_counts,
+                                                            source_slot_index) != kInvalidSlabSlotIndex) {
                 *failed = true;
                 break;
             }
@@ -866,11 +873,11 @@ __device__ bool TryRepackCompactedParentsForExpandedActionCountConcurrently(
                 const std::size_t destination_slot_index = preflight.destination_base_slot + source_slot_index;
                 std::uint8_t *destination_bytes = SlabSlotBytesAt(slab_storage, next_layout, destination_slot_index);
                 CopySlabBytesWithMoveGroup(SlabSlotBytesAt(slab_storage, current_layout, source_slot_index),
-                                          destination_bytes, current_layout.slot_stride_bytes,
-                                          move_group_worker_index, kCopyWorkerCount);
+                                           destination_bytes, current_layout.slot_stride_bytes, move_group_worker_index,
+                                           kCopyWorkerCount);
                 ZeroSlabBytesWithMoveGroup(destination_bytes + current_layout.slot_stride_bytes,
-                                          next_layout.slot_stride_bytes - current_layout.slot_stride_bytes,
-                                          move_group_worker_index, kCopyWorkerCount);
+                                           next_layout.slot_stride_bytes - current_layout.slot_stride_bytes,
+                                           move_group_worker_index, kCopyWorkerCount);
             }
             __syncthreads();
         }
@@ -907,15 +914,16 @@ __global__ void PrepareSlabForExpandedActionCountKernel(
     __shared__ std::uint32_t move_count;
     if (threadIdx.x == 0) {
         inputs_valid = (slab_storage != nullptr) && (slot_states != nullptr) && (free_slot_stack != nullptr) &&
-                       (free_slot_count != nullptr) && (free_slot_lock != nullptr) && (current_slot_indices != nullptr) &&
-                       (parent_reference_counts != nullptr) && (current_generation_size > 0) &&
-                       IsValidGenotypeSlabLayout(current_layout) && IsValidGenotypeSlabLayout(next_layout);
+                       (free_slot_count != nullptr) && (free_slot_lock != nullptr) &&
+                       (current_slot_indices != nullptr) && (parent_reference_counts != nullptr) &&
+                       (current_generation_size > 0) && IsValidGenotypeSlabLayout(current_layout) &&
+                       IsValidGenotypeSlabLayout(next_layout);
         repack_failed = false;
         if (!inputs_valid) {
             SetFailureStatus(status, DeviceSlabRuntimeStatusCode::kInvalidSlab);
         } else if (!detail::TryPreflightCompactionAndRepackForExpandedActionCount(
-                current_layout, slot_states, current_slot_indices, current_generation_size, parent_reference_counts,
-                next_layout.action_count, preflight)) {
+                       current_layout, slot_states, current_slot_indices, current_generation_size,
+                       parent_reference_counts, next_layout.action_count, preflight)) {
             inputs_valid = false;
             SetFailureStatus(status, DeviceSlabRuntimeStatusCode::kSlabRepackFailed);
         }
@@ -1112,13 +1120,14 @@ bool TryBootstrapRandomCurrentGenerationOnDevice(DeviceSlabRuntimeBuffers &buffe
     }
 
     bool ok = true;
-    ok &= ClearGenerationBuffers(buffers.current_slot_indices, buffers.current_fitness, buffers.current_evaluation_counts,
-                                 buffers.current_has_fitness, buffers.max_generation_size);
+    ok &=
+        ClearGenerationBuffers(buffers.current_slot_indices, buffers.current_fitness, buffers.current_evaluation_counts,
+                               buffers.current_has_fitness, buffers.max_generation_size);
     ok &= ClearGenerationBuffers(buffers.next_slot_indices, buffers.next_fitness, buffers.next_evaluation_counts,
                                  buffers.next_has_fitness, buffers.max_generation_size);
     ok &= CheckCuda(cudaMemset(buffers.assembly_parent_pairs, 0, buffers.max_generation_size * sizeof(SlabParentPair)));
-    ok &= CheckCuda(cudaMemset(buffers.parent_reference_counts, 0,
-                               buffers.max_generation_size * sizeof(std::uint32_t)));
+    ok &=
+        CheckCuda(cudaMemset(buffers.parent_reference_counts, 0, buffers.max_generation_size * sizeof(std::uint32_t)));
     if (!ok || !ResetSlabMetadataOnDevice(buffers) || !ResetDeviceStatus(buffers)) {
         buffers.current_generation_index = 0;
         buffers.current_generation_size = 0;
@@ -1145,9 +1154,8 @@ bool TryBootstrapRandomCurrentGenerationOnDevice(DeviceSlabRuntimeBuffers &buffe
         (void)ClearGenerationBuffers(buffers.current_slot_indices, buffers.current_fitness,
                                      buffers.current_evaluation_counts, buffers.current_has_fitness,
                                      buffers.max_generation_size);
-        (void)ClearGenerationBuffers(buffers.next_slot_indices, buffers.next_fitness,
-                                     buffers.next_evaluation_counts, buffers.next_has_fitness,
-                                     buffers.max_generation_size);
+        (void)ClearGenerationBuffers(buffers.next_slot_indices, buffers.next_fitness, buffers.next_evaluation_counts,
+                                     buffers.next_has_fitness, buffers.max_generation_size);
         if (original_status != DeviceStatusValue(DeviceSlabRuntimeStatusCode::kOk)) {
             (void)WriteDeviceStatus(buffers, static_cast<DeviceSlabRuntimeStatusCode>(original_status));
         }
@@ -1247,7 +1255,7 @@ bool TryApplyFinalChildPriorityToAssemblyPlanOnDevice(DeviceSlabRuntimeBuffers &
 }
 
 bool TryPrepareSlabForExpandedActionCountOnDevice(DeviceSlabRuntimeBuffers &buffers,
-                                                  const std::size_t next_action_count) {
+                                                  const std::size_t next_action_count, const bool verbose) {
     if (!IsValidGenotypeSlabLayout(buffers.slab_layout) || (buffers.current_generation_size == 0) ||
         (buffers.planned_child_count == 0) || (next_action_count <= buffers.slab_layout.action_count)) {
         (void)WriteDeviceStatus(buffers, DeviceSlabRuntimeStatusCode::kInvalidAssemblyConfig);
@@ -1260,6 +1268,29 @@ bool TryPrepareSlabForExpandedActionCountOnDevice(DeviceSlabRuntimeBuffers &buff
         return false;
     }
 
+    const auto log_verbose_line = [&](const std::string &message) {
+        if (verbose) {
+            PrintTimestampedProgressLine(std::cout, message);
+        }
+    };
+    const auto log_verbose_duration = [&](const std::string &message, const ProgressClock::time_point start_time) {
+        if (verbose) {
+            PrintTimestampedProgressDuration(std::cout, message, start_time);
+        }
+    };
+    const auto overall_start_time = ProgressClock::now();
+
+    if (verbose) {
+        std::ostringstream stream;
+        stream << "Generation " << (buffers.current_generation_index + 1) << ": widening slab action space from "
+               << buffers.slab_layout.action_count << " to " << next_layout.action_count << " words"
+               << " (slot_stride_bytes " << buffers.slab_layout.slot_stride_bytes << " -> "
+               << next_layout.slot_stride_bytes << ", slot_count=" << buffers.slab_layout.slot_count
+               << ", current_generation_size=" << buffers.current_generation_size
+               << ", planned_child_count=" << buffers.planned_child_count << ')';
+        log_verbose_line(stream.str());
+    }
+
     bool ok = true;
     ok &= ResetDeviceStatus(buffers);
     ok &=
@@ -1268,6 +1299,9 @@ bool TryPrepareSlabForExpandedActionCountOnDevice(DeviceSlabRuntimeBuffers &buff
         return false;
     }
 
+    const auto parent_refcount_start_time = ProgressClock::now();
+    log_verbose_line("Generation " + std::to_string(buffers.current_generation_index + 1) +
+                     ": building parent reference counts for slab expansion");
     BuildParentReferenceCountsKernel<<<BoundedAssemblyBlockCount(buffers.planned_child_count),
                                        kSlabAssemblyThreadBlockSize>>>(
         buffers.current_slot_indices, buffers.current_generation_size, buffers.assembly_parent_pairs,
@@ -1275,7 +1309,13 @@ bool TryPrepareSlabForExpandedActionCountOnDevice(DeviceSlabRuntimeBuffers &buff
     if (!FinishKernelWithoutCleanup(buffers)) {
         return false;
     }
+    log_verbose_duration("Generation " + std::to_string(buffers.current_generation_index + 1) +
+                             ": parent reference counts built for slab expansion",
+                         parent_refcount_start_time);
 
+    const auto collect_zero_parents_start_time = ProgressClock::now();
+    log_verbose_line("Generation " + std::to_string(buffers.current_generation_index + 1) +
+                     ": releasing zero-reference parents before slab repack");
     CollectZeroReferenceParentsKernel<<<BoundedAssemblyBlockCount(buffers.current_generation_size),
                                         kSlabAssemblyThreadBlockSize>>>(
         buffers.slab_storage, buffers.slot_states, buffers.free_slot_stack, buffers.free_slot_count,
@@ -1285,7 +1325,13 @@ bool TryPrepareSlabForExpandedActionCountOnDevice(DeviceSlabRuntimeBuffers &buff
     if (!FinishKernelWithoutCleanup(buffers)) {
         return false;
     }
+    log_verbose_duration("Generation " + std::to_string(buffers.current_generation_index + 1) +
+                             ": zero-reference parents released before slab repack",
+                         collect_zero_parents_start_time);
 
+    const auto repack_start_time = ProgressClock::now();
+    log_verbose_line("Generation " + std::to_string(buffers.current_generation_index + 1) +
+                     ": compacting/repacking surviving parents for widened slot size");
     PrepareSlabForExpandedActionCountKernel<<<1, kSlabRepackThreadBlockSize>>>(
         buffers.slab_layout, next_layout, buffers.slab_storage, buffers.slot_states, buffers.free_slot_stack,
         buffers.free_slot_count, buffers.free_slot_lock, buffers.current_slot_indices, buffers.current_generation_size,
@@ -1293,8 +1339,14 @@ bool TryPrepareSlabForExpandedActionCountOnDevice(DeviceSlabRuntimeBuffers &buff
     if (!FinishKernelWithoutCleanup(buffers)) {
         return false;
     }
+    log_verbose_duration("Generation " + std::to_string(buffers.current_generation_index + 1) +
+                             ": compacting/repacking surviving parents finished",
+                         repack_start_time);
 
     buffers.slab_layout = next_layout;
+    log_verbose_duration("Generation " + std::to_string(buffers.current_generation_index + 1) +
+                             ": slab action-space expansion finished",
+                         overall_start_time);
     return true;
 }
 

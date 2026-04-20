@@ -12,7 +12,9 @@ AGENTS_CUDA_VISIBLE_DEVICES := $(if $(CUDA_VISIBLE_DEVICES),$(CUDA_VISIBLE_DEVIC
 
 GA_GENERATIONS ?= 1000
 GA_SEED ?=
+GA_VERBOSE ?= 1
 GA_SEED_ARG := $(if $(GA_SEED),--seed $(GA_SEED))
+GA_VERBOSE_ARG := $(if $(filter 0 false no off,$(GA_VERBOSE)),,--verbose)
 PLAY_WORDLE_MODEL ?=
 PLAY_WORDLE_METADATA ?= $(patsubst %.bin,%.json,$(PLAY_WORDLE_MODEL))
 
@@ -50,7 +52,7 @@ run-ga-desktop run-ga-laptop: .env
 		--initial-word-count 20 \
 		--word-count-step 20 \
 		--word-count-step-period 25 \
-		--shard-radius-growth-period 2 $(GA_SEED_ARG)
+		--shard-radius-growth-period 2 $(GA_SEED_ARG) $(GA_VERBOSE_ARG)
 
 run-ga-growth-smoke: .env
 	cmake --build build --target run_genetic_algorithm
@@ -60,7 +62,7 @@ run-ga-growth-smoke: .env
 		--initial-word-count 20 \
 		--word-count-step 20 \
 		--word-count-step-period 2 \
-		--shard-radius-growth-period 2
+		--shard-radius-growth-period 2 $(GA_VERBOSE_ARG)
 
 play-wordle: .env
 	@if [ -z "$(PLAY_WORDLE_MODEL)" ]; then \

@@ -5,12 +5,16 @@
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
+#include <iostream>
 #include <limits>
 #include <memory>
 #include <new>
 #include <random>
+#include <sstream>
+#include <string>
 #include <utility>
 
+#include "common/progress_log.hpp"
 #include "genetic_algorithm/device/evaluation_ops.cuh"
 #include "genetic_algorithm/device/genome_ops.cuh"
 #include "genetic_algorithm/device/selection_ops.cuh"
@@ -29,6 +33,9 @@ using device_genome_ops::DeviceRandomState;
 using device_genome_ops::MakeDeviceRandomState;
 using device_selection_ops::IsBetterFitness;
 using device_selection_ops::TrySelectCellularParentPairDevice;
+using neuroevolution::common::PrintTimestampedProgressDuration;
+using neuroevolution::common::PrintTimestampedProgressLine;
+using neuroevolution::common::ProgressClock;
 using spatial::CellularGridShape;
 using spatial::FloorSquarePopulationSize;
 using spatial::TryMakeCellularGridShape;
@@ -79,10 +86,10 @@ inline bool TryUploadActiveTrainingShardsForCurrentGeneration(DeviceSlabGARuntim
     }
 
     TrainingDataShardRuntimeSet runtime_set{};
-    if (!TryBuildTrainingDataShardRuntimeSet(
-            runtime_word_counts.training_word_schedule, runtime_word_counts.training_word_count,
-            buffers.genotype_slab.current_generation_index, current_grid_shape_out,
-            runtime_word_counts.shard_radius_growth_period_generations, runtime_set) ||
+    if (!TryBuildTrainingDataShardRuntimeSet(runtime_word_counts.training_word_schedule,
+                                             runtime_word_counts.training_word_count,
+                                             buffers.genotype_slab.current_generation_index, current_grid_shape_out,
+                                             runtime_word_counts.shard_radius_growth_period_generations, runtime_set) ||
         (runtime_set.shard_count == 0) || (runtime_set.shard_count > buffers.active_training_shard_capacity)) {
         return false;
     }
@@ -156,7 +163,8 @@ __global__ void EvaluateSlabGenerationFitnessKernel(
     const genotype_slab::GenotypeSlabLayout slab_layout, const std::uint32_t *current_slot_indices,
     const std::size_t current_generation_size, float *current_fitness, std::uint32_t *current_evaluation_counts,
     std::uint8_t *current_has_fitness, std::uint32_t *current_local_training_word_counts,
-    const RuntimeWordCounts runtime_word_counts, const training_folder::TrainingDataShardRuntime *active_training_shards,
+    const RuntimeWordCounts runtime_word_counts,
+    const training_folder::TrainingDataShardRuntime *active_training_shards,
     const std::size_t active_training_shard_count, const CellularGridShape current_grid_shape, int *status) {
     const std::size_t individual_index = (blockIdx.x * blockDim.x) + threadIdx.x;
     if (!genotype_slab::IsValidGenotypeSlabLayout(slab_layout) || (slab_storage == nullptr) ||
@@ -187,11 +195,10 @@ __global__ void EvaluateSlabGenerationFitnessKernel(
 
     float fitness = 0.0f;
     std::size_t local_training_word_count = 0;
-    const DeviceGenomeEvaluationStatusCode evaluation_status =
-        TryEvaluateGenomeFitness(genotype_slab::SlabSlotBytesAt(slab_storage, slab_layout, slot_index),
-                                 slab_layout.action_count, runtime_word_counts, active_training_shards,
-                                 active_training_shard_count, current_grid_shape, individual_index, fitness,
-                                 local_training_word_count);
+    const DeviceGenomeEvaluationStatusCode evaluation_status = TryEvaluateGenomeFitness(
+        genotype_slab::SlabSlotBytesAt(slab_storage, slab_layout, slot_index), slab_layout.action_count,
+        runtime_word_counts, active_training_shards, active_training_shard_count, current_grid_shape, individual_index,
+        fitness, local_training_word_count);
     if (evaluation_status != DeviceGenomeEvaluationStatusCode::kOk) {
         SetFailureStatus(status, MapEvaluationStatus(evaluation_status));
         return;
@@ -213,8 +220,7 @@ __global__ void SummarizeSlabGenerationKernel(const float *current_fitness, cons
     }
 
     if ((current_fitness == nullptr) || (current_has_fitness == nullptr) || (current_slot_indices == nullptr) ||
-        (summary == nullptr) ||
-        (current_generation_size == 0) || (action_count == 0)) {
+        (summary == nullptr) || (current_generation_size == 0) || (action_count == 0)) {
         SetFailureStatus(status, DeviceSlabGARuntimeStatusCode::kInvalidGeneration);
         return;
     }
@@ -321,7 +327,8 @@ inline std::size_t RuntimeSlabSlotCount(const DeviceSlabGARuntimeConfig &config)
     return genotype_slab::SlabSlotCountForByteBudget(config.genotype_slab_byte_budget_bytes, config.action_count);
 }
 
-inline bool TryCountAssembledChildPrefix(const DeviceSlabGARuntimeBuffers &buffers, std::size_t &assembled_child_count) {
+inline bool TryCountAssembledChildPrefix(const DeviceSlabGARuntimeBuffers &buffers,
+                                         std::size_t &assembled_child_count) {
     assembled_child_count = 0;
 
     genotype_slab::SlabGeneration next_generation{};
@@ -344,11 +351,13 @@ inline bool TryCountAssembledChildPrefix(const DeviceSlabGARuntimeBuffers &buffe
     return true;
 }
 
-__global__ void ReleaseNextGenerationPrefixKernel(
-    std::uint8_t *slab_storage, genotype_slab::SlabSlotState *slot_states, std::uint32_t *free_slot_stack,
-    std::uint32_t *free_slot_count, std::uint32_t *free_slot_lock, const genotype_slab::GenotypeSlabLayout slab_layout,
-    std::uint32_t *next_slot_indices, float *next_fitness, std::uint32_t *next_evaluation_counts,
-    std::uint8_t *next_has_fitness, const std::size_t spilled_child_count, int *status) {
+__global__ void ReleaseNextGenerationPrefixKernel(std::uint8_t *slab_storage, genotype_slab::SlabSlotState *slot_states,
+                                                  std::uint32_t *free_slot_stack, std::uint32_t *free_slot_count,
+                                                  std::uint32_t *free_slot_lock,
+                                                  const genotype_slab::GenotypeSlabLayout slab_layout,
+                                                  std::uint32_t *next_slot_indices, float *next_fitness,
+                                                  std::uint32_t *next_evaluation_counts, std::uint8_t *next_has_fitness,
+                                                  const std::size_t spilled_child_count, int *status) {
     genotype_slab::GenotypeSlabView slab{
         .layout = slab_layout,
         .storage = slab_storage,
@@ -380,11 +389,13 @@ __global__ void ReleaseNextGenerationPrefixKernel(
     }
 }
 
-__global__ void AllocateRestoredChildPrefixKernel(
-    std::uint8_t *slab_storage, genotype_slab::SlabSlotState *slot_states, std::uint32_t *free_slot_stack,
-    std::uint32_t *free_slot_count, std::uint32_t *free_slot_lock, const genotype_slab::GenotypeSlabLayout slab_layout,
-    std::uint32_t *next_slot_indices, float *next_fitness, std::uint32_t *next_evaluation_counts,
-    std::uint8_t *next_has_fitness, const std::size_t spilled_child_count, int *status) {
+__global__ void AllocateRestoredChildPrefixKernel(std::uint8_t *slab_storage, genotype_slab::SlabSlotState *slot_states,
+                                                  std::uint32_t *free_slot_stack, std::uint32_t *free_slot_count,
+                                                  std::uint32_t *free_slot_lock,
+                                                  const genotype_slab::GenotypeSlabLayout slab_layout,
+                                                  std::uint32_t *next_slot_indices, float *next_fitness,
+                                                  std::uint32_t *next_evaluation_counts, std::uint8_t *next_has_fitness,
+                                                  const std::size_t spilled_child_count, int *status) {
     genotype_slab::GenotypeSlabView slab{
         .layout = slab_layout,
         .storage = slab_storage,
@@ -474,7 +485,8 @@ inline bool TrySpillAssembledChildrenToHost(DeviceSlabGARuntimeBuffers &buffers,
     return CheckCuda(cudaGetLastError()) && CheckCuda(cudaDeviceSynchronize()) && KernelCompletedSuccessfully(buffers);
 }
 
-inline bool TryRestoreSpilledChildrenToDevice(DeviceSlabGARuntimeBuffers &buffers, const std::size_t spilled_child_count,
+inline bool TryRestoreSpilledChildrenToDevice(DeviceSlabGARuntimeBuffers &buffers,
+                                              const std::size_t spilled_child_count,
                                               const genotype_slab::HostGenotypeSlab &spill_slab,
                                               const genotype_slab::SlabGeneration &spill_generation) {
     if ((spilled_child_count == 0) || !genotype_slab::IsValidHostGenotypeSlab(spill_slab) ||
@@ -490,14 +502,15 @@ inline bool TryRestoreSpilledChildrenToDevice(DeviceSlabGARuntimeBuffers &buffer
     }
 
     AllocateRestoredChildPrefixKernel<<<(spilled_child_count + kSlabGARuntimeThreadBlockSize - 1) /
-                                             kSlabGARuntimeThreadBlockSize,
-                                         kSlabGARuntimeThreadBlockSize>>>(
+                                            kSlabGARuntimeThreadBlockSize,
+                                        kSlabGARuntimeThreadBlockSize>>>(
         buffers.genotype_slab.slab_storage, buffers.genotype_slab.slot_states, buffers.genotype_slab.free_slot_stack,
         buffers.genotype_slab.free_slot_count, buffers.genotype_slab.free_slot_lock, buffers.genotype_slab.slab_layout,
         buffers.genotype_slab.next_slot_indices, buffers.genotype_slab.next_fitness,
         buffers.genotype_slab.next_evaluation_counts, buffers.genotype_slab.next_has_fitness, spilled_child_count,
         buffers.status);
-    if (!CheckCuda(cudaGetLastError()) || !CheckCuda(cudaDeviceSynchronize()) || !KernelCompletedSuccessfully(buffers)) {
+    if (!CheckCuda(cudaGetLastError()) || !CheckCuda(cudaDeviceSynchronize()) ||
+        !KernelCompletedSuccessfully(buffers)) {
         return false;
     }
 
@@ -574,11 +587,10 @@ bool TryCreateDeviceSlabGARuntimeBuffers(DeviceSlabGARuntimeBuffers &buffers, co
     bool ok = true;
     ok &= CheckCuda(cudaMalloc(&buffers.summary, sizeof(PopulationFitnessSummary)));
     ok &= CheckCuda(cudaMalloc(&buffers.status, sizeof(int)));
-    ok &= CheckCuda(cudaMalloc(&buffers.active_training_shards,
-                               buffers.active_training_shard_capacity *
-                                   sizeof(training_folder::TrainingDataShardRuntime)));
-    ok &= CheckCuda(cudaMalloc(&buffers.current_local_training_word_counts,
-                               buffers.max_generation_size * sizeof(std::uint32_t)));
+    ok &= CheckCuda(cudaMalloc(&buffers.active_training_shards, buffers.active_training_shard_capacity *
+                                                                    sizeof(training_folder::TrainingDataShardRuntime)));
+    ok &= CheckCuda(
+        cudaMalloc(&buffers.current_local_training_word_counts, buffers.max_generation_size * sizeof(std::uint32_t)));
     if (!ok) {
         DestroyDeviceSlabGARuntimeBuffers(buffers);
         return false;
@@ -586,11 +598,11 @@ bool TryCreateDeviceSlabGARuntimeBuffers(DeviceSlabGARuntimeBuffers &buffers, co
 
     ok &= CheckCuda(cudaMemset(buffers.summary, 0, sizeof(PopulationFitnessSummary)));
     ok &= CheckCuda(cudaMemset(buffers.status, 0, sizeof(int)));
-    ok &= CheckCuda(cudaMemset(buffers.active_training_shards, 0,
-                               buffers.active_training_shard_capacity *
-                                   sizeof(training_folder::TrainingDataShardRuntime)));
-    ok &= CheckCuda(cudaMemset(buffers.current_local_training_word_counts, 0,
-                               buffers.max_generation_size * sizeof(std::uint32_t)));
+    ok &= CheckCuda(
+        cudaMemset(buffers.active_training_shards, 0,
+                   buffers.active_training_shard_capacity * sizeof(training_folder::TrainingDataShardRuntime)));
+    ok &= CheckCuda(
+        cudaMemset(buffers.current_local_training_word_counts, 0, buffers.max_generation_size * sizeof(std::uint32_t)));
     if (!ok) {
         DestroyDeviceSlabGARuntimeBuffers(buffers);
         return false;
@@ -612,20 +624,19 @@ bool TryBootstrapRandomCurrentGenerationOnDevice(DeviceSlabGARuntimeBuffers &buf
                                                  const std::uint32_t generation_seed,
                                                  const std::size_t generation_index,
                                                  const DeviceSlabBootstrapConfig &config) {
-    if (!genotype_slab::device::TryBootstrapRandomCurrentGenerationOnDevice(buffers.genotype_slab, generation_size,
-                                                                            generation_seed, generation_index,
-                                                                            config)) {
+    if (!genotype_slab::device::TryBootstrapRandomCurrentGenerationOnDevice(
+            buffers.genotype_slab, generation_size, generation_seed, generation_index, config)) {
         return false;
     }
 
     bool ok = true;
     ok &= CheckCuda(cudaMemset(buffers.summary, 0, sizeof(PopulationFitnessSummary)));
     ok &= CheckCuda(cudaMemset(buffers.status, 0, sizeof(int)));
-    ok &= CheckCuda(cudaMemset(buffers.current_local_training_word_counts, 0,
-                               buffers.max_generation_size * sizeof(std::uint32_t)));
-    ok &= CheckCuda(cudaMemset(buffers.active_training_shards, 0,
-                               buffers.active_training_shard_capacity *
-                                   sizeof(training_folder::TrainingDataShardRuntime)));
+    ok &= CheckCuda(
+        cudaMemset(buffers.current_local_training_word_counts, 0, buffers.max_generation_size * sizeof(std::uint32_t)));
+    ok &= CheckCuda(
+        cudaMemset(buffers.active_training_shards, 0,
+                   buffers.active_training_shard_capacity * sizeof(training_folder::TrainingDataShardRuntime)));
     buffers.active_training_shard_count = 0;
     buffers.last_generation_used_host_spillover = false;
     return ok;
@@ -637,8 +648,7 @@ bool TryDownloadSlabFromDevice(const DeviceSlabGARuntimeBuffers &buffers,
 }
 
 bool TryDownloadSlabSlotBytesFromDevice(const DeviceSlabGARuntimeBuffers &buffers, const std::uint32_t slot_index,
-                                        std::unique_ptr<std::uint8_t[]> &slot_bytes,
-                                        std::size_t &slot_byte_count) {
+                                        std::unique_ptr<std::uint8_t[]> &slot_bytes, std::size_t &slot_byte_count) {
     slot_bytes.reset();
     slot_byte_count = 0;
 
@@ -699,8 +709,8 @@ bool TryEvaluateCurrentGenerationFitnessOnDevice(DeviceSlabGARuntimeBuffers &buf
                                buffers.genotype_slab.max_generation_size * sizeof(std::uint32_t)));
     ok &= CheckCuda(cudaMemset(buffers.genotype_slab.current_has_fitness, 0,
                                buffers.genotype_slab.max_generation_size * sizeof(std::uint8_t)));
-    ok &= CheckCuda(cudaMemset(buffers.current_local_training_word_counts, 0,
-                               buffers.max_generation_size * sizeof(std::uint32_t)));
+    ok &= CheckCuda(
+        cudaMemset(buffers.current_local_training_word_counts, 0, buffers.max_generation_size * sizeof(std::uint32_t)));
     if (!ok) {
         return false;
     }
@@ -725,9 +735,9 @@ bool TryEvaluateCurrentGenerationFitnessOnDevice(DeviceSlabGARuntimeBuffers &buf
 
     SummarizeSlabGenerationKernel<<<1, 1>>>(
         buffers.genotype_slab.current_fitness, buffers.genotype_slab.current_has_fitness,
-        buffers.genotype_slab.current_slot_indices,
-        buffers.genotype_slab.current_generation_index, buffers.genotype_slab.current_generation_size,
-        buffers.genotype_slab.slab_layout.action_count, buffers.summary, buffers.status);
+        buffers.genotype_slab.current_slot_indices, buffers.genotype_slab.current_generation_index,
+        buffers.genotype_slab.current_generation_size, buffers.genotype_slab.slab_layout.action_count, buffers.summary,
+        buffers.status);
     if (!CheckCuda(cudaGetLastError()) || !CheckCuda(cudaDeviceSynchronize())) {
         return false;
     }
@@ -743,9 +753,35 @@ bool TryReadPopulationFitnessSummaryFromDevice(const DeviceSlabGARuntimeBuffers 
 bool TryAdvanceGenerationOnDevice(DeviceSlabGARuntimeBuffers &buffers, const std::uint32_t generation_seed,
                                   const RuntimeWordCounts &runtime_word_counts, const GenerationAssemblyConfig &config,
                                   const PendingOutputEmbeddingInjection &pending_output_embedding_injection,
-                                  const training_folder::TrainingWordCatalog *host_training_word_catalog) {
+                                  const training_folder::TrainingWordCatalog *host_training_word_catalog,
+                                  const bool verbose) {
     (void)host_training_word_catalog;
     buffers.last_generation_used_host_spillover = false;
+    const std::size_t next_generation_index = buffers.genotype_slab.current_generation_index + 1;
+    const auto log_verbose_line = [&](const std::string &message) {
+        if (verbose) {
+            PrintTimestampedProgressLine(std::cout, message);
+        }
+    };
+    const auto log_verbose_duration = [&](const std::string &message, const ProgressClock::time_point start_time) {
+        if (verbose) {
+            PrintTimestampedProgressDuration(std::cout, message, start_time);
+        }
+    };
+    const auto overall_start_time = ProgressClock::now();
+
+    if (verbose) {
+        std::ostringstream stream;
+        stream << "Generation " << next_generation_index << ": starting advancement from generation "
+               << buffers.genotype_slab.current_generation_index
+               << " (population=" << buffers.genotype_slab.current_generation_size
+               << ", action_count=" << buffers.genotype_slab.slab_layout.action_count
+               << ", slot_stride_bytes=" << buffers.genotype_slab.slab_layout.slot_stride_bytes << ')';
+        log_verbose_line(stream.str());
+    }
+
+    const auto evaluation_start_time = ProgressClock::now();
+    log_verbose_line("Generation " + std::to_string(next_generation_index) + ": evaluating current generation fitness");
     if (!IsValidGenerationAssemblyConfig(config) || !IsCurrentGenerationCompatible(buffers) ||
         !TryEvaluateCurrentGenerationFitnessOnDevice(buffers, runtime_word_counts) || !ResetDeviceStatus(buffers)) {
         if (!IsValidGenerationAssemblyConfig(config)) {
@@ -753,18 +789,31 @@ bool TryAdvanceGenerationOnDevice(DeviceSlabGARuntimeBuffers &buffers, const std
         }
         return false;
     }
+    log_verbose_duration("Generation " + std::to_string(next_generation_index) +
+                             ": current generation fitness evaluation finished",
+                         evaluation_start_time);
 
     std::size_t next_action_count = buffers.genotype_slab.slab_layout.action_count;
     std::size_t next_generation_size = buffers.genotype_slab.current_generation_size;
+    const auto planning_start_time = ProgressClock::now();
+    log_verbose_line("Generation " + std::to_string(next_generation_index) + ": planning next generation shape");
     if (!TryPlanNextGenerationShape(buffers, pending_output_embedding_injection, next_action_count,
                                     next_generation_size)) {
         (void)WriteDeviceStatus(buffers, DeviceSlabGARuntimeStatusCode::kInvalidAssemblyConfig);
         return false;
     }
+    if (verbose) {
+        std::ostringstream stream;
+        stream << "Generation " << next_generation_index << ": next generation shape planned"
+               << " (population=" << next_generation_size << ", action_count=" << next_action_count << ')';
+        PrintTimestampedProgressDuration(std::cout, stream.str(), planning_start_time);
+    }
 
     const std::size_t block_count =
         (next_generation_size + kSlabGARuntimeThreadBlockSize - 1) / kSlabGARuntimeThreadBlockSize;
     const std::uint32_t planning_seed = generation_seed ^ 0xA341316CU;
+    const auto assembly_plan_start_time = ProgressClock::now();
+    log_verbose_line("Generation " + std::to_string(next_generation_index) + ": building next-generation parent plan");
     BuildSlabAssemblyPlanKernel<<<block_count, kSlabGARuntimeThreadBlockSize>>>(
         buffers.genotype_slab.current_fitness, buffers.genotype_slab.current_has_fitness,
         buffers.genotype_slab.current_generation_size, next_generation_size,
@@ -774,13 +823,16 @@ bool TryAdvanceGenerationOnDevice(DeviceSlabGARuntimeBuffers &buffers, const std
         !KernelCompletedSuccessfully(buffers)) {
         return false;
     }
+    log_verbose_duration("Generation " + std::to_string(next_generation_index) +
+                             ": next-generation parent plan finished",
+                         assembly_plan_start_time);
 
     buffers.genotype_slab.planned_child_count = next_generation_size;
 
     const std::size_t parent_action_count = buffers.genotype_slab.slab_layout.action_count;
     if (pending_output_embedding_injection.enabled &&
-        !genotype_slab::device::TryPrepareSlabForExpandedActionCountOnDevice(buffers.genotype_slab,
-                                                                             next_action_count)) {
+        !genotype_slab::device::TryPrepareSlabForExpandedActionCountOnDevice(buffers.genotype_slab, next_action_count,
+                                                                             verbose)) {
         genotype_slab::device::DeviceSlabRuntimeStatusCode slab_status =
             genotype_slab::device::DeviceSlabRuntimeStatusCode::kCudaFailure;
         if (genotype_slab::device::TryReadDeviceSlabRuntimeStatus(buffers.genotype_slab, slab_status)) {
@@ -797,6 +849,9 @@ bool TryAdvanceGenerationOnDevice(DeviceSlabGARuntimeBuffers &buffers, const std
     slab_assembly_config.parent_action_count = parent_action_count;
     slab_assembly_config.pending_output_embedding_injection = pending_output_embedding_injection;
 
+    const auto initialize_assembly_start_time = ProgressClock::now();
+    log_verbose_line("Generation " + std::to_string(next_generation_index) +
+                     ": initializing next-generation assembly state");
     if (!genotype_slab::device::TryInitializeNextGenerationAssemblyOnDevice(buffers.genotype_slab,
                                                                             slab_assembly_config)) {
         genotype_slab::device::DeviceSlabRuntimeStatusCode slab_status =
@@ -808,17 +863,33 @@ bool TryAdvanceGenerationOnDevice(DeviceSlabGARuntimeBuffers &buffers, const std
         }
         return false;
     }
+    log_verbose_duration("Generation " + std::to_string(next_generation_index) +
+                             ": next-generation assembly state initialized",
+                         initialize_assembly_start_time);
 
     bool used_host_spillover = false;
     std::size_t spilled_child_count = 0;
     genotype_slab::HostGenotypeSlab spill_slab{};
     genotype_slab::SlabGeneration spill_generation{};
     std::size_t child_offset = 0;
+    std::size_t assembly_batch_index = 0;
 
     while (child_offset < buffers.genotype_slab.next_generation_size) {
+        ++assembly_batch_index;
+        const auto assembly_batch_start_time = ProgressClock::now();
+        if (verbose) {
+            std::ostringstream stream;
+            stream << "Generation " << next_generation_index << ": assembly batch " << assembly_batch_index
+                   << " starting at child_offset=" << child_offset;
+            log_verbose_line(stream.str());
+        }
+
         if (genotype_slab::device::TryContinueNextGenerationAssemblyOnDevice(buffers.genotype_slab, generation_seed,
                                                                              slab_assembly_config, child_offset)) {
             child_offset = buffers.genotype_slab.next_generation_size;
+            log_verbose_duration("Generation " + std::to_string(next_generation_index) + ": assembly batch " +
+                                     std::to_string(assembly_batch_index) + " finished",
+                                 assembly_batch_start_time);
             break;
         }
 
@@ -834,6 +905,13 @@ bool TryAdvanceGenerationOnDevice(DeviceSlabGARuntimeBuffers &buffers, const std
             return false;
         }
 
+        if (verbose) {
+            std::ostringstream stream;
+            stream << "Generation " << next_generation_index << ": assembly batch " << assembly_batch_index
+                   << " hit slab-full after child_offset=" << child_offset;
+            PrintTimestampedProgressDuration(std::cout, stream.str(), assembly_batch_start_time);
+        }
+
         if (used_host_spillover || (buffers.host_spillover_byte_budget_bytes == 0)) {
             (void)genotype_slab::device::TryCleanupFailedAssemblyOnDevice(buffers.genotype_slab);
             (void)WriteDeviceStatus(buffers, DeviceSlabGARuntimeStatusCode::kSlabFull);
@@ -841,20 +919,61 @@ bool TryAdvanceGenerationOnDevice(DeviceSlabGARuntimeBuffers &buffers, const std
         }
 
         std::size_t assembled_child_count = 0;
+        const auto assembled_prefix_count_start_time = ProgressClock::now();
+        log_verbose_line("Generation " + std::to_string(next_generation_index) +
+                         ": counting assembled child prefix before host spillover");
         if (!TryCountAssembledChildPrefix(buffers, assembled_child_count) || (assembled_child_count == 0)) {
             (void)genotype_slab::device::TryCleanupFailedAssemblyOnDevice(buffers.genotype_slab);
             (void)WriteDeviceStatus(buffers, DeviceSlabGARuntimeStatusCode::kSlabFull);
             return false;
         }
+        if (verbose) {
+            std::ostringstream stream;
+            stream << "Generation " << next_generation_index
+                   << ": assembled child prefix counted (assembled_child_count=" << assembled_child_count << ')';
+            PrintTimestampedProgressDuration(std::cout, stream.str(), assembled_prefix_count_start_time);
+        }
 
+        const auto spill_storage_start_time = ProgressClock::now();
+        log_verbose_line("Generation " + std::to_string(next_generation_index) +
+                         ": creating host spillover storage for assembled children");
         if (!TryCreateHostSpillStorage(buffers, buffers.genotype_slab.slab_layout.action_count,
                                        buffers.genotype_slab.next_generation_size,
-                                       buffers.genotype_slab.next_generation_index, spill_slab, spill_generation) ||
-            (assembled_child_count > spill_slab.layout.slot_count) ||
-            !TrySpillAssembledChildrenToHost(buffers, assembled_child_count, spill_slab, spill_generation)) {
+                                       buffers.genotype_slab.next_generation_index, spill_slab, spill_generation)) {
             (void)genotype_slab::device::TryCleanupFailedAssemblyOnDevice(buffers.genotype_slab);
             (void)WriteDeviceStatus(buffers, DeviceSlabGARuntimeStatusCode::kCudaFailure);
             return false;
+        }
+        if (verbose) {
+            std::ostringstream stream;
+            stream << "Generation " << next_generation_index << ": host spillover storage ready"
+                   << " (spill_slot_count=" << spill_slab.layout.slot_count << ')';
+            PrintTimestampedProgressDuration(std::cout, stream.str(), spill_storage_start_time);
+        }
+
+        if (assembled_child_count > spill_slab.layout.slot_count) {
+            (void)genotype_slab::device::TryCleanupFailedAssemblyOnDevice(buffers.genotype_slab);
+            (void)WriteDeviceStatus(buffers, DeviceSlabGARuntimeStatusCode::kCudaFailure);
+            return false;
+        }
+
+        const auto spill_copy_start_time = ProgressClock::now();
+        if (verbose) {
+            std::ostringstream stream;
+            stream << "Generation " << next_generation_index << ": spilling " << assembled_child_count
+                   << " assembled children to host";
+            log_verbose_line(stream.str());
+        }
+        if (!TrySpillAssembledChildrenToHost(buffers, assembled_child_count, spill_slab, spill_generation)) {
+            (void)genotype_slab::device::TryCleanupFailedAssemblyOnDevice(buffers.genotype_slab);
+            (void)WriteDeviceStatus(buffers, DeviceSlabGARuntimeStatusCode::kCudaFailure);
+            return false;
+        }
+        if (verbose) {
+            std::ostringstream stream;
+            stream << "Generation " << next_generation_index << ": spilled " << assembled_child_count
+                   << " assembled children to host";
+            PrintTimestampedProgressDuration(std::cout, stream.str(), spill_copy_start_time);
         }
 
         used_host_spillover = true;
@@ -862,11 +981,25 @@ bool TryAdvanceGenerationOnDevice(DeviceSlabGARuntimeBuffers &buffers, const std
         child_offset = assembled_child_count;
     }
 
-    if (used_host_spillover &&
-        !TryRestoreSpilledChildrenToDevice(buffers, spilled_child_count, spill_slab, spill_generation)) {
-        (void)genotype_slab::device::TryCleanupFailedAssemblyOnDevice(buffers.genotype_slab);
-        (void)WriteDeviceStatus(buffers, DeviceSlabGARuntimeStatusCode::kCudaFailure);
-        return false;
+    if (used_host_spillover) {
+        const auto restore_spill_start_time = ProgressClock::now();
+        if (verbose) {
+            std::ostringstream stream;
+            stream << "Generation " << next_generation_index << ": restoring " << spilled_child_count
+                   << " spilled children back to device";
+            log_verbose_line(stream.str());
+        }
+        if (!TryRestoreSpilledChildrenToDevice(buffers, spilled_child_count, spill_slab, spill_generation)) {
+            (void)genotype_slab::device::TryCleanupFailedAssemblyOnDevice(buffers.genotype_slab);
+            (void)WriteDeviceStatus(buffers, DeviceSlabGARuntimeStatusCode::kCudaFailure);
+            return false;
+        }
+        if (verbose) {
+            std::ostringstream stream;
+            stream << "Generation " << next_generation_index << ": restored " << spilled_child_count
+                   << " spilled children back to device";
+            PrintTimestampedProgressDuration(std::cout, stream.str(), restore_spill_start_time);
+        }
     }
 
     buffers.last_generation_used_host_spillover = used_host_spillover;
@@ -875,6 +1008,8 @@ bool TryAdvanceGenerationOnDevice(DeviceSlabGARuntimeBuffers &buffers, const std
     }
 
     SwapDeviceSlabGenerationBuffers(buffers);
+    log_verbose_duration("Generation " + std::to_string(next_generation_index) + ": advancement finished",
+                         overall_start_time);
     return true;
 }
 
