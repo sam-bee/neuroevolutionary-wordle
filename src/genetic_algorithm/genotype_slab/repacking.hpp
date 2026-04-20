@@ -155,8 +155,6 @@ inline NEUROEVOLUTION_HOST_DEVICE bool TryCompactAndRepackSlabForExpandedActionC
             detail::MoveSlabBytesOverlapping(SlabSlotBytesAt(slab_storage, slab_layout, source_slot_index),
                                              SlabSlotBytesAt(slab_storage, slab_layout, survivor_count),
                                              current_slot_stride_bytes);
-            detail::ZeroSlabBytes(SlabSlotBytesAt(slab_storage, slab_layout, source_slot_index),
-                                  current_slot_stride_bytes);
         }
 
         generation_slot_indices[parent_index] = static_cast<std::uint32_t>(survivor_count);
@@ -210,12 +208,7 @@ inline NEUROEVOLUTION_HOST_DEVICE bool TryCompactAndRepackSlabForExpandedActionC
     free_slot_count = static_cast<std::uint32_t>(destination_base_slot);
     for (std::uint32_t free_slot_index = 0; free_slot_index < free_slot_count; ++free_slot_index) {
         free_slot_stack[free_slot_index] = (free_slot_count - 1) - free_slot_index;
-        detail::ZeroSlabBytes(SlabSlotBytesAt(slab_storage, next_layout, free_slot_index),
-                              next_layout.slot_stride_bytes);
     }
-
-    detail::ZeroSlabBytes(slab_storage + SlabUsedBytes(next_layout),
-                          next_layout.slab_bytes - SlabUsedBytes(next_layout));
     slab_layout = next_layout;
     return true;
 }
