@@ -28,6 +28,8 @@ constexpr int kSlabAssemblyThreadBlockSize = 128;
 constexpr int kMaxSlabAssemblyThreadBlocks = 32;
 constexpr int kSlabBootstrapThreadBlockSize = 256;
 constexpr int kSlabRepackThreadBlockSize = 256;
+constexpr int kSlabRepackCompactionMoveGroupSize = 32;
+constexpr int kSlabRepackConcurrentCompactionMoves = kSlabRepackThreadBlockSize / kSlabRepackCompactionMoveGroupSize;
 constexpr std::size_t kMaxSlabAssemblyConcurrentChildren =
     static_cast<std::size_t>(kSlabAssemblyThreadBlockSize) * static_cast<std::size_t>(kMaxSlabAssemblyThreadBlocks);
 
@@ -667,6 +669,105 @@ inline bool FinishAssemblyKernelOrCleanup(DeviceSlabRuntimeBuffers &buffers) {
     return true;
 }
 
+__device__ bool TryCompactReferencedParentsIntoPrefixConcurrently(
+    const GenotypeSlabLayout slab_layout, std::uint8_t *slab_storage, std::uint32_t *generation_slot_indices,
+    const std::size_t active_individual_count, const std::uint32_t *parent_reference_counts,
+    const std::size_t survivor_count, std::uint32_t *move_target_slots, std::uint32_t *move_source_slots,
+    std::uint32_t *next_target_slot, std::uint32_t *next_source_slot, std::uint32_t *move_count, bool *failed) {
+    if ((move_target_slots == nullptr) || (move_source_slots == nullptr) || (next_target_slot == nullptr) ||
+        (next_source_slot == nullptr) || (move_count == nullptr) || (failed == nullptr)) {
+        return false;
+    }
+
+    constexpr std::size_t kCopyWorkerCount = static_cast<std::size_t>(kSlabRepackCompactionMoveGroupSize);
+    const std::size_t move_group_index = static_cast<std::size_t>(threadIdx.x / kSlabRepackCompactionMoveGroupSize);
+    const std::size_t move_group_worker_index = static_cast<std::size_t>(threadIdx.x % kSlabRepackCompactionMoveGroupSize);
+
+    if (threadIdx.x == 0) {
+        *next_target_slot = 0;
+        *next_source_slot = static_cast<std::uint32_t>(survivor_count);
+        *move_count = 0;
+        *failed = false;
+    }
+    __syncthreads();
+
+    while (*next_target_slot < survivor_count) {
+        if (threadIdx.x == 0) {
+            *move_count = 0;
+            std::uint32_t target_slot_index = *next_target_slot;
+            while ((target_slot_index < survivor_count) &&
+                   (*move_count < static_cast<std::uint32_t>(kSlabRepackConcurrentCompactionMoves))) {
+                std::uint32_t parent_index = detail::FindReferencedParentIndexOwningSlot(
+                    generation_slot_indices, active_individual_count, parent_reference_counts, target_slot_index);
+                if (parent_index != kInvalidSlabSlotIndex) {
+                    generation_slot_indices[parent_index] = target_slot_index;
+                    ++target_slot_index;
+                    continue;
+                }
+
+                while (*next_source_slot < slab_layout.slot_count) {
+                    parent_index = detail::FindReferencedParentIndexOwningSlot(
+                        generation_slot_indices, active_individual_count, parent_reference_counts, *next_source_slot);
+                    if (parent_index != kInvalidSlabSlotIndex) {
+                        break;
+                    }
+                    ++(*next_source_slot);
+                }
+
+                if ((*next_source_slot >= slab_layout.slot_count) || (parent_index == kInvalidSlabSlotIndex)) {
+                    *failed = true;
+                    break;
+                }
+
+                move_target_slots[*move_count] = target_slot_index;
+                move_source_slots[*move_count] = *next_source_slot;
+                generation_slot_indices[parent_index] = target_slot_index;
+                ++(*move_count);
+                ++(*next_source_slot);
+                ++target_slot_index;
+            }
+
+            *next_target_slot = target_slot_index;
+        }
+        __syncthreads();
+
+        if (*failed) {
+            return false;
+        }
+
+        if (move_group_index < static_cast<std::size_t>(*move_count)) {
+            const std::uint32_t source_slot_index = move_source_slots[move_group_index];
+            const std::uint32_t target_slot_index = move_target_slots[move_group_index];
+            detail::MoveSlabBytesOverlapping(SlabSlotBytesAt(slab_storage, slab_layout, source_slot_index),
+                                             SlabSlotBytesAt(slab_storage, slab_layout, target_slot_index),
+                                             slab_layout.slot_stride_bytes, move_group_worker_index,
+                                             kCopyWorkerCount);
+        }
+        __syncthreads();
+    }
+
+    if (threadIdx.x == 0) {
+        for (std::size_t parent_index = 0; parent_index < active_individual_count; ++parent_index) {
+            if (parent_reference_counts[parent_index] == 0) {
+                generation_slot_indices[parent_index] = kInvalidSlabSlotIndex;
+            }
+        }
+
+        for (std::uint32_t source_slot_index = static_cast<std::uint32_t>(survivor_count);
+             source_slot_index < slab_layout.slot_count; ++source_slot_index) {
+            if (detail::FindReferencedParentIndexOwningSlot(generation_slot_indices, active_individual_count,
+                                                            parent_reference_counts, source_slot_index) !=
+                kInvalidSlabSlotIndex) {
+                *failed = true;
+                break;
+            }
+        }
+    }
+    __syncthreads();
+
+    return !(*failed);
+}
+
 __global__ void PrepareSlabForExpandedActionCountKernel(
     const GenotypeSlabLayout current_layout, const GenotypeSlabLayout next_layout, std::uint8_t *slab_storage,
     SlabSlotState *slot_states, std::uint32_t *free_slot_stack, std::uint32_t *free_slot_count,
@@ -677,13 +778,26 @@ __global__ void PrepareSlabForExpandedActionCountKernel(
     }
 
     __shared__ bool inputs_valid;
+    __shared__ bool repack_failed;
+    __shared__ detail::SlabRepackPreflight preflight;
+    __shared__ std::uint32_t move_target_slots[kSlabRepackConcurrentCompactionMoves];
+    __shared__ std::uint32_t move_source_slots[kSlabRepackConcurrentCompactionMoves];
+    __shared__ std::uint32_t next_target_slot;
+    __shared__ std::uint32_t next_source_slot;
+    __shared__ std::uint32_t move_count;
     if (threadIdx.x == 0) {
         inputs_valid = (slab_storage != nullptr) && (slot_states != nullptr) && (free_slot_stack != nullptr) &&
                        (free_slot_count != nullptr) && (free_slot_lock != nullptr) && (current_slot_indices != nullptr) &&
                        (parent_reference_counts != nullptr) && (current_generation_size > 0) &&
                        IsValidGenotypeSlabLayout(current_layout) && IsValidGenotypeSlabLayout(next_layout);
+        repack_failed = false;
         if (!inputs_valid) {
             SetFailureStatus(status, DeviceSlabRuntimeStatusCode::kInvalidSlab);
+        } else if (!detail::TryPreflightCompactionAndRepackForExpandedActionCount(
+                current_layout, slot_states, current_slot_indices, current_generation_size, parent_reference_counts,
+                next_layout.action_count, preflight)) {
+            inputs_valid = false;
+            SetFailureStatus(status, DeviceSlabRuntimeStatusCode::kSlabRepackFailed);
         }
     }
     __syncthreads();
@@ -692,10 +806,13 @@ __global__ void PrepareSlabForExpandedActionCountKernel(
         return;
     }
 
-    GenotypeSlabLayout working_layout = current_layout;
-    if (!TryCompactAndRepackSlabForExpandedActionCount(
-            working_layout, slab_storage, slot_states, free_slot_stack, *free_slot_count, current_slot_indices,
-            current_generation_size, parent_reference_counts, next_layout.action_count,
+    if (!TryCompactReferencedParentsIntoPrefixConcurrently(
+            current_layout, slab_storage, current_slot_indices, current_generation_size, parent_reference_counts,
+            preflight.survivor_count, move_target_slots, move_source_slots, &next_target_slot, &next_source_slot,
+            &move_count, &repack_failed) ||
+        !detail::TryRepackCompactedParentsForExpandedActionCount(
+            current_layout, next_layout, slab_storage, slot_states, free_slot_stack, *free_slot_count,
+            current_slot_indices, current_generation_size, preflight.survivor_count, preflight.destination_base_slot,
             static_cast<std::size_t>(threadIdx.x), static_cast<std::size_t>(blockDim.x))) {
         __syncthreads();
         if (threadIdx.x == 0) {
