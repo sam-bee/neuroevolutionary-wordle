@@ -5,11 +5,13 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
+#include <ctime>
 #include <exception>
 #include <iomanip>
 #include <iostream>
 #include <limits>
 #include <memory>
+#include <sstream>
 #include <string>
 #include <string_view>
 
@@ -116,6 +118,22 @@ bool CheckCuda(const cudaError_t error, const std::string_view action) {
     }
 
     return true;
+}
+
+std::string FormatCurrentLocalTimestamp() {
+    const auto now = std::chrono::system_clock::now();
+    const std::time_t now_time = std::chrono::system_clock::to_time_t(now);
+
+    std::tm local_time{};
+#if defined(_WIN32)
+    localtime_s(&local_time, &now_time);
+#else
+    localtime_r(&now_time, &local_time);
+#endif
+
+    std::ostringstream stream;
+    stream << std::put_time(&local_time, "%Y-%m-%d %H:%M:%S");
+    return stream.str();
 }
 
 bool SelectVisibleCudaDevice() {
@@ -513,7 +531,7 @@ int main(int argc, char **argv) {
             return 1;
         }
 
-        std::cout << "Running device GA demo with:\n"
+        std::cout << '[' << FormatCurrentLocalTimestamp() << "] Running device GA with:\n"
                   << "  requested_initial_population=" << requested_initial_population_size << '\n'
                   << "  initial_population=" << initial_population_size << '\n'
                   << "  initial_grid_side_length=" << initial_grid_shape.side_length << '\n'
@@ -586,7 +604,8 @@ int main(int argc, char **argv) {
             }
             final_summary = summary;
 
-            std::cout << "Generation " << summary.generation_index << ": best=" << summary.best_fitness
+            std::cout << '[' << FormatCurrentLocalTimestamp() << "] Generation " << summary.generation_index
+                      << ": best=" << summary.best_fitness
                       << ", average=" << summary.average_fitness << ", best_index=" << summary.best_index
                       << ", population=" << summary.population_size << ", action_count=" << summary.action_count
                       << ", genome_stride_bytes=" << ComputeSlabSlotStrideBytes(summary.action_count) << '\n';
