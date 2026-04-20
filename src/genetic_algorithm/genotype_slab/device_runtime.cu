@@ -27,6 +27,7 @@ using device_injection_ops::TryInjectExpandedOutputEmbeddingTails;
 constexpr int kSlabAssemblyThreadBlockSize = 128;
 constexpr int kMaxSlabAssemblyThreadBlocks = 32;
 constexpr int kSlabBootstrapThreadBlockSize = 256;
+constexpr int kSlabRepackThreadBlockSize = 256;
 constexpr std::size_t kMaxSlabAssemblyConcurrentChildren =
     static_cast<std::size_t>(kSlabAssemblyThreadBlockSize) * static_cast<std::size_t>(kMaxSlabAssemblyThreadBlocks);
 
@@ -671,27 +672,35 @@ __global__ void PrepareSlabForExpandedActionCountKernel(
     SlabSlotState *slot_states, std::uint32_t *free_slot_stack, std::uint32_t *free_slot_count,
     std::uint32_t *free_slot_lock, std::uint32_t *current_slot_indices, const std::size_t current_generation_size,
     std::uint32_t *parent_reference_counts, int *status) {
-    if ((blockIdx.x != 0) || (threadIdx.x != 0)) {
+    if (blockIdx.x != 0) {
         return;
     }
 
-    if ((slab_storage == nullptr) || (slot_states == nullptr) || (free_slot_stack == nullptr) ||
-        (free_slot_count == nullptr) || (free_slot_lock == nullptr) || (current_slot_indices == nullptr) ||
-        (parent_reference_counts == nullptr) || (current_generation_size == 0)) {
-        SetFailureStatus(status, DeviceSlabRuntimeStatusCode::kInvalidSlab);
-        return;
+    __shared__ bool inputs_valid;
+    if (threadIdx.x == 0) {
+        inputs_valid = (slab_storage != nullptr) && (slot_states != nullptr) && (free_slot_stack != nullptr) &&
+                       (free_slot_count != nullptr) && (free_slot_lock != nullptr) && (current_slot_indices != nullptr) &&
+                       (parent_reference_counts != nullptr) && (current_generation_size > 0) &&
+                       IsValidGenotypeSlabLayout(current_layout) && IsValidGenotypeSlabLayout(next_layout);
+        if (!inputs_valid) {
+            SetFailureStatus(status, DeviceSlabRuntimeStatusCode::kInvalidSlab);
+        }
     }
+    __syncthreads();
 
-    if (!IsValidGenotypeSlabLayout(current_layout) || !IsValidGenotypeSlabLayout(next_layout)) {
-        SetFailureStatus(status, DeviceSlabRuntimeStatusCode::kInvalidSlab);
+    if (!inputs_valid) {
         return;
     }
 
     GenotypeSlabLayout working_layout = current_layout;
     if (!TryCompactAndRepackSlabForExpandedActionCount(
             working_layout, slab_storage, slot_states, free_slot_stack, *free_slot_count, current_slot_indices,
-            current_generation_size, parent_reference_counts, next_layout.action_count)) {
-        SetFailureStatus(status, DeviceSlabRuntimeStatusCode::kSlabRepackFailed);
+            current_generation_size, parent_reference_counts, next_layout.action_count,
+            static_cast<std::size_t>(threadIdx.x), static_cast<std::size_t>(blockDim.x))) {
+        __syncthreads();
+        if (threadIdx.x == 0) {
+            SetFailureStatus(status, DeviceSlabRuntimeStatusCode::kSlabRepackFailed);
+        }
     }
 }
 
@@ -1039,7 +1048,7 @@ bool TryPrepareSlabForExpandedActionCountOnDevice(DeviceSlabRuntimeBuffers &buff
         return false;
     }
 
-    PrepareSlabForExpandedActionCountKernel<<<1, 1>>>(
+    PrepareSlabForExpandedActionCountKernel<<<1, kSlabRepackThreadBlockSize>>>(
         buffers.slab_layout, next_layout, buffers.slab_storage, buffers.slot_states, buffers.free_slot_stack,
         buffers.free_slot_count, buffers.free_slot_lock, buffers.current_slot_indices, buffers.current_generation_size,
         buffers.parent_reference_counts, buffers.status);

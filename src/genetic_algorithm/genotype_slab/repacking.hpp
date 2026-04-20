@@ -10,32 +10,60 @@ namespace neuroevolution::genetic_algorithm::genotype_slab {
 
 namespace detail {
 
-inline NEUROEVOLUTION_HOST_DEVICE void ZeroSlabBytes(std::uint8_t *bytes, const std::size_t byte_count) noexcept {
+inline NEUROEVOLUTION_HOST_DEVICE void SynchronizeRepackWorkers() noexcept {
+#if defined(__CUDA_ARCH__)
+    __syncthreads();
+#endif
+}
+
+inline NEUROEVOLUTION_HOST_DEVICE void ZeroSlabBytes(std::uint8_t *bytes, const std::size_t byte_count,
+                                                     const std::size_t worker_index = 0,
+                                                     const std::size_t worker_count = 1) noexcept {
     if (bytes == nullptr) {
         return;
     }
 
-    for (std::size_t byte_index = 0; byte_index < byte_count; ++byte_index) {
+    for (std::size_t byte_index = worker_index; byte_index < byte_count; byte_index += worker_count) {
         bytes[byte_index] = 0;
     }
+
+    SynchronizeRepackWorkers();
 }
 
 inline NEUROEVOLUTION_HOST_DEVICE void MoveSlabBytesOverlapping(const std::uint8_t *source_bytes,
                                                                 std::uint8_t *target_bytes,
-                                                                const std::size_t byte_count) noexcept {
-    if ((source_bytes == nullptr) || (target_bytes == nullptr) || (source_bytes == target_bytes)) {
+                                                                const std::size_t byte_count,
+                                                                const std::size_t worker_index = 0,
+                                                                const std::size_t worker_count = 1) noexcept {
+    if ((source_bytes == nullptr) || (target_bytes == nullptr) || (source_bytes == target_bytes) ||
+        (worker_count == 0) || (byte_count == 0)) {
         return;
     }
 
     if (target_bytes < source_bytes) {
-        for (std::size_t byte_index = 0; byte_index < byte_count; ++byte_index) {
-            target_bytes[byte_index] = source_bytes[byte_index];
+        const std::size_t gap_bytes = static_cast<std::size_t>(source_bytes - target_bytes);
+        const std::size_t chunk_bytes = (gap_bytes >= byte_count) ? byte_count : gap_bytes;
+        for (std::size_t chunk_offset = 0; chunk_offset < byte_count; chunk_offset += chunk_bytes) {
+            const std::size_t active_chunk_bytes =
+                ((byte_count - chunk_offset) < chunk_bytes) ? (byte_count - chunk_offset) : chunk_bytes;
+            for (std::size_t byte_index = worker_index; byte_index < active_chunk_bytes; byte_index += worker_count) {
+                target_bytes[chunk_offset + byte_index] = source_bytes[chunk_offset + byte_index];
+            }
+            SynchronizeRepackWorkers();
         }
         return;
     }
 
-    for (std::size_t byte_index = byte_count; byte_index > 0; --byte_index) {
-        target_bytes[byte_index - 1] = source_bytes[byte_index - 1];
+    const std::size_t gap_bytes = static_cast<std::size_t>(target_bytes - source_bytes);
+    const std::size_t chunk_bytes = (gap_bytes >= byte_count) ? byte_count : gap_bytes;
+    for (std::size_t remaining_bytes = byte_count; remaining_bytes > 0;) {
+        const std::size_t active_chunk_bytes = (remaining_bytes < chunk_bytes) ? remaining_bytes : chunk_bytes;
+        const std::size_t chunk_offset = remaining_bytes - active_chunk_bytes;
+        for (std::size_t byte_index = worker_index; byte_index < active_chunk_bytes; byte_index += worker_count) {
+            target_bytes[chunk_offset + byte_index] = source_bytes[chunk_offset + byte_index];
+        }
+        SynchronizeRepackWorkers();
+        remaining_bytes = chunk_offset;
     }
 }
 
@@ -124,7 +152,8 @@ inline NEUROEVOLUTION_HOST_DEVICE bool TryCompactAndRepackSlabForExpandedActionC
     GenotypeSlabLayout &slab_layout, std::uint8_t *slab_storage, SlabSlotState *slot_states,
     std::uint32_t *free_slot_stack, std::uint32_t &free_slot_count, std::uint32_t *generation_slot_indices,
     const std::size_t active_individual_count, const std::uint32_t *parent_reference_counts,
-    const std::size_t next_action_count) noexcept {
+    const std::size_t next_action_count, const std::size_t worker_index = 0,
+    const std::size_t worker_count = 1) noexcept {
     // Growth widens the slab by compacting referenced survivors and repacking them to the right
     // using the expanded slot stride.
     if (!IsValidGenotypeSlabLayout(slab_layout) || (slab_storage == nullptr) || (slot_states == nullptr) ||
@@ -154,18 +183,24 @@ inline NEUROEVOLUTION_HOST_DEVICE bool TryCompactAndRepackSlabForExpandedActionC
         if (survivor_count != source_slot_index) {
             detail::MoveSlabBytesOverlapping(SlabSlotBytesAt(slab_storage, slab_layout, source_slot_index),
                                              SlabSlotBytesAt(slab_storage, slab_layout, survivor_count),
-                                             current_slot_stride_bytes);
+                                             current_slot_stride_bytes, worker_index, worker_count);
         }
 
-        generation_slot_indices[parent_index] = static_cast<std::uint32_t>(survivor_count);
+        if (worker_index == 0) {
+            generation_slot_indices[parent_index] = static_cast<std::uint32_t>(survivor_count);
+        }
+        detail::SynchronizeRepackWorkers();
         ++survivor_count;
     }
 
-    for (std::size_t parent_index = 0; parent_index < active_individual_count; ++parent_index) {
-        if (parent_reference_counts[parent_index] == 0) {
-            generation_slot_indices[parent_index] = kInvalidSlabSlotIndex;
+    if (worker_index == 0) {
+        for (std::size_t parent_index = 0; parent_index < active_individual_count; ++parent_index) {
+            if (parent_reference_counts[parent_index] == 0) {
+                generation_slot_indices[parent_index] = kInvalidSlabSlotIndex;
+            }
         }
     }
+    detail::SynchronizeRepackWorkers();
 
     if (survivor_count != preflight.survivor_count) {
         return false;
@@ -177,39 +212,55 @@ inline NEUROEVOLUTION_HOST_DEVICE bool TryCompactAndRepackSlabForExpandedActionC
         const std::size_t destination_slot_index = destination_base_slot + source_slot_index;
         std::uint8_t *destination_bytes = SlabSlotBytesAt(slab_storage, next_layout, destination_slot_index);
         detail::MoveSlabBytesOverlapping(SlabSlotBytesAt(slab_storage, slab_layout, source_slot_index),
-                                         destination_bytes, current_slot_stride_bytes);
+                                         destination_bytes, current_slot_stride_bytes, worker_index, worker_count);
         detail::ZeroSlabBytes(destination_bytes + current_slot_stride_bytes,
-                              next_layout.slot_stride_bytes - current_slot_stride_bytes);
+                              next_layout.slot_stride_bytes - current_slot_stride_bytes, worker_index, worker_count);
     }
 
-    for (std::size_t parent_index = 0; parent_index < active_individual_count; ++parent_index) {
-        if (generation_slot_indices[parent_index] == kInvalidSlabSlotIndex) {
-            continue;
+    if (worker_index == 0) {
+        for (std::size_t parent_index = 0; parent_index < active_individual_count; ++parent_index) {
+            if (generation_slot_indices[parent_index] == kInvalidSlabSlotIndex) {
+                continue;
+            }
+
+            generation_slot_indices[parent_index] =
+                static_cast<std::uint32_t>(destination_base_slot + generation_slot_indices[parent_index]);
         }
-
-        generation_slot_indices[parent_index] =
-            static_cast<std::uint32_t>(destination_base_slot + generation_slot_indices[parent_index]);
     }
+    detail::SynchronizeRepackWorkers();
 
-    for (std::size_t slot_index = 0; slot_index < next_layout.slot_count; ++slot_index) {
-        slot_states[slot_index] = {};
-    }
-
-    for (std::size_t parent_index = 0; parent_index < active_individual_count; ++parent_index) {
-        const std::uint32_t slot_index = generation_slot_indices[parent_index];
-        if (slot_index == kInvalidSlabSlotIndex) {
-            continue;
+    if (worker_index == 0) {
+        for (std::size_t slot_index = 0; slot_index < next_layout.slot_count; ++slot_index) {
+            slot_states[slot_index] = {};
         }
-
-        slot_states[slot_index].occupied = true;
-        slot_states[slot_index].liveness_count = 1;
     }
+    detail::SynchronizeRepackWorkers();
 
-    free_slot_count = static_cast<std::uint32_t>(destination_base_slot);
-    for (std::uint32_t free_slot_index = 0; free_slot_index < free_slot_count; ++free_slot_index) {
-        free_slot_stack[free_slot_index] = (free_slot_count - 1) - free_slot_index;
+    if (worker_index == 0) {
+        for (std::size_t parent_index = 0; parent_index < active_individual_count; ++parent_index) {
+            const std::uint32_t slot_index = generation_slot_indices[parent_index];
+            if (slot_index == kInvalidSlabSlotIndex) {
+                continue;
+            }
+
+            slot_states[slot_index].occupied = true;
+            slot_states[slot_index].liveness_count = 1;
+        }
     }
-    slab_layout = next_layout;
+    detail::SynchronizeRepackWorkers();
+
+    if (worker_index == 0) {
+        free_slot_count = static_cast<std::uint32_t>(destination_base_slot);
+        for (std::uint32_t free_slot_index = 0; free_slot_index < free_slot_count; ++free_slot_index) {
+            free_slot_stack[free_slot_index] = (free_slot_count - 1) - free_slot_index;
+        }
+    }
+    detail::SynchronizeRepackWorkers();
+
+    if (worker_index == 0) {
+        slab_layout = next_layout;
+    }
+    detail::SynchronizeRepackWorkers();
     return true;
 }
 
