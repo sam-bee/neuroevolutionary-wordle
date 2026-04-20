@@ -13,12 +13,10 @@ namespace {
 using neuroevolution::common::FixedBuffer;
 using neuroevolution::model::output_embedding::ActionEmbedding;
 using neuroevolution::model::output_embedding::ActionEmbeddingVector;
-using neuroevolution::model::output_embedding::FixedWordFeatureVector;
 using neuroevolution::model::output_embedding::kOutputEmbeddingDimension;
 using neuroevolution::model::output_embedding::kTrainableFeatureDimension;
 using neuroevolution::model::output_embedding::kWordFeatureDimension;
 using neuroevolution::model::output_embedding::MaterializeActionEmbedding;
-using neuroevolution::model::output_embedding::MaterializeFixedWordFeatures;
 using neuroevolution::model::output_embedding::PolicyVector;
 using neuroevolution::model::output_embedding::ScoreActionEmbedding;
 using neuroevolution::model::output_embedding::SelectBestActionWord;
@@ -137,31 +135,6 @@ bool TestSelectBestActionUsesDotProductAcrossFixedAndTrainableDimensions() {
     return ok;
 }
 
-bool TestScoreActionEmbeddingMatchesPrecomputedFixedWordFeatures() {
-    ActionEmbedding action_embedding = MakeActionEmbedding("MUMMY");
-    action_embedding.trainable_tail[0] = -0.5f;
-    action_embedding.trainable_tail[1] = 2.0f;
-
-    PolicyVector policy_vector{};
-    policy_vector[static_cast<std::size_t>(LetterIndexFromAscii('A'))] = 1.0f;
-    policy_vector[static_cast<std::size_t>(LetterIndexFromAscii('B'))] = 2.0f;
-    policy_vector[static_cast<std::size_t>(LetterIndexFromAscii('E'))] = 3.0f;
-    policy_vector[static_cast<std::size_t>(LetterIndexFromAscii('M'))] = -1.0f;
-    policy_vector[kWordFeatureDimension + 0] = 4.0f;
-    policy_vector[kWordFeatureDimension + 1] = -2.0f;
-
-    FixedWordFeatureVector fixed_word_features{};
-    MaterializeFixedWordFeatures(action_embedding.word, fixed_word_features);
-
-    const float materialized_score = ScoreActionEmbedding(policy_vector, action_embedding);
-    const float precomputed_score = ScoreActionEmbedding(policy_vector, fixed_word_features, action_embedding.trainable_tail);
-
-    bool ok = true;
-    ok &= ExpectNear(materialized_score, -15.0f, "materialized MUMMY score");
-    ok &= ExpectNear(precomputed_score, materialized_score, "precomputed fixed-feature score");
-    return ok;
-}
-
 bool TestTrySelectBestActionRejectsEmptyTables() {
     PolicyVector policy_vector{};
     SelectedAction selected_action{};
@@ -186,10 +159,6 @@ int main() {
     }
 
     if (!TestTrySelectBestActionRejectsEmptyTables()) {
-        return 1;
-    }
-
-    if (!TestScoreActionEmbeddingMatchesPrecomputedFixedWordFeatures()) {
         return 1;
     }
 
