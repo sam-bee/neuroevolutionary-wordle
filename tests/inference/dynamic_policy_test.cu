@@ -18,9 +18,9 @@
 namespace {
 
 using neuroevolution::inference::dynamic_policy::DynamicInferenceStatusCode;
-using neuroevolution::inference::dynamic_policy::DynamicPolicyBlockScratch;
+using neuroevolution::inference::dynamic_policy::DynamicPolicyWarpScratch;
 using neuroevolution::inference::dynamic_policy::HasGridAlreadyGuessedWord;
-using neuroevolution::inference::dynamic_policy::kDynamicPolicyThreadsPerBlock;
+using neuroevolution::inference::dynamic_policy::kDynamicPolicyWarpSize;
 using neuroevolution::inference::dynamic_policy::SelectNextGuessFromDynamicGenomeConcurrently;
 using neuroevolution::model::output_embedding::SelectedAction;
 using neuroevolution::tests::policy_model::PolicyModelGoldenFixture;
@@ -97,7 +97,7 @@ __global__ void DynamicPolicyKernel(const TrainingWordCatalog *catalog, const st
         return;
     }
 
-    __shared__ DynamicPolicyBlockScratch<kDynamicPolicyThreadsPerBlock> scratch;
+    __shared__ DynamicPolicyWarpScratch<kDynamicPolicyWarpSize> scratch;
     __shared__ WordleGrid shared_grid;
 
     if (threadIdx.x == 0) {
@@ -107,7 +107,7 @@ __global__ void DynamicPolicyKernel(const TrainingWordCatalog *catalog, const st
 
     SelectedAction best_action{};
     const DynamicInferenceStatusCode best_action_status =
-        SelectNextGuessFromDynamicGenomeConcurrently<kDynamicPolicyThreadsPerBlock>(
+        SelectNextGuessFromDynamicGenomeConcurrently<kDynamicPolicyWarpSize>(
             shared_grid, *catalog, genome_bytes, kActionCount, scratch, best_action);
 
     if (threadIdx.x == 0) {
@@ -126,7 +126,7 @@ __global__ void DynamicPolicyKernel(const TrainingWordCatalog *catalog, const st
 
     SelectedAction next_action{};
     const DynamicInferenceStatusCode next_action_status =
-        SelectNextGuessFromDynamicGenomeConcurrently<kDynamicPolicyThreadsPerBlock>(
+        SelectNextGuessFromDynamicGenomeConcurrently<kDynamicPolicyWarpSize>(
             shared_grid, *catalog, genome_bytes, kActionCount, scratch, next_action);
 
     if (threadIdx.x == 0) {
@@ -176,7 +176,7 @@ bool TestDynamicPolicyHelpersOnDevice() {
     }
 
     if (ok) {
-        DynamicPolicyKernel<<<1, kDynamicPolicyThreadsPerBlock>>>(
+        DynamicPolicyKernel<<<1, kDynamicPolicyWarpSize>>>(
             device_catalog, device_genome_bytes, fixture.MakeSingleTurnGrid(), device_best_action, device_next_action,
             device_status);
         ok &= CheckCuda(cudaGetLastError(), "launching dynamic-policy kernel");

@@ -57,6 +57,39 @@ inline NEUROEVOLUTION_HOST_DEVICE void ApplyReLU(EncoderHiddenVector &activation
     }
 }
 
+#if defined(__CUDACC__)
+template <int WarpWidth, std::size_t InputSize, std::size_t OutputSize>
+inline __device__ void ApplyDenseLayerConcurrently(
+    const DenseLayerParameters<InputSize, OutputSize> &layer, const common::FixedBuffer<float, InputSize> &input,
+    common::FixedBuffer<float, OutputSize> &output) noexcept {
+    const std::size_t lane_index = static_cast<std::size_t>(threadIdx.x % WarpWidth);
+    for (std::size_t output_index = lane_index; output_index < OutputSize; output_index += WarpWidth) {
+        float sum = common::ToFloat(layer.biases[output_index]);
+
+        for (std::size_t input_index = 0; input_index < InputSize; ++input_index) {
+            sum += layer.WeightAt(output_index, input_index) * input[input_index];
+        }
+
+        output[output_index] = sum;
+    }
+
+    __syncwarp();
+}
+
+template <int WarpWidth>
+inline __device__ void ApplyReLUConcurrently(EncoderHiddenVector &activations) noexcept {
+    const std::size_t lane_index = static_cast<std::size_t>(threadIdx.x % WarpWidth);
+    for (std::size_t activation_index = lane_index; activation_index < kEncoderHiddenSize;
+         activation_index += WarpWidth) {
+        if (activations[activation_index] < 0.0f) {
+            activations[activation_index] = 0.0f;
+        }
+    }
+
+    __syncwarp();
+}
+#endif
+
 } // namespace detail
 
 inline NEUROEVOLUTION_HOST_DEVICE void ForwardSharedEncoder(const SharedEncoderParameters &parameters,
@@ -81,6 +114,36 @@ inline NEUROEVOLUTION_HOST_DEVICE bool TryForwardOccupiedTurn(const SharedEncode
     ForwardSharedEncoder(parameters, input_vector, encoded_turn);
     return true;
 }
+
+#if defined(__CUDACC__)
+template <int WarpWidth>
+inline __device__ bool TryForwardOccupiedTurnConcurrently(const SharedEncoderParameters &parameters,
+                                                          const wordle::Turn &turn, TurnInputVector &input_vector,
+                                                          EncoderHiddenVector &hidden,
+                                                          EncodedTurnVector &encoded_turn) noexcept {
+    if (!wordle::IsValidTurn(turn)) {
+        return false;
+    }
+
+    const std::size_t lane_index = static_cast<std::size_t>(threadIdx.x % WarpWidth);
+    for (std::size_t feature_index = lane_index; feature_index < kTurnFeatureCount; feature_index += WarpWidth) {
+        input_vector[feature_index] = 0.0f;
+    }
+    __syncwarp();
+
+    if (lane_index < wordle::kWordLength) {
+        const std::size_t letter_index = turn.guess.letter_indices[lane_index];
+        input_vector[GuessLetterFeatureOffset(lane_index, letter_index)] = 1.0f;
+        input_vector[FeedbackFeatureOffset(lane_index, detail::FeedbackIndex(turn.feedback[lane_index]))] = 1.0f;
+    }
+    __syncwarp();
+
+    detail::ApplyDenseLayerConcurrently<WarpWidth>(parameters.input_to_hidden, input_vector, hidden);
+    detail::ApplyReLUConcurrently<WarpWidth>(hidden);
+    detail::ApplyDenseLayerConcurrently<WarpWidth>(parameters.hidden_to_output, hidden, encoded_turn);
+    return true;
+}
+#endif
 
 EncodedTurnVector ForwardOccupiedTurn(const SharedEncoderParameters &parameters, const wordle::Turn &turn);
 

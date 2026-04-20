@@ -9,9 +9,9 @@ namespace neuroevolution::inference {
 
 namespace {
 
-using neuroevolution::inference::dynamic_policy::DynamicPolicyBlockScratch;
 using neuroevolution::inference::dynamic_policy::DynamicInferenceStatusCode;
-using neuroevolution::inference::dynamic_policy::kDynamicPolicyThreadsPerBlock;
+using neuroevolution::inference::dynamic_policy::DynamicPolicyWarpScratch;
+using neuroevolution::inference::dynamic_policy::kDynamicPolicyWarpSize;
 using neuroevolution::inference::dynamic_policy::SelectNextGuessFromDynamicGenomeConcurrently;
 using neuroevolution::model::output_embedding::SelectedAction;
 using neuroevolution::training_folder::IsValidTrainingWordCatalog;
@@ -62,9 +62,9 @@ __global__ void SelectNextGuessKernel(const TrainingWordCatalog *action_space_wo
         return;
     }
 
-    __shared__ DynamicPolicyBlockScratch<kDynamicPolicyThreadsPerBlock> scratch;
+    __shared__ DynamicPolicyWarpScratch<kDynamicPolicyWarpSize> scratch;
     SelectedAction selected_action{};
-    const auto inference_status = SelectNextGuessFromDynamicGenomeConcurrently<kDynamicPolicyThreadsPerBlock>(
+    const auto inference_status = SelectNextGuessFromDynamicGenomeConcurrently<kDynamicPolicyWarpSize>(
             *grid, *action_space_words, genome_bytes, action_count, scratch, selected_action);
 
     if (threadIdx.x == 0) {
@@ -137,7 +137,7 @@ bool TrySelectNextGuessWithSingleModelDeviceRuntime(
         return false;
     }
 
-    SelectNextGuessKernel<<<1, kDynamicPolicyThreadsPerBlock>>>(
+    SelectNextGuessKernel<<<1, kDynamicPolicyWarpSize>>>(
         runtime.device_action_space_words, runtime.device_genome_bytes, runtime.action_count, runtime.device_grid,
         runtime.device_selected_action, runtime.device_status);
     if (!CheckCuda(cudaGetLastError())) {

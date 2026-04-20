@@ -65,6 +65,38 @@ inline NEUROEVOLUTION_HOST_DEVICE void ApplyReLU(common::FixedBuffer<float, Size
     }
 }
 
+#if defined(__CUDACC__)
+template <int WarpWidth, std::size_t InputSize, std::size_t OutputSize>
+inline __device__ void ApplyDenseLayerConcurrently(
+    const DenseLayerParameters<InputSize, OutputSize> &layer, const common::FixedBuffer<float, InputSize> &input,
+    common::FixedBuffer<float, OutputSize> &output) noexcept {
+    const std::size_t lane_index = static_cast<std::size_t>(threadIdx.x % WarpWidth);
+    for (std::size_t output_index = lane_index; output_index < OutputSize; output_index += WarpWidth) {
+        float sum = common::ToFloat(layer.biases[output_index]);
+
+        for (std::size_t input_index = 0; input_index < InputSize; ++input_index) {
+            sum += layer.WeightAt(output_index, input_index) * input[input_index];
+        }
+
+        output[output_index] = sum;
+    }
+
+    __syncwarp();
+}
+
+template <int WarpWidth, std::size_t Size>
+inline __device__ void ApplyReLUConcurrently(common::FixedBuffer<float, Size> &activations) noexcept {
+    const std::size_t lane_index = static_cast<std::size_t>(threadIdx.x % WarpWidth);
+    for (std::size_t activation_index = lane_index; activation_index < Size; activation_index += WarpWidth) {
+        if (activations[activation_index] < 0.0f) {
+            activations[activation_index] = 0.0f;
+        }
+    }
+
+    __syncwarp();
+}
+#endif
+
 } // namespace detail
 
 inline NEUROEVOLUTION_HOST_DEVICE void ForwardDenseTrunk(const DenseTrunkParameters &parameters,
@@ -80,6 +112,21 @@ inline NEUROEVOLUTION_HOST_DEVICE void ForwardDenseTrunk(const DenseTrunkParamet
 
     detail::ApplyDenseLayer(parameters.hidden1_to_output, hidden1, policy_vector);
 }
+
+#if defined(__CUDACC__)
+template <int WarpWidth>
+inline __device__ void ForwardDenseTrunkConcurrently(const DenseTrunkParameters &parameters,
+                                                     const DenseTrunkInputVector &input_vector,
+                                                     DenseTrunkHiddenVector0 &hidden0,
+                                                     DenseTrunkHiddenVector1 &hidden1,
+                                                     PolicyVector &policy_vector) noexcept {
+    detail::ApplyDenseLayerConcurrently<WarpWidth>(parameters.input_to_hidden0, input_vector, hidden0);
+    detail::ApplyReLUConcurrently<WarpWidth>(hidden0);
+    detail::ApplyDenseLayerConcurrently<WarpWidth>(parameters.hidden0_to_hidden1, hidden0, hidden1);
+    detail::ApplyReLUConcurrently<WarpWidth>(hidden1);
+    detail::ApplyDenseLayerConcurrently<WarpWidth>(parameters.hidden1_to_output, hidden1, policy_vector);
+}
+#endif
 
 PolicyVector ForwardDenseTrunk(const DenseTrunkParameters &parameters, const DenseTrunkInputVector &input_vector);
 
