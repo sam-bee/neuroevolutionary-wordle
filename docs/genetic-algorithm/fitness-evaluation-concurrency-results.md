@@ -32,7 +32,7 @@ WMMA scorer.
 | Pure WMMA scorer | instrumented `dbd0372` | `678.7 ms` | `270001.6 ms` | Good tiny-action performance, unusable on the 2000-word action space. |
 | Pure warp-tiled scorer on current base | `dbd0372` with `0f5b3d8` evaluator files + final-generation timing patch | `1242.8 ms` | `4704.5 ms` | Extremely fast on the large benchmark, but a large generation-0 regression and different fitness summary than the WMMA path. |
 | Scalar shared-tile scorer | local branch `candidate/shared-tile-scalar` at `1ad1186` | `660.6 ms` | not completed | Matched the small benchmark but exceeded the WMMA large-generation wall time lower bound before completion. |
-| Thresholded hybrid scorer | current working tree | `676.9 ms` | `98116.9 ms` | Selected. |
+| Thresholded hybrid scorer | `81e3c5c` | `676.9 ms` | `98116.9 ms` | Selected. |
 
 ## Interpretation
 
