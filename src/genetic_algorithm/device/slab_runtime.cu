@@ -109,6 +109,7 @@ inline bool TryUploadActiveTrainingShardsForCurrentGeneration(DeviceSlabGARuntim
     if (!TryBuildTrainingDataShardRuntimeSet(runtime_word_counts.training_word_schedule,
                                              runtime_word_counts.training_word_count,
                                              buffers.genotype_slab.current_generation_index, current_grid_shape_out,
+                                             runtime_word_counts.shard_initial_radius,
                                              runtime_word_counts.shard_radius_growth_period_generations, runtime_set) ||
         (runtime_set.shard_count == 0) || (runtime_set.shard_count > buffers.active_training_shard_capacity)) {
         return false;

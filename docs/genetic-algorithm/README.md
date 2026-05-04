@@ -4,6 +4,8 @@
   High-level description of the current GA.
 - [`fitness-evaluation.md`](fitness-evaluation.md)
   The current implemented fitness signal.
+- [`fitness-evaluation-benchmarking.md`](fitness-evaluation-benchmarking.md)
+  How to benchmark and profile fitness-evaluation concurrency changes.
 - [`genotype-slab-design.md`](genotype-slab-design.md)
   The shared genotype slab, slab allocator, GC, and spillover design.
 - [`startup-bootstrap.md`](startup-bootstrap.md)
