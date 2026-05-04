@@ -34,6 +34,7 @@ using device_evaluation_ops::GenomeEvaluationWarpScratch;
 using device_evaluation_ops::NormalizeFitnessForSelection;
 using device_evaluation_ops::ScoreCompletedEpisode;
 using device_evaluation_ops::TryCountLocalTrainingWords;
+using device_evaluation_ops::TryEvaluateGenomeEpisodeConcurrently;
 using device_evaluation_ops::TryEvaluateGenomeFitnessConcurrently;
 using device_evaluation_ops::TryInitializeEpisodeGrid;
 using device_evaluation_ops::TryPlayWordleEpisodeTileWithTensorCoresConcurrently;
@@ -58,6 +59,9 @@ constexpr std::size_t kEvaluationWarpsPerBlock = 4;
 constexpr std::size_t kEvaluationThreadsPerBlock = kEvaluationWarpsPerBlock * kDynamicPolicyWarpSize;
 constexpr std::size_t kMinimumEvaluationBlockCount = 1024;
 constexpr std::size_t kMaxEvaluationBlocksPerIndividual = 16;
+// Benchmarks showed the WMMA scorer only helping at very small action counts; larger action spaces
+// are much faster with the simpler warp-tiled direct scorer.
+constexpr std::size_t kTensorActionScoreActionCountThreshold = 128;
 constexpr std::size_t kDynamicPolicyThreadsPerBlock = kEvaluationThreadsPerBlock;
 NEUROEVOLUTION_HOST_DEVICE constexpr int DeviceStatusValue(const DeviceSlabGARuntimeStatusCode status_code) {
     return static_cast<int>(status_code);
@@ -384,6 +388,106 @@ __global__ void EvaluateSlabGenerationFitnessByEpisodeKernel(
             warp_score_sum += ScoreCompletedEpisode(evaluation_scratch[warp_index].grid);
         }
         __syncthreads();
+    }
+
+    if (lane_index == 0) {
+        shared_partial_sums[warp_index] = warp_score_sum;
+    }
+    __syncthreads();
+
+    if (threadIdx.x == 0) {
+        float block_score_sum = 0.0f;
+        for (std::size_t partial_index = 0; partial_index < kEvaluationWarpsPerBlock; ++partial_index) {
+            block_score_sum += shared_partial_sums[partial_index];
+        }
+
+        fitness_partial_sums[(individual_index * blocks_per_individual) + block_tile_index] = block_score_sum;
+        if (block_tile_index == 0) {
+            current_local_training_word_counts[individual_index] =
+                static_cast<std::uint32_t>(shared_local_training_word_count);
+        }
+    }
+}
+
+__global__ void EvaluateSlabGenerationFitnessByEpisodeWarpKernel(
+    const std::uint8_t *slab_storage, const genotype_slab::SlabSlotState *slot_states,
+    const genotype_slab::GenotypeSlabLayout slab_layout, const std::uint32_t *current_slot_indices,
+    const std::size_t current_generation_size, const RuntimeWordCounts runtime_word_counts,
+    const training_folder::TrainingDataShardRuntime *active_training_shards, const std::size_t active_shard_count,
+    const CellularGridShape current_grid_shape, const std::size_t blocks_per_individual,
+    float *fitness_partial_sums, std::uint32_t *current_local_training_word_counts, int *status) {
+    const std::size_t individual_index = blockIdx.x;
+    const std::size_t block_tile_index = blockIdx.y;
+    const std::size_t warp_index = static_cast<std::size_t>(threadIdx.x / kDynamicPolicyWarpSize);
+    const std::size_t lane_index = static_cast<std::size_t>(threadIdx.x % kDynamicPolicyWarpSize);
+    __shared__ std::uint32_t shared_slot_index;
+    __shared__ DeviceSlabGARuntimeStatusCode shared_status_code;
+    __shared__ std::size_t shared_local_training_word_count;
+    __shared__ float shared_partial_sums[kEvaluationWarpsPerBlock];
+    __shared__ GenomeEvaluationWarpScratch<kDynamicPolicyWarpSize> evaluation_scratch[kEvaluationWarpsPerBlock];
+    if (!genotype_slab::IsValidGenotypeSlabLayout(slab_layout) || (slab_storage == nullptr) ||
+        (slot_states == nullptr) || (current_slot_indices == nullptr) || (fitness_partial_sums == nullptr) ||
+        (current_local_training_word_counts == nullptr) || (current_generation_size == 0) ||
+        (active_training_shards == nullptr) || (active_shard_count == 0) || (blocks_per_individual == 0)) {
+        if ((blockIdx.x == 0) && (threadIdx.x == 0)) {
+            SetFailureStatus(status, DeviceSlabGARuntimeStatusCode::kInvalidSlab);
+        }
+        return;
+    }
+
+    if (individual_index >= current_generation_size) {
+        return;
+    }
+
+    if (threadIdx.x == 0) {
+        shared_slot_index = current_slot_indices[individual_index];
+        shared_local_training_word_count = 0;
+        shared_status_code = DeviceSlabGARuntimeStatusCode::kOk;
+        if ((shared_slot_index == genotype_slab::kInvalidSlabSlotIndex) ||
+            (shared_slot_index >= slab_layout.slot_count)) {
+            shared_status_code = DeviceSlabGARuntimeStatusCode::kInvalidGeneration;
+        } else if (!slot_states[shared_slot_index].occupied || (slot_states[shared_slot_index].liveness_count == 0)) {
+            shared_status_code = DeviceSlabGARuntimeStatusCode::kInvalidSlab;
+        } else {
+            const DeviceGenomeEvaluationStatusCode local_word_status =
+                TryCountLocalTrainingWords(active_training_shards, active_shard_count, current_grid_shape,
+                                           individual_index, shared_local_training_word_count);
+            if (local_word_status != DeviceGenomeEvaluationStatusCode::kOk) {
+                shared_status_code = MapEvaluationStatus(local_word_status);
+            }
+        }
+    }
+    __syncthreads();
+
+    if (shared_status_code != DeviceSlabGARuntimeStatusCode::kOk) {
+        if (threadIdx.x == 0) {
+            SetFailureStatus(status, shared_status_code);
+        }
+        return;
+    }
+
+    float warp_score_sum = 0.0f;
+    const std::size_t episode_count =
+        shared_local_training_word_count * device_evaluation_ops::kEpisodesPerTrainingWordCount;
+    for (std::size_t episode_index = (block_tile_index * kEvaluationWarpsPerBlock) + warp_index;
+         episode_index < episode_count; episode_index += (blocks_per_individual * kEvaluationWarpsPerBlock)) {
+        float episode_score = 0.0f;
+        const DeviceGenomeEvaluationStatusCode evaluation_status =
+            TryEvaluateGenomeEpisodeConcurrently<kDynamicPolicyWarpSize>(
+                genotype_slab::SlabSlotBytesAt(slab_storage, slab_layout, shared_slot_index), slab_layout.action_count,
+                runtime_word_counts, active_training_shards, active_shard_count, current_grid_shape,
+                individual_index, episode_index, shared_local_training_word_count, evaluation_scratch[warp_index],
+                episode_score);
+        if (evaluation_status != DeviceGenomeEvaluationStatusCode::kOk) {
+            if (lane_index == 0) {
+                SetFailureStatus(status, MapEvaluationStatus(evaluation_status));
+            }
+            return;
+        }
+
+        if (lane_index == 0) {
+            warp_score_sum += episode_score;
+        }
     }
 
     if (lane_index == 0) {
@@ -957,16 +1061,30 @@ bool TryEvaluateCurrentGenerationFitnessOnDevice(DeviceSlabGARuntimeBuffers &buf
 
     const std::size_t blocks_per_individual =
         SelectEvaluationBlocksPerIndividual(buffers.genotype_slab.current_generation_size, runtime_word_counts);
+    const std::size_t selectable_action_count =
+        (buffers.genotype_slab.slab_layout.action_count < runtime_word_counts.action_space_word_count)
+            ? buffers.genotype_slab.slab_layout.action_count
+            : runtime_word_counts.action_space_word_count;
     dim3 evaluation_grid{};
     evaluation_grid.x = static_cast<unsigned int>(buffers.genotype_slab.current_generation_size);
     evaluation_grid.y = static_cast<unsigned int>(blocks_per_individual);
     evaluation_grid.z = 1;
 
-    EvaluateSlabGenerationFitnessByEpisodeKernel<<<evaluation_grid, kEvaluationThreadsPerBlock>>>(
-        buffers.genotype_slab.slab_storage, buffers.genotype_slab.slot_states, buffers.genotype_slab.slab_layout,
-        buffers.genotype_slab.current_slot_indices, buffers.genotype_slab.current_generation_size, runtime_word_counts,
-        buffers.active_training_shards, buffers.active_training_shard_count, current_grid_shape, blocks_per_individual,
-        buffers.fitness_partial_sums, buffers.current_local_training_word_counts, buffers.status);
+    if (selectable_action_count <= kTensorActionScoreActionCountThreshold) {
+        EvaluateSlabGenerationFitnessByEpisodeKernel<<<evaluation_grid, kEvaluationThreadsPerBlock>>>(
+            buffers.genotype_slab.slab_storage, buffers.genotype_slab.slot_states, buffers.genotype_slab.slab_layout,
+            buffers.genotype_slab.current_slot_indices, buffers.genotype_slab.current_generation_size,
+            runtime_word_counts, buffers.active_training_shards, buffers.active_training_shard_count, current_grid_shape,
+            blocks_per_individual, buffers.fitness_partial_sums, buffers.current_local_training_word_counts,
+            buffers.status);
+    } else {
+        EvaluateSlabGenerationFitnessByEpisodeWarpKernel<<<evaluation_grid, kEvaluationThreadsPerBlock>>>(
+            buffers.genotype_slab.slab_storage, buffers.genotype_slab.slot_states, buffers.genotype_slab.slab_layout,
+            buffers.genotype_slab.current_slot_indices, buffers.genotype_slab.current_generation_size,
+            runtime_word_counts, buffers.active_training_shards, buffers.active_training_shard_count, current_grid_shape,
+            blocks_per_individual, buffers.fitness_partial_sums, buffers.current_local_training_word_counts,
+            buffers.status);
+    }
     if (!CheckCuda(cudaGetLastError()) || !CheckCuda(cudaDeviceSynchronize()) ||
         !KernelCompletedSuccessfully(buffers)) {
         return false;

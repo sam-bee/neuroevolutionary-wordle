@@ -24,6 +24,9 @@
 namespace {
 
 using neuroevolution::common::FormatCurrentLocalTimestamp;
+using neuroevolution::common::PrintTimestampedProgressDuration;
+using neuroevolution::common::PrintTimestampedProgressLine;
+using neuroevolution::common::ProgressClock;
 using neuroevolution::genetic_algorithm::GenerationAssemblyConfig;
 using neuroevolution::genetic_algorithm::genotype_slab::ComputeSlabSlotStrideBytes;
 using neuroevolution::genetic_algorithm::genotype_slab::SlabSlotCountForByteBudget;
@@ -577,10 +580,23 @@ int main(int argc, char **argv) {
         for (std::size_t generation_step = 0; generation_step < cli_config.generation_count; ++generation_step) {
             const bool is_last_generation = ((generation_step + 1) == cli_config.generation_count);
             if (is_last_generation) {
+                const auto fitness_start_time = ProgressClock::now();
+                if (cli_config.verbose) {
+                    PrintTimestampedProgressLine(
+                        std::cout,
+                        "Generation " + std::to_string(generation_step) + ": evaluating current generation fitness");
+                }
                 if (!TryEvaluateCurrentGenerationFitnessOnDevice(buffers, runtime_word_counts)) {
                     (void)ReportDeviceSlabRuntimeFailure(buffers, "Population fitness evaluation");
                     DestroyDeviceSlabGARuntimeBuffers(buffers);
                     return 1;
+                }
+                if (cli_config.verbose) {
+                    PrintTimestampedProgressDuration(
+                        std::cout,
+                        "Generation " + std::to_string(generation_step) +
+                            ": current generation fitness evaluation finished",
+                        fitness_start_time);
                 }
             } else {
                 const std::size_t next_scheduled_word_count = ScheduledWordCountForGeneration(
