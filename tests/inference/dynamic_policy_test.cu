@@ -7,10 +7,10 @@
 #include <stdexcept>
 #include <string_view>
 
+#include "../model/policy_model/policy_model_fixture.hpp"
 #include "genetic_algorithm/genome/dynamic_layout.hpp"
 #include "inference/dynamic_policy.hpp"
 #include "model/output_embedding/output_embedding.hpp"
-#include "model/policy_model/policy_model.hpp"
 #include "training_folder/training_data.hpp"
 #include "wordle/word.hpp"
 #include "wordle/wordle_grid.hpp"
@@ -18,13 +18,13 @@
 namespace {
 
 using neuroevolution::inference::dynamic_policy::DynamicInferenceStatusCode;
+using neuroevolution::inference::dynamic_policy::DynamicPolicyWarpScratch;
 using neuroevolution::inference::dynamic_policy::HasGridAlreadyGuessedWord;
-using neuroevolution::inference::dynamic_policy::SelectNextGuessFromDynamicGenome;
-using neuroevolution::inference::dynamic_policy::TrySelectBestDynamicAction;
+using neuroevolution::inference::dynamic_policy::kDynamicPolicyWarpSize;
+using neuroevolution::inference::dynamic_policy::SelectNextGuessFromDynamicGenomeConcurrently;
 using neuroevolution::model::output_embedding::SelectedAction;
-using neuroevolution::model::policy_model::PolicyVector;
+using neuroevolution::tests::policy_model::PolicyModelGoldenFixture;
 using neuroevolution::training_folder::TrainingWordCatalog;
-using neuroevolution::wordle::LetterIndexFromAscii;
 using neuroevolution::wordle::MakeWordleGrid;
 using neuroevolution::wordle::TryAppendGuess;
 using neuroevolution::wordle::TryMakeWordFromAscii;
@@ -32,7 +32,7 @@ using neuroevolution::wordle::Word;
 using neuroevolution::wordle::WordleGrid;
 
 constexpr int kSelectedVisibleDeviceIndex = 0;
-constexpr std::size_t kActionCount = 2;
+constexpr std::size_t kActionCount = 3;
 constexpr int kStatusBestActionSelectionFailed = 1;
 constexpr int kStatusNextGuessSelectionFailed = 2;
 constexpr int kStatusRepeatMaskCheckFailed = 3;
@@ -91,45 +91,68 @@ bool ExpectWordEquals(const Word &actual, const Word &expected, const std::strin
 }
 
 __global__ void DynamicPolicyKernel(const TrainingWordCatalog *catalog, const std::uint8_t *genome_bytes,
-                                    SelectedAction *best_action_out, SelectedAction *next_action_out,
-                                    int *status_out) {
-    if ((blockIdx.x != 0) || (threadIdx.x != 0)) {
+                                    const WordleGrid initial_grid, SelectedAction *best_action_out,
+                                    SelectedAction *next_action_out, int *status_out) {
+    if (blockIdx.x != 0) {
         return;
     }
 
-    PolicyVector policy_vector{};
-    policy_vector[LetterIndexFromAscii('S')] = 1.0f;
+    __shared__ DynamicPolicyWarpScratch<kDynamicPolicyWarpSize> scratch;
+    __shared__ WordleGrid shared_grid;
 
-    if (!TrySelectBestDynamicAction(policy_vector, *catalog, genome_bytes, kActionCount, *best_action_out)) {
-        *status_out = kStatusBestActionSelectionFailed;
-        return;
+    if (threadIdx.x == 0) {
+        shared_grid = initial_grid;
     }
+    __syncthreads();
 
-    WordleGrid grid = MakeWordleGrid(catalog->words[1]);
-    if (!TryAppendGuess(grid, catalog->words[0]) || !HasGridAlreadyGuessedWord(grid, catalog->words[0])) {
-        *status_out = kStatusRepeatMaskCheckFailed;
-        return;
+    SelectedAction best_action{};
+    const DynamicInferenceStatusCode best_action_status =
+        SelectNextGuessFromDynamicGenomeConcurrently<kDynamicPolicyWarpSize>(
+            shared_grid, *catalog, genome_bytes, kActionCount, scratch, best_action);
+
+    if (threadIdx.x == 0) {
+        if (best_action_status != DynamicInferenceStatusCode::kOk) {
+            *status_out = kStatusBestActionSelectionFailed;
+            return;
+        }
+
+        *best_action_out = best_action;
+        if (!TryAppendGuess(shared_grid, catalog->words[0]) || !HasGridAlreadyGuessedWord(shared_grid, catalog->words[0])) {
+            *status_out = kStatusRepeatMaskCheckFailed;
+            return;
+        }
     }
+    __syncthreads();
 
-    const DynamicInferenceStatusCode inference_status =
-        SelectNextGuessFromDynamicGenome(grid, *catalog, genome_bytes, kActionCount, *next_action_out);
-    if (inference_status != DynamicInferenceStatusCode::kOk) {
-        *status_out = kStatusNextGuessSelectionFailed;
-        return;
+    SelectedAction next_action{};
+    const DynamicInferenceStatusCode next_action_status =
+        SelectNextGuessFromDynamicGenomeConcurrently<kDynamicPolicyWarpSize>(
+            shared_grid, *catalog, genome_bytes, kActionCount, scratch, next_action);
+
+    if (threadIdx.x == 0) {
+        if (next_action_status != DynamicInferenceStatusCode::kOk) {
+            *status_out = kStatusNextGuessSelectionFailed;
+            return;
+        }
+
+        *next_action_out = next_action;
+        *status_out = 0;
     }
-
-    *status_out = 0;
 }
 
 bool TestDynamicPolicyHelpersOnDevice() {
+    const PolicyModelGoldenFixture fixture{};
+
     TrainingWordCatalog catalog{};
-    catalog.words[0] = MakeWord("CRANE");
-    catalog.words[1] = MakeWord("SLATE");
+    catalog.words[0] = MakeWord("CABBY");
+    catalog.words[1] = MakeWord("CACAO");
+    catalog.words[2] = MakeWord("FUZZY");
     catalog.word_count = kActionCount;
 
     const std::size_t genome_byte_count =
         neuroevolution::genetic_algorithm::genome::ComputeDynamicGenomeStrideBytes(kActionCount);
     std::unique_ptr<std::uint8_t[]> host_genome_bytes(new std::uint8_t[genome_byte_count]());
+    neuroevolution::genetic_algorithm::genome::GenomePolicyModelParameters(host_genome_bytes.get()) = fixture.parameters;
 
     TrainingWordCatalog *device_catalog = nullptr;
     std::uint8_t *device_genome_bytes = nullptr;
@@ -153,8 +176,9 @@ bool TestDynamicPolicyHelpersOnDevice() {
     }
 
     if (ok) {
-        DynamicPolicyKernel<<<1, 1>>>(device_catalog, device_genome_bytes, device_best_action, device_next_action,
-                                      device_status);
+        DynamicPolicyKernel<<<1, kDynamicPolicyWarpSize>>>(
+            device_catalog, device_genome_bytes, fixture.MakeSingleTurnGrid(), device_best_action, device_next_action,
+            device_status);
         ok &= CheckCuda(cudaGetLastError(), "launching dynamic-policy kernel");
         ok &= CheckCuda(cudaDeviceSynchronize(), "waiting for dynamic-policy kernel completion");
     }
@@ -175,11 +199,11 @@ bool TestDynamicPolicyHelpersOnDevice() {
         ok &= ExpectTrue(host_status == 0, "Expected dynamic-policy kernel to succeed");
         ok &= ExpectTrue(host_best_action.action_index == 1, "Expected best-action helper to pick the second word");
         ok &= ExpectWordEquals(host_best_action.word, catalog.words[1],
-                               "Expected best-action helper to select SLATE");
+                               "Expected best-action helper to select CACAO");
         ok &= ExpectTrue(host_next_action.action_index == 1,
                          "Expected repeat-guess masking to skip the previously guessed first word");
         ok &= ExpectWordEquals(host_next_action.word, catalog.words[1],
-                               "Expected next-guess helper to select SLATE after masking CRANE");
+                               "Expected next-guess helper to select CACAO after masking CABBY");
     }
 
     if (device_status != nullptr) {

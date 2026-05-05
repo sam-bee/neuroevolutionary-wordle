@@ -12,7 +12,9 @@
 namespace neuroevolution::training_folder {
 
 constexpr std::size_t kDefaultInitialActiveWordCount = 20;
+constexpr std::size_t kDefaultTrainingShardInitialRadius = 0;
 constexpr std::size_t kDefaultShardRadiusGrowthPeriodGenerations = 2;
+constexpr std::size_t kEffectivelyInfiniteTrainingShardRadius = static_cast<std::size_t>(-1);
 constexpr std::size_t kTrainingWordCatalogCapacity = 4739;
 
 struct WordCountSchedule {
@@ -78,12 +80,26 @@ DeterministicTrainingShardCenterCellIndex(const std::size_t shard_ordinal, const
 
 constexpr NEUROEVOLUTION_HOST_DEVICE std::size_t
 TrainingShardRadiusAtGeneration(const std::size_t introduction_generation, const std::size_t current_generation_index,
+                                const std::size_t initial_radius,
                                 const std::size_t radius_growth_period_generations) noexcept {
     if ((radius_growth_period_generations == 0) || (current_generation_index < introduction_generation)) {
         return 0;
     }
 
-    return (current_generation_index - introduction_generation) / radius_growth_period_generations;
+    const std::size_t growth_steps =
+        (current_generation_index - introduction_generation) / radius_growth_period_generations;
+    if (growth_steps > (kEffectivelyInfiniteTrainingShardRadius - initial_radius)) {
+        return kEffectivelyInfiniteTrainingShardRadius;
+    }
+
+    return initial_radius + growth_steps;
+}
+
+constexpr NEUROEVOLUTION_HOST_DEVICE std::size_t
+TrainingShardRadiusAtGeneration(const std::size_t introduction_generation, const std::size_t current_generation_index,
+                                const std::size_t radius_growth_period_generations) noexcept {
+    return TrainingShardRadiusAtGeneration(introduction_generation, current_generation_index,
+                                           kDefaultTrainingShardInitialRadius, radius_growth_period_generations);
 }
 
 constexpr NEUROEVOLUTION_HOST_DEVICE bool
@@ -131,6 +147,7 @@ constexpr bool TryBuildTrainingDataShardRuntimeSet(const WordCountSchedule &sche
                                                    const std::size_t introduced_word_count,
                                                    const std::size_t generation_index,
                                                    const spatial::CellularGridShape &grid_shape,
+                                                   const std::size_t shard_initial_radius,
                                                    const std::size_t radius_growth_period_generations,
                                                    TrainingDataShardRuntimeSet &runtime_set_out) noexcept {
     runtime_set_out = {};
@@ -174,7 +191,7 @@ constexpr bool TryBuildTrainingDataShardRuntimeSet(const WordCountSchedule &sche
             .word_count = shard_word_count,
             .center_cell_index =
                 DeterministicTrainingShardCenterCellIndex(local_shard_index, grid_shape.cell_count),
-            .radius = TrainingShardRadiusAtGeneration(introduction_generation, generation_index,
+            .radius = TrainingShardRadiusAtGeneration(introduction_generation, generation_index, shard_initial_radius,
                                                       radius_growth_period_generations),
             .global_from_outset = 0,
         };
@@ -184,6 +201,17 @@ constexpr bool TryBuildTrainingDataShardRuntimeSet(const WordCountSchedule &sche
     }
 
     return true;
+}
+
+constexpr bool TryBuildTrainingDataShardRuntimeSet(const WordCountSchedule &schedule,
+                                                   const std::size_t introduced_word_count,
+                                                   const std::size_t generation_index,
+                                                   const spatial::CellularGridShape &grid_shape,
+                                                   const std::size_t radius_growth_period_generations,
+                                                   TrainingDataShardRuntimeSet &runtime_set_out) noexcept {
+    return TryBuildTrainingDataShardRuntimeSet(schedule, introduced_word_count, generation_index, grid_shape,
+                                               kDefaultTrainingShardInitialRadius, radius_growth_period_generations,
+                                               runtime_set_out);
 }
 
 std::filesystem::path DefaultActionSpacePath();

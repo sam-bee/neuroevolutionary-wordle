@@ -28,10 +28,11 @@ Each shard has:
 
 - a contiguous catalog range
 - a center cell
+- an initial radius
 - a radius
 - a radius-growth cadence
 
-The initial foundation shard is global from generation 0. Later shards start at radius 0 and expand outward.
+The initial foundation shard is global from generation 0. Later shards default to radius 0 and expand outward.
 
 ## Local Evaluation Set
 
@@ -54,6 +55,10 @@ Radius uses the same toroidal Moore / Chebyshev interpretation as the spatial GA
 - radius 2: `5 x 5`
 
 The current default is to grow shard radius every 2 generations. Once a shard is effectively global, it stops growing.
+
+The runtime also supports a configurable initial radius for newly introduced non-foundation shards. The
+`run_genetic_algorithm` CLI exposes `--shard-initial-radius N` and `--shard-initial-radius-infinite`; the infinite flag
+sets the shard radius high enough to cover the whole population grid immediately.
 
 ## Consequences
 

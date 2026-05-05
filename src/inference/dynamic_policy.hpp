@@ -17,15 +17,26 @@ using neuroevolution::model::output_embedding::ScoreActionEmbedding;
 using neuroevolution::model::output_embedding::SelectedAction;
 using neuroevolution::model::policy_model::PolicyVector;
 using neuroevolution::model::policy_model::TryForwardPolicyModel;
+using neuroevolution::model::policy_model::TryForwardPolicyModelConcurrently;
 using neuroevolution::training_folder::IsValidTrainingWordCatalog;
 using neuroevolution::training_folder::TrainingWordCatalog;
 using neuroevolution::wordle::Word;
 using neuroevolution::wordle::WordleGrid;
 
+constexpr int kDynamicPolicyWarpSize = 32;
+constexpr int kDynamicPolicyThreadsPerBlock = kDynamicPolicyWarpSize;
+
 enum class DynamicInferenceStatusCode : int {
     kOk = 0,
     kPolicyForwardFailed = 1,
     kActionSelectionFailed = 2,
+};
+
+template <int WarpWidth> struct DynamicPolicyWarpScratch {
+    model::policy_model::PolicyModelWarpScratch<WarpWidth> model{};
+    SelectedAction best_actions[WarpWidth]{};
+    int has_candidate[WarpWidth]{};
+    int status = static_cast<int>(DynamicInferenceStatusCode::kActionSelectionFailed);
 };
 
 inline NEUROEVOLUTION_HOST_DEVICE float ScoreDynamicActionEmbedding(
@@ -52,91 +63,91 @@ inline NEUROEVOLUTION_HOST_DEVICE bool HasGridAlreadyGuessedWord(const WordleGri
     return false;
 }
 
-inline NEUROEVOLUTION_HOST_DEVICE bool TrySelectBestDynamicAction(const PolicyVector &policy_vector,
-                                                                  const TrainingWordCatalog &training_word_catalog,
-                                                                  const std::uint8_t *genome_bytes,
-                                                                  const std::size_t action_count,
-                                                                  SelectedAction &selected_action) noexcept {
-    if (!IsValidTrainingWordCatalog(training_word_catalog) || (genome_bytes == nullptr) || (action_count == 0) ||
-        (action_count > training_word_catalog.word_count)) {
-        return false;
-    }
-
-    const genetic_algorithm::genome::TrainableActionEmbeddingTail *tail_rows =
-        genetic_algorithm::genome::GenomeTailRows(genome_bytes);
-
-    selected_action.action_index = 0;
-    selected_action.word = training_word_catalog.words[0];
-    selected_action.score = ScoreDynamicActionEmbedding(policy_vector, selected_action.word, tail_rows[0]);
-
-    for (std::size_t action_index = 1; action_index < action_count; ++action_index) {
-        const float score = ScoreDynamicActionEmbedding(policy_vector, training_word_catalog.words[action_index],
-                                                        tail_rows[action_index]);
-        if (score > selected_action.score) {
-            selected_action.action_index = action_index;
-            selected_action.word = training_word_catalog.words[action_index];
-            selected_action.score = score;
-        }
-    }
-
-    return true;
-}
-
-inline NEUROEVOLUTION_HOST_DEVICE bool TrySelectBestDynamicActionForGrid(
-    const PolicyVector &policy_vector, const TrainingWordCatalog &training_word_catalog,
-    const std::uint8_t *genome_bytes, const std::size_t action_count, const WordleGrid &grid,
+template <int WarpWidth>
+inline __device__ DynamicInferenceStatusCode SelectNextGuessFromDynamicGenomeConcurrently(
+    const WordleGrid &grid, const TrainingWordCatalog &training_word_catalog, const std::uint8_t *genome_bytes,
+    const std::size_t action_count, DynamicPolicyWarpScratch<WarpWidth> &scratch,
     SelectedAction &selected_action) noexcept {
+    static_assert(WarpWidth == kDynamicPolicyWarpSize, "Dynamic policy expects warp-sized cooperative inference.");
     if (!IsValidTrainingWordCatalog(training_word_catalog) || (genome_bytes == nullptr) || (action_count == 0) ||
         (action_count > training_word_catalog.word_count) || !wordle::IsValidWordleGrid(grid)) {
-        return false;
+        if ((threadIdx.x % WarpWidth) == 0) {
+            scratch.status = static_cast<int>(DynamicInferenceStatusCode::kActionSelectionFailed);
+        }
+        __syncwarp();
+        return DynamicInferenceStatusCode::kActionSelectionFailed;
+    }
+
+    const std::size_t lane_index = static_cast<std::size_t>(threadIdx.x % WarpWidth);
+    const bool policy_forward_ok = TryForwardPolicyModelConcurrently<WarpWidth>(
+        genetic_algorithm::genome::GenomePolicyModelParameters(genome_bytes), grid, scratch.model);
+    if (lane_index == 0) {
+        scratch.status = policy_forward_ok ? static_cast<int>(DynamicInferenceStatusCode::kOk)
+                                           : static_cast<int>(DynamicInferenceStatusCode::kPolicyForwardFailed);
+    }
+
+    __syncwarp();
+
+    if (scratch.status != static_cast<int>(DynamicInferenceStatusCode::kOk)) {
+        return static_cast<DynamicInferenceStatusCode>(scratch.status);
     }
 
     const genetic_algorithm::genome::TrainableActionEmbeddingTail *tail_rows =
         genetic_algorithm::genome::GenomeTailRows(genome_bytes);
 
-    bool found_candidate = false;
-    for (std::size_t action_index = 0; action_index < action_count; ++action_index) {
+    SelectedAction local_best_action{};
+    bool has_local_candidate = false;
+    for (std::size_t action_index = lane_index; action_index < action_count; action_index += WarpWidth) {
         const Word &candidate_word = training_word_catalog.words[action_index];
         if (HasGridAlreadyGuessedWord(grid, candidate_word)) {
             continue;
         }
 
-        const float score = ScoreDynamicActionEmbedding(policy_vector, candidate_word, tail_rows[action_index]);
-        if (!found_candidate || (score > selected_action.score)) {
-            selected_action.action_index = action_index;
-            selected_action.word = candidate_word;
-            selected_action.score = score;
-            found_candidate = true;
+        const float score =
+            ScoreDynamicActionEmbedding(scratch.model.policy_vector, candidate_word, tail_rows[action_index]);
+        if (!has_local_candidate || (score > local_best_action.score) ||
+            ((score == local_best_action.score) && (action_index < local_best_action.action_index))) {
+            local_best_action.action_index = action_index;
+            local_best_action.word = candidate_word;
+            local_best_action.score = score;
+            has_local_candidate = true;
         }
     }
 
-    return found_candidate;
-}
-
-inline NEUROEVOLUTION_HOST_DEVICE DynamicInferenceStatusCode SelectNextGuessFromDynamicGenome(
-    const WordleGrid &grid, const TrainingWordCatalog &training_word_catalog, const std::uint8_t *genome_bytes,
-    const std::size_t action_count, SelectedAction &selected_action) noexcept {
-    if ((genome_bytes == nullptr) || (action_count == 0)) {
-        return DynamicInferenceStatusCode::kActionSelectionFailed;
+    scratch.has_candidate[lane_index] = has_local_candidate ? 1 : 0;
+    if (has_local_candidate) {
+        scratch.best_actions[lane_index] = local_best_action;
     }
 
-    PolicyVector policy_vector{};
-    if (!TryForwardPolicyModel(genetic_algorithm::genome::GenomePolicyModelParameters(genome_bytes), grid,
-                               policy_vector)) {
-        return DynamicInferenceStatusCode::kPolicyForwardFailed;
+    __syncwarp();
+
+    for (int offset = (WarpWidth / 2); offset > 0; offset /= 2) {
+        if (lane_index < static_cast<std::size_t>(offset)) {
+            const std::size_t peer_index = lane_index + static_cast<std::size_t>(offset);
+            if ((scratch.has_candidate[peer_index] != 0) &&
+                ((scratch.has_candidate[lane_index] == 0) ||
+                 (scratch.best_actions[peer_index].score > scratch.best_actions[lane_index].score) ||
+                 ((scratch.best_actions[peer_index].score == scratch.best_actions[lane_index].score) &&
+                  (scratch.best_actions[peer_index].action_index < scratch.best_actions[lane_index].action_index)))) {
+                scratch.best_actions[lane_index] = scratch.best_actions[peer_index];
+                scratch.has_candidate[lane_index] = 1;
+            }
+        }
+
+        __syncwarp();
     }
 
-    return TrySelectBestDynamicActionForGrid(policy_vector, training_word_catalog, genome_bytes, action_count, grid,
-                                             selected_action)
-               ? DynamicInferenceStatusCode::kOk
-               : DynamicInferenceStatusCode::kActionSelectionFailed;
-}
+    if (lane_index == 0) {
+        if (scratch.has_candidate[0] == 0) {
+            scratch.status = static_cast<int>(DynamicInferenceStatusCode::kActionSelectionFailed);
+        } else {
+            selected_action = scratch.best_actions[0];
+            scratch.status = static_cast<int>(DynamicInferenceStatusCode::kOk);
+        }
+    }
 
-inline NEUROEVOLUTION_HOST_DEVICE bool TrySelectNextGuessFromDynamicGenome(
-    const WordleGrid &grid, const TrainingWordCatalog &training_word_catalog, const std::uint8_t *genome_bytes,
-    const std::size_t action_count, SelectedAction &selected_action) noexcept {
-    return SelectNextGuessFromDynamicGenome(grid, training_word_catalog, genome_bytes, action_count,
-                                            selected_action) == DynamicInferenceStatusCode::kOk;
+    __syncwarp();
+    return static_cast<DynamicInferenceStatusCode>(scratch.status);
 }
 
 } // namespace neuroevolution::inference::dynamic_policy

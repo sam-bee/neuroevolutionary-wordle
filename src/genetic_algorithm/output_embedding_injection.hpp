@@ -50,6 +50,68 @@ TrySeedOutputEmbeddingTailFromHintGrids(const model::policy_model::PolicyModelPa
     return true;
 }
 
+#if defined(__CUDACC__)
+template <int WarpWidth> struct OutputEmbeddingInjectionWarpScratch {
+    wordle::HintGridGroup hint_grid_group{};
+    common::FixedBuffer<float, model::output_embedding::kTrainableFeatureDimension> feature_sums{};
+    model::policy_model::PolicyModelWarpScratch<WarpWidth> policy_model{};
+    int status = 0;
+};
+
+template <int WarpWidth>
+inline __device__ bool TrySeedOutputEmbeddingTailFromHintGridsConcurrently(
+    const model::policy_model::PolicyModelParameters &policy_model, const wordle::Word &target_word,
+    model::output_embedding::TrainableActionEmbeddingTail &tail_out,
+    OutputEmbeddingInjectionWarpScratch<WarpWidth> &scratch) noexcept {
+    const std::size_t lane_index = static_cast<std::size_t>(threadIdx.x % WarpWidth);
+
+    if (lane_index == 0) {
+        tail_out = {};
+        scratch.status = wordle::IsValidWord(target_word) && wordle::TryBuildHintGridGroup(target_word, scratch.hint_grid_group);
+    }
+    __syncwarp();
+
+    if (scratch.status == 0) {
+        return false;
+    }
+
+    for (std::size_t feature_index = lane_index; feature_index < model::output_embedding::kTrainableFeatureDimension;
+         feature_index += WarpWidth) {
+        scratch.feature_sums[feature_index] = 0.0f;
+    }
+    __syncwarp();
+
+    for (std::size_t grid_index = 0; grid_index < wordle::kHintGridGroupSize; ++grid_index) {
+        const bool forward_ok = model::policy_model::TryForwardPolicyModelConcurrently<WarpWidth>(
+            policy_model, scratch.hint_grid_group.grids[grid_index], scratch.policy_model);
+        if (lane_index == 0) {
+            scratch.status = forward_ok ? 1 : 0;
+        }
+        __syncwarp();
+
+        if (scratch.status == 0) {
+            return false;
+        }
+
+        for (std::size_t feature_index = lane_index; feature_index < model::output_embedding::kTrainableFeatureDimension;
+             feature_index += WarpWidth) {
+            scratch.feature_sums[feature_index] +=
+                scratch.policy_model.policy_vector[model::output_embedding::kWordFeatureDimension + feature_index];
+        }
+        __syncwarp();
+    }
+
+    constexpr float kReciprocalHintGridCount = 1.0f / static_cast<float>(wordle::kHintGridGroupSize);
+    for (std::size_t feature_index = lane_index; feature_index < model::output_embedding::kTrainableFeatureDimension;
+         feature_index += WarpWidth) {
+        tail_out[feature_index] = common::ToFloat16(scratch.feature_sums[feature_index] * kReciprocalHintGridCount);
+    }
+    __syncwarp();
+
+    return true;
+}
+#endif
+
 template <std::size_t ActionCapacity>
 inline NEUROEVOLUTION_HOST_DEVICE bool TryInjectNewOutputEmbedding(ModelGenome<ActionCapacity> &genome,
                                                                    const wordle::Word &target_word) noexcept {

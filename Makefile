@@ -1,4 +1,4 @@
-.PHONY: configure build test test-cpu test-gpu test-gpu-sanitized smoke format clean rebuild agents-rebuild build-and-test run-ga-desktop run-ga-laptop run-ga-growth-smoke play-wordle
+.PHONY: configure build test test-cpu test-gpu test-gpu-sanitized smoke format clean rebuild agents-rebuild build-and-test run-ga-desktop run-ga-laptop run-ga-growth-smoke run-ga-benchmark-two-gen play-wordle
 
 -include .env
 
@@ -15,6 +15,9 @@ GA_SEED ?=
 GA_VERBOSE ?= 1
 GA_SEED_ARG := $(if $(GA_SEED),--seed $(GA_SEED))
 GA_VERBOSE_ARG := $(if $(filter 0 false no off,$(GA_VERBOSE)),,--verbose)
+GA_BENCHMARK_POPULATION_SIZE ?= 1024
+GA_BENCHMARK_GENOTYPE_VRAM_GB ?= 1
+GA_BENCHMARK_GENERATION_VRAM_GB ?= 0.5
 PLAY_WORDLE_MODEL ?=
 PLAY_WORDLE_METADATA ?= $(patsubst %.bin,%.json,$(PLAY_WORDLE_MODEL))
 
@@ -63,6 +66,18 @@ run-ga-growth-smoke: .env
 		--word-count-step 20 \
 		--word-count-step-period 2 \
 		--shard-radius-growth-period 2 $(GA_VERBOSE_ARG)
+
+run-ga-benchmark-two-gen: .env
+	cmake --build build --target run_genetic_algorithm
+	stdbuf -oL -eL ./build/run_genetic_algorithm \
+		--generations 2 \
+		--population-size $(GA_BENCHMARK_POPULATION_SIZE) \
+		--genotype-vram-gb $(GA_BENCHMARK_GENOTYPE_VRAM_GB) \
+		--generation-vram-gb $(GA_BENCHMARK_GENERATION_VRAM_GB) \
+		--initial-word-count 20 \
+		--word-count-step 1980 \
+		--word-count-step-period 1 \
+		--shard-initial-radius-infinite $(GA_SEED_ARG) $(GA_VERBOSE_ARG)
 
 play-wordle: .env
 	@if [ -z "$(PLAY_WORDLE_MODEL)" ]; then \

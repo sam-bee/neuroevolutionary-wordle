@@ -57,6 +57,7 @@ struct DeviceSlabGARuntimeBuffers {
     int *status = nullptr;
     training_folder::TrainingDataShardRuntime *active_training_shards = nullptr;
     std::uint32_t *current_local_training_word_counts = nullptr;
+    float *fitness_partial_sums = nullptr;
     std::size_t max_generation_size = 0;
     std::size_t generation_byte_budget_bytes = 0;
     std::size_t host_spillover_byte_budget_bytes = 0;

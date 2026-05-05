@@ -13,6 +13,18 @@ struct PolicyModelParameters {
 
 using PolicyVector = dense_trunk::PolicyVector;
 
+#if defined(__CUDACC__)
+template <int WarpWidth> struct PolicyModelWarpScratch {
+    model_input::ModelInputStateVector model_input_state{};
+    input_encoder::TurnInputVector turn_input{};
+    input_encoder::EncoderHiddenVector encoder_hidden{};
+    input_encoder::EncodedTurnVector encoded_turn{};
+    dense_trunk::DenseTrunkHiddenVector0 dense_hidden0{};
+    dense_trunk::DenseTrunkHiddenVector1 dense_hidden1{};
+    PolicyVector policy_vector{};
+};
+#endif
+
 inline NEUROEVOLUTION_HOST_DEVICE bool TryForwardPolicyModel(const PolicyModelParameters &parameters,
                                                              const wordle::WordleGrid &grid,
                                                              PolicyVector &policy_vector) noexcept {
@@ -24,6 +36,24 @@ inline NEUROEVOLUTION_HOST_DEVICE bool TryForwardPolicyModel(const PolicyModelPa
     dense_trunk::ForwardDenseTrunk(parameters.dense_trunk, model_input_state, policy_vector);
     return true;
 }
+
+#if defined(__CUDACC__)
+template <int WarpWidth>
+inline __device__ bool TryForwardPolicyModelConcurrently(const PolicyModelParameters &parameters,
+                                                         const wordle::WordleGrid &grid,
+                                                         PolicyModelWarpScratch<WarpWidth> &scratch) noexcept {
+    if (!model_input::TryEncodeWordleGridStateConcurrently<WarpWidth>(
+            parameters.input_encoder, grid, scratch.model_input_state, scratch.turn_input, scratch.encoder_hidden,
+            scratch.encoded_turn)) {
+        return false;
+    }
+
+    dense_trunk::ForwardDenseTrunkConcurrently<WarpWidth>(parameters.dense_trunk, scratch.model_input_state,
+                                                          scratch.dense_hidden0, scratch.dense_hidden1,
+                                                          scratch.policy_vector);
+    return true;
+}
+#endif
 
 PolicyVector ForwardPolicyModel(const PolicyModelParameters &parameters, const wordle::WordleGrid &grid);
 

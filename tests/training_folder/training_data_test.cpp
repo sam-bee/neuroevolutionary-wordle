@@ -15,6 +15,8 @@ using neuroevolution::training_folder::DoesTrainingDataShardCoverCell;
 using neuroevolution::training_folder::IsValidTrainingWordCatalog;
 using neuroevolution::training_folder::kDefaultInitialActiveWordCount;
 using neuroevolution::training_folder::kDefaultShardRadiusGrowthPeriodGenerations;
+using neuroevolution::training_folder::kDefaultTrainingShardInitialRadius;
+using neuroevolution::training_folder::kEffectivelyInfiniteTrainingShardRadius;
 using neuroevolution::training_folder::kTrainingWordCatalogCapacity;
 using neuroevolution::training_folder::LoadTrainingWordCatalogFromActionSpace;
 using neuroevolution::training_folder::ScheduledWordCountForGeneration;
@@ -151,6 +153,10 @@ bool TestTrainingShardRadiusGrowthUsesConfiguredCadence() {
                      "Expected radius to grow by one after two generations");
     ok &= ExpectTrue(TrainingShardRadiusAtGeneration(4, 8, kDefaultShardRadiusGrowthPeriodGenerations) == 2,
                      "Expected radius to continue growing at the configured cadence");
+    ok &= ExpectTrue(TrainingShardRadiusAtGeneration(4, 4, 7, kDefaultShardRadiusGrowthPeriodGenerations) == 7,
+                     "Expected a configured initial radius to apply on the introduction generation");
+    ok &= ExpectTrue(TrainingShardRadiusAtGeneration(4, 8, 7, kDefaultShardRadiusGrowthPeriodGenerations) == 9,
+                     "Expected radius growth to be added to the configured initial radius");
     return ok;
 }
 
@@ -244,6 +250,47 @@ bool TestTrainingShardRuntimeSetBuildsFoundationAndLocalPhaseShards() {
     return ok;
 }
 
+bool TestTrainingShardRuntimeSetCanStartLocalShardsWithInfiniteRadius() {
+    constexpr WordCountSchedule kSchedule{
+        .initial_word_count = 20,
+        .word_count_step = 10,
+        .word_count_step_period_generations = 3,
+    };
+
+    CellularGridShape grid_shape{};
+    bool ok = TryMakeCellularGridShape(25, grid_shape);
+    ok &= ExpectTrue(ok, "Expected a 25-cell population to form a valid 5x5 cellular grid");
+    if (!ok) {
+        return false;
+    }
+
+    TrainingDataShardRuntimeSet runtime_set{};
+    ok &= ExpectTrue(TryBuildTrainingDataShardRuntimeSet(kSchedule, 30, 3, grid_shape,
+                                                         kEffectivelyInfiniteTrainingShardRadius,
+                                                         kDefaultShardRadiusGrowthPeriodGenerations, runtime_set),
+                     "Expected runtime shard scheduling to accept an effectively infinite initial radius");
+    if (!ok) {
+        return false;
+    }
+
+    ok &= ExpectTrue(runtime_set.shard_count == 2,
+                     "Expected one foundation shard plus one newly introduced local shard");
+    const TrainingDataShardRuntime &local_shard = runtime_set.shards[1];
+    ok &= ExpectTrue(local_shard.radius == kEffectivelyInfiniteTrainingShardRadius,
+                     "Expected the local shard to start with the configured infinite radius");
+    ok &= ExpectTrue(DoesTrainingDataShardCoverCell(local_shard, grid_shape, 12),
+                     "Expected an infinite-radius local shard to cover every cell immediately");
+
+    TrainingDataShardRuntimeSet default_runtime_set{};
+    ok &= ExpectTrue(
+        TryBuildTrainingDataShardRuntimeSet(kSchedule, 30, 3, grid_shape, kDefaultTrainingShardInitialRadius,
+                                            kDefaultShardRadiusGrowthPeriodGenerations, default_runtime_set),
+        "Expected default initial radius scheduling to remain valid");
+    ok &= ExpectTrue(default_runtime_set.shards[1].radius == 0,
+                     "Expected default local shard introductions to remain radius zero");
+    return ok;
+}
+
 } // namespace
 
 int main() {
@@ -252,7 +299,8 @@ int main() {
         !TestWordCountScheduleCanStayFixedWidthWithZeroStep() ||
         !TestTrainingShardRadiusGrowthUsesConfiguredCadence() ||
         !TestTrainingShardCoverageUsesToroidalChebyshevRadius() ||
-        !TestTrainingShardRuntimeSetBuildsFoundationAndLocalPhaseShards()) {
+        !TestTrainingShardRuntimeSetBuildsFoundationAndLocalPhaseShards() ||
+        !TestTrainingShardRuntimeSetCanStartLocalShardsWithInfiniteRadius()) {
         return 1;
     }
 

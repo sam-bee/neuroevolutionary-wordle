@@ -14,6 +14,7 @@
 #include "genetic_algorithm/device/injection_ops.cuh"
 #include "genetic_algorithm/genotype_slab/reference_counter.hpp"
 #include "genetic_algorithm/genotype_slab/repacking.hpp"
+#include "inference/dynamic_policy.hpp"
 
 namespace neuroevolution::genetic_algorithm::genotype_slab::device {
 
@@ -27,11 +28,14 @@ using device_genome_ops::MakeDeviceRandomState;
 using device_genome_ops::RandomGenomeInitializationConfig;
 using device_injection_ops::DeviceOutputEmbeddingInjectionStatusCode;
 using device_injection_ops::TryInjectExpandedOutputEmbeddingTails;
+using device_injection_ops::TryInjectExpandedOutputEmbeddingTailsConcurrently;
 using neuroevolution::common::PrintTimestampedProgressDuration;
 using neuroevolution::common::PrintTimestampedProgressLine;
 using neuroevolution::common::ProgressClock;
+using neuroevolution::inference::dynamic_policy::kDynamicPolicyWarpSize;
 
 constexpr int kSlabAssemblyThreadBlockSize = 128;
+constexpr int kSlabAssemblyWarpsPerBlock = kSlabAssemblyThreadBlockSize / kDynamicPolicyWarpSize;
 constexpr int kMaxSlabAssemblyThreadBlocks = 32;
 constexpr int kSlabBootstrapThreadBlockSize = 256;
 constexpr int kSlabRepackThreadBlockSize = 256;
@@ -531,6 +535,107 @@ __global__ void AssembleChildBatchKernel(
         }
 
         next_generation.slot_indices[child_index] = child_slot;
+    }
+}
+
+__global__ void AssembleInjectedChildBatchKernel(
+    std::uint8_t *slab_storage, SlabSlotState *slot_states, std::uint32_t *free_slot_stack,
+    std::uint32_t *free_slot_count, std::uint32_t *free_slot_lock, const GenotypeSlabLayout slab_layout,
+    std::uint32_t *current_slot_indices, float *current_fitness, std::uint32_t *current_evaluation_counts,
+    std::uint8_t *current_has_fitness, const std::size_t current_generation_index,
+    const std::size_t current_generation_size, std::uint32_t *next_slot_indices, float *next_fitness,
+    std::uint32_t *next_evaluation_counts, std::uint8_t *next_has_fitness, const std::size_t next_generation_index,
+    const std::size_t next_generation_size, const SlabParentPair *parent_pairs, std::uint32_t *parent_reference_counts,
+    const std::size_t child_offset, const std::size_t batch_child_count, const std::uint32_t generation_seed,
+    const SlabDeviceAssemblyConfig config, int *status) {
+    if (!IsDeviceStatusOk(status)) {
+        return;
+    }
+
+    GenotypeSlabView slab{
+        .layout = slab_layout,
+        .storage = slab_storage,
+        .slot_states = slot_states,
+        .free_slot_stack = free_slot_stack,
+        .free_slot_count = free_slot_count,
+        .free_slot_lock = free_slot_lock,
+    };
+    SlabGenerationView current_generation =
+        MakeDeviceGenerationView(current_generation_index, current_generation_size, current_slot_indices,
+                                 current_fitness, current_evaluation_counts, current_has_fitness);
+    SlabGenerationView next_generation =
+        MakeDeviceGenerationView(next_generation_index, next_generation_size, next_slot_indices, next_fitness,
+                                 next_evaluation_counts, next_has_fitness);
+
+    const std::size_t parent_action_count =
+        (config.parent_action_count == 0) ? slab.layout.action_count : config.parent_action_count;
+    const std::size_t warp_index = static_cast<std::size_t>(threadIdx.x / kDynamicPolicyWarpSize);
+    const std::size_t lane_index = static_cast<std::size_t>(threadIdx.x % kDynamicPolicyWarpSize);
+    const std::size_t warp_global_index =
+        (static_cast<std::size_t>(blockIdx.x) * static_cast<std::size_t>(kSlabAssemblyWarpsPerBlock)) + warp_index;
+    const std::size_t warp_count =
+        static_cast<std::size_t>(gridDim.x) * static_cast<std::size_t>(kSlabAssemblyWarpsPerBlock);
+    __shared__ device_injection_ops::OutputEmbeddingInjectionWarpScratch<kDynamicPolicyWarpSize>
+        injection_scratch[kSlabAssemblyWarpsPerBlock];
+
+    for (std::size_t batch_child_index = warp_global_index; batch_child_index < batch_child_count;
+         batch_child_index += warp_count) {
+        if (!IsDeviceStatusOk(status)) {
+            return;
+        }
+
+        const std::size_t child_index = child_offset + batch_child_index;
+        std::uint32_t child_slot = kInvalidSlabSlotIndex;
+        int warp_status = DeviceStatusValue(DeviceSlabRuntimeStatusCode::kOk);
+        if (lane_index == 0) {
+            if (child_index >= next_generation_size) {
+                warp_status = DeviceStatusValue(DeviceSlabRuntimeStatusCode::kInvalidAssemblyPlan);
+            } else {
+                const SlabParentPair &parent_pair = parent_pairs[child_index];
+                const std::uint32_t first_parent_slot = current_generation.slot_indices[parent_pair.first_parent_index];
+                const std::uint32_t second_parent_slot =
+                    current_generation.slot_indices[parent_pair.second_parent_index];
+                if ((first_parent_slot == kInvalidSlabSlotIndex) || (second_parent_slot == kInvalidSlabSlotIndex)) {
+                    warp_status = DeviceStatusValue(DeviceSlabRuntimeStatusCode::kInvalidParentIndex);
+                } else if (!TryAllocateSlabSlot(slab, child_slot)) {
+                    warp_status = DeviceStatusValue(DeviceSlabRuntimeStatusCode::kSlabFull);
+                } else {
+                    DeviceRandomState random_state = MakeDeviceRandomState(
+                        generation_seed, static_cast<std::uint32_t>(child_index + (current_generation_index * 4099U)));
+                    BreedAndMutateGenome(SlabSlotBytesAt(slab.storage, slab.layout, first_parent_slot),
+                                         SlabSlotBytesAt(slab.storage, slab.layout, second_parent_slot),
+                                         parent_action_count, SlabSlotBytesAt(slab.storage, slab.layout, child_slot),
+                                         random_state, config.breeding, config.mutation);
+                }
+            }
+        }
+
+        child_slot = __shfl_sync(0xffffffffu, child_slot, 0);
+        warp_status = __shfl_sync(0xffffffffu, warp_status, 0);
+        if (warp_status != DeviceStatusValue(DeviceSlabRuntimeStatusCode::kOk)) {
+            if (lane_index == 0) {
+                SetFailureStatus(status, static_cast<DeviceSlabRuntimeStatusCode>(warp_status));
+            }
+            return;
+        }
+
+        const DeviceOutputEmbeddingInjectionStatusCode injection_status =
+            TryInjectExpandedOutputEmbeddingTailsConcurrently<kDynamicPolicyWarpSize>(
+                SlabSlotBytesAt(slab.storage, slab.layout, child_slot), parent_action_count,
+                config.pending_output_embedding_injection.first_catalog_word_index,
+                config.pending_output_embedding_injection.injection_count, injection_scratch[warp_index]);
+        if (injection_status != DeviceOutputEmbeddingInjectionStatusCode::kOk) {
+            if (lane_index == 0) {
+                (void)TryReleaseSlabSlot(slab, child_slot);
+                SetFailureStatus(status, MapInjectionStatus(injection_status));
+            }
+            return;
+        }
+
+        if (lane_index == 0) {
+            next_generation.slot_indices[child_index] = child_slot;
+        }
+        __syncwarp();
     }
 }
 
@@ -1434,14 +1539,26 @@ bool TryContinueNextGenerationAssemblyOnDevice(DeviceSlabRuntimeBuffers &buffers
             batch_child_count = kMaxSlabAssemblyConcurrentChildren;
         }
 
-        AssembleChildBatchKernel<<<BoundedAssemblyBlockCount(batch_child_count), kSlabAssemblyThreadBlockSize>>>(
-            buffers.slab_storage, buffers.slot_states, buffers.free_slot_stack, buffers.free_slot_count,
-            buffers.free_slot_lock, buffers.slab_layout, buffers.current_slot_indices, buffers.current_fitness,
-            buffers.current_evaluation_counts, buffers.current_has_fitness, buffers.current_generation_index,
-            buffers.current_generation_size, buffers.next_slot_indices, buffers.next_fitness,
-            buffers.next_evaluation_counts, buffers.next_has_fitness, buffers.next_generation_index,
-            buffers.next_generation_size, buffers.assembly_parent_pairs, buffers.parent_reference_counts, child_offset,
-            batch_child_count, generation_seed, config, buffers.status);
+        if (config.pending_output_embedding_injection.enabled) {
+            AssembleInjectedChildBatchKernel<<<BoundedAssemblyBlockCount(batch_child_count),
+                                              kSlabAssemblyThreadBlockSize>>>(
+                buffers.slab_storage, buffers.slot_states, buffers.free_slot_stack, buffers.free_slot_count,
+                buffers.free_slot_lock, buffers.slab_layout, buffers.current_slot_indices, buffers.current_fitness,
+                buffers.current_evaluation_counts, buffers.current_has_fitness, buffers.current_generation_index,
+                buffers.current_generation_size, buffers.next_slot_indices, buffers.next_fitness,
+                buffers.next_evaluation_counts, buffers.next_has_fitness, buffers.next_generation_index,
+                buffers.next_generation_size, buffers.assembly_parent_pairs, buffers.parent_reference_counts,
+                child_offset, batch_child_count, generation_seed, config, buffers.status);
+        } else {
+            AssembleChildBatchKernel<<<BoundedAssemblyBlockCount(batch_child_count), kSlabAssemblyThreadBlockSize>>>(
+                buffers.slab_storage, buffers.slot_states, buffers.free_slot_stack, buffers.free_slot_count,
+                buffers.free_slot_lock, buffers.slab_layout, buffers.current_slot_indices, buffers.current_fitness,
+                buffers.current_evaluation_counts, buffers.current_has_fitness, buffers.current_generation_index,
+                buffers.current_generation_size, buffers.next_slot_indices, buffers.next_fitness,
+                buffers.next_evaluation_counts, buffers.next_has_fitness, buffers.next_generation_index,
+                buffers.next_generation_size, buffers.assembly_parent_pairs, buffers.parent_reference_counts,
+                child_offset, batch_child_count, generation_seed, config, buffers.status);
+        }
         if (!FinishAssemblyKernelOrCleanup(buffers)) {
             return false;
         }
