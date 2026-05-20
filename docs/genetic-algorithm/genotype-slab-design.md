@@ -131,7 +131,7 @@ The key sizing rules are:
 - an on-device slab byte budget
 - a host spillover byte budget
 - a slot width derived from the current action count
-- population size derived from `population_budget / slot_stride`
+- population size derived from `population_budget / slot_stride`, then floored to complete grid rows
 - device slab slot count derived from `device_slab_budget / slot_stride`
 
 This means population can shrink as genotype width grows, while the configured memory budget remains fixed.

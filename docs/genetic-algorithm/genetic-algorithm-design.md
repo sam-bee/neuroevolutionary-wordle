@@ -14,7 +14,7 @@ collection, see [`genotype-slab-design.md`](genotype-slab-design.md).
 - **How is parent selection done?**
   Spatially. Both parents are chosen by local roulette selection from the focal cell's radius-2 neighborhood.
 - **Do we use self-parenting?**
-  Configurable in principle, but the current runtime defaults to no.
+  No. The current cellular runtime requires two different parents.
 - **What is fitness based on?**
   Simulated Wordle play.
 - **Does population size stay fixed forever?**
