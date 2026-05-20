@@ -527,6 +527,7 @@ int main(int argc, char **argv) {
         runtime_config.host_spillover_byte_budget_bytes = generation_memory_budget_bytes / 2;
         runtime_config.action_count = runtime_word_counts.action_space_word_count;
         runtime_config.population_size_ceiling = initial_population_size;
+        runtime_config.grid_column_count = initial_grid_shape.column_count;
 
         DeviceSlabGARuntimeBuffers buffers{};
         if (!TryCreateDeviceSlabGARuntimeBuffers(buffers, runtime_config)) {
@@ -547,7 +548,8 @@ int main(int argc, char **argv) {
         std::cout << '[' << FormatCurrentLocalTimestamp() << "] Running device GA with:\n"
                   << "  requested_initial_population=" << requested_initial_population_size << '\n'
                   << "  initial_population=" << initial_population_size << '\n'
-                  << "  initial_grid_side_length=" << initial_grid_shape.side_length << '\n'
+                  << "  initial_grid_rows=" << initial_grid_shape.row_count << '\n'
+                  << "  initial_grid_columns=" << initial_grid_shape.column_count << '\n'
                   << "  population_ceiling=" << PopulationCeilingLabel(cli_config.population_size_ceiling) << '\n'
                   << "  slab_slot_count=" << slab_slot_count << '\n'
                   << "  generation_population_capacity=" << generation_population_capacity << '\n'

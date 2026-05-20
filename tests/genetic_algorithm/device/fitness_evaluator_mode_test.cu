@@ -15,6 +15,7 @@
 namespace {
 
 using neuroevolution::genetic_algorithm::genotype_slab::ComputeSlabSlotStrideBytes;
+using neuroevolution::genetic_algorithm::spatial::FloorSquareRoot;
 using neuroevolution::genetic_algorithm::genotype_slab::SlabGeneration;
 using neuroevolution::genetic_algorithm::slab_device::DestroyDeviceSlabGARuntimeBuffers;
 using neuroevolution::genetic_algorithm::slab_device::DeviceSlabGARuntimeBuffers;
@@ -94,6 +95,7 @@ DeviceSlabGARuntimeConfig MakeRuntimeConfig(const std::size_t slot_count, const 
     runtime_config.host_spillover_byte_budget_bytes = runtime_config.generation_byte_budget_bytes / 2;
     runtime_config.action_count = action_count;
     runtime_config.population_size_ceiling = generation_size;
+    runtime_config.grid_column_count = FloorSquareRoot(generation_size);
     return runtime_config;
 }
 

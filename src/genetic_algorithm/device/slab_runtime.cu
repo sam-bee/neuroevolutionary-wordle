@@ -47,8 +47,10 @@ using neuroevolution::common::PrintTimestampedProgressLine;
 using neuroevolution::common::ProgressClock;
 using neuroevolution::inference::dynamic_policy::kDynamicPolicyWarpSize;
 using spatial::CellularGridShape;
-using spatial::FloorSquarePopulationSize;
+using spatial::FloorRowPreservingPopulationSize;
 using spatial::TryMakeCellularGridShape;
+using spatial::TryMakeCellularGridShapeForColumnCount;
+using spatial::TryMakeRectangularCellularGridShape;
 using training_folder::DeviceTrainingWordCatalog;
 using training_folder::TrainingWordCatalog;
 using training_folder::TrainingDataShardRuntimeSet;
@@ -96,7 +98,9 @@ inline bool KernelCompletedSuccessfully(const DeviceSlabGARuntimeBuffers &buffer
 inline bool IsCurrentGenerationCompatible(const DeviceSlabGARuntimeBuffers &buffers) noexcept {
     return genotype_slab::IsValidGenotypeSlabLayout(buffers.genotype_slab.slab_layout) &&
            (buffers.max_generation_size > 0) && (buffers.genotype_slab.current_generation_size > 0) &&
-           (buffers.genotype_slab.current_generation_size <= buffers.genotype_slab.max_generation_size);
+           (buffers.genotype_slab.current_generation_size <= buffers.genotype_slab.max_generation_size) &&
+           (buffers.grid_column_count > 0) &&
+           ((buffers.genotype_slab.current_generation_size % buffers.grid_column_count) == 0);
 }
 
 inline bool TryUploadActiveTrainingShardsForCurrentGeneration(DeviceSlabGARuntimeBuffers &buffers,
@@ -105,7 +109,8 @@ inline bool TryUploadActiveTrainingShardsForCurrentGeneration(DeviceSlabGARuntim
     current_grid_shape_out = {};
     buffers.active_training_shard_count = 0;
     if ((buffers.active_training_shards == nullptr) || (buffers.active_training_shard_capacity == 0) ||
-        !TryMakeCellularGridShape(buffers.genotype_slab.current_generation_size, current_grid_shape_out)) {
+        !TryMakeCellularGridShapeForColumnCount(buffers.genotype_slab.current_generation_size,
+                                                buffers.grid_column_count, current_grid_shape_out)) {
         return false;
     }
 
@@ -113,6 +118,7 @@ inline bool TryUploadActiveTrainingShardsForCurrentGeneration(DeviceSlabGARuntim
     if (!TryBuildTrainingDataShardRuntimeSet(runtime_word_counts.training_word_schedule,
                                              runtime_word_counts.training_word_count,
                                              buffers.genotype_slab.current_generation_index, current_grid_shape_out,
+                                             buffers.epicenter_grid_shape,
                                              runtime_word_counts.shard_initial_radius,
                                              runtime_word_counts.shard_radius_growth_period_generations, runtime_set) ||
         (runtime_set.shard_count == 0) || (runtime_set.shard_count > buffers.active_training_shard_capacity)) {
@@ -592,6 +598,7 @@ __global__ void SummarizeSlabGenerationKernel(const float *current_fitness, cons
 
 __global__ void BuildSlabAssemblyPlanKernel(const float *current_fitness, const std::uint8_t *current_has_fitness,
                                             const std::size_t current_generation_size, const std::size_t child_count,
+                                            const std::size_t grid_column_count,
                                             const std::size_t current_generation_index,
                                             const ParentSelectionConfig config, const std::uint32_t planning_seed,
                                             genotype_slab::SlabParentPair *parent_pairs, int *status) {
@@ -606,8 +613,9 @@ __global__ void BuildSlabAssemblyPlanKernel(const float *current_fitness, const 
 
     CellularGridShape current_grid_shape{};
     CellularGridShape next_grid_shape{};
-    if (!TryMakeCellularGridShape(current_generation_size, current_grid_shape) ||
-        !TryMakeCellularGridShape(child_count, next_grid_shape)) {
+    if (!TryMakeCellularGridShapeForColumnCount(current_generation_size, grid_column_count, current_grid_shape) ||
+        !TryMakeCellularGridShapeForColumnCount(child_count, grid_column_count, next_grid_shape) ||
+        (next_grid_shape.row_count > current_grid_shape.row_count)) {
         if ((blockIdx.x == 0) && (threadIdx.x == 0)) {
             SetFailureStatus(status, DeviceSlabGARuntimeStatusCode::kInvalidAssemblyConfig);
         }
@@ -654,8 +662,10 @@ inline bool TryComputeGenerationByteBudgetBytes(const std::size_t action_count, 
 }
 
 inline std::size_t RuntimeGenerationCapacity(const DeviceSlabGARuntimeConfig &config) noexcept {
-    return genotype_slab::SlabSlotCountForByteBudget(config.generation_byte_budget_bytes, config.action_count,
-                                                     config.population_size_ceiling);
+    return FloorRowPreservingPopulationSize(
+        genotype_slab::SlabSlotCountForByteBudget(config.generation_byte_budget_bytes, config.action_count,
+                                                  config.population_size_ceiling),
+        config.grid_column_count);
 }
 
 inline std::size_t RuntimeSlabSlotCount(const DeviceSlabGARuntimeConfig &config) noexcept {
@@ -888,7 +898,10 @@ inline bool TryPlanNextGenerationShape(const DeviceSlabGARuntimeBuffers &buffers
 
     next_generation_size_out = genotype_slab::SlabSlotCountForByteBudget(
         buffers.generation_byte_budget_bytes, next_action_count_out, buffers.max_generation_size);
-    next_generation_size_out = FloorSquarePopulationSize(next_generation_size_out);
+    next_generation_size_out = FloorRowPreservingPopulationSize(next_generation_size_out, buffers.grid_column_count);
+    if (next_generation_size_out > buffers.genotype_slab.current_generation_size) {
+        next_generation_size_out = buffers.genotype_slab.current_generation_size;
+    }
     return next_generation_size_out > 0;
 }
 
@@ -918,6 +931,12 @@ bool TryCreateDeviceSlabGARuntimeBuffers(DeviceSlabGARuntimeBuffers &buffers, co
 
     buffers.max_generation_size = max_generation_size;
     buffers.host_spillover_byte_budget_bytes = config.host_spillover_byte_budget_bytes;
+    buffers.grid_column_count = config.grid_column_count;
+    if (!TryMakeRectangularCellularGridShape(max_generation_size / config.grid_column_count,
+                                             config.grid_column_count, buffers.epicenter_grid_shape)) {
+        DestroyDeviceSlabGARuntimeBuffers(buffers);
+        return false;
+    }
     buffers.active_training_shard_capacity = training_folder::kTrainingWordCatalogCapacity;
     bool ok = true;
     ok &= CheckCuda(cudaMalloc(&buffers.summary, sizeof(PopulationFitnessSummary)));
@@ -1192,7 +1211,7 @@ bool TryAdvanceGenerationOnDevice(DeviceSlabGARuntimeBuffers &buffers, const std
     log_verbose_line("Generation " + std::to_string(next_generation_index) + ": building next-generation parent plan");
     BuildSlabAssemblyPlanKernel<<<block_count, kSlabGARuntimeThreadBlockSize>>>(
         buffers.genotype_slab.current_fitness, buffers.genotype_slab.current_has_fitness,
-        buffers.genotype_slab.current_generation_size, next_generation_size,
+        buffers.genotype_slab.current_generation_size, next_generation_size, buffers.grid_column_count,
         buffers.genotype_slab.current_generation_index, config.parent_selection, planning_seed,
         buffers.genotype_slab.assembly_parent_pairs, buffers.status);
     if (!CheckCuda(cudaGetLastError()) || !CheckCuda(cudaDeviceSynchronize()) ||

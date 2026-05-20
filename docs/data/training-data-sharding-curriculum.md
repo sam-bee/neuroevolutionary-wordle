@@ -21,18 +21,22 @@ global.
 
 Training exposure is now spatial.
 
-The population lives on the same square toroidal grid used for local parent selection, and each training-data phase is
-represented as a shard on that grid.
+The population lives on the same toroidal grid used for local parent selection. Startup grids are square, but later
+grids may be rectangular after row-only population shrink. Each training-data phase is represented as a shard on that
+grid.
 
 Each shard has:
 
 - a contiguous catalog range
-- a center cell
+- a two-dimensional center coordinate
 - an initial radius
 - a radius
 - a radius-growth cadence
 
 The initial foundation shard is global from generation 0. Later shards default to radius 0 and expand outward.
+
+Shard centers are assigned against the original startup grid. If later row deletion removes a shard center, its row is
+clamped to the last surviving row and its column is preserved.
 
 ## Local Evaluation Set
 

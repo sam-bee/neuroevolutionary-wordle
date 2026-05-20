@@ -10,6 +10,7 @@ namespace {
 using neuroevolution::genetic_algorithm::spatial::CellularGridShape;
 using neuroevolution::genetic_algorithm::spatial::CellularNeighborList;
 using neuroevolution::genetic_algorithm::spatial::ContainsNeighborIndex;
+using neuroevolution::genetic_algorithm::spatial::FloorRowPreservingPopulationSize;
 using neuroevolution::genetic_algorithm::spatial::FloorSquarePopulationSize;
 using neuroevolution::genetic_algorithm::spatial::GridColumnFromIndex;
 using neuroevolution::genetic_algorithm::spatial::GridIndexFromRowColumn;
@@ -17,7 +18,7 @@ using neuroevolution::genetic_algorithm::spatial::GridRowFromIndex;
 using neuroevolution::genetic_algorithm::spatial::IsValidCellularGridShape;
 using neuroevolution::genetic_algorithm::spatial::TryCollectCellularSecondParentCandidates;
 using neuroevolution::genetic_algorithm::spatial::TryMakeCellularGridShape;
-using neuroevolution::genetic_algorithm::spatial::TryProjectCellIndexBetweenSquareGrids;
+using neuroevolution::genetic_algorithm::spatial::TryMakeRectangularCellularGridShape;
 using neuroevolution::genetic_algorithm::spatial::WrapToroidalCoordinate;
 
 bool ExpectTrue(const bool condition, const std::string_view message) {
@@ -29,7 +30,7 @@ bool ExpectTrue(const bool condition, const std::string_view message) {
     return true;
 }
 
-bool TestPopulationFlooringRoundsDownToSquares() {
+bool TestPopulationFlooringRoundsDownToSquaresForStartup() {
     bool ok = true;
     ok &= ExpectTrue(FloorSquarePopulationSize(1) == 1, "Expected 1 to remain 1");
     ok &= ExpectTrue(FloorSquarePopulationSize(2) == 1, "Expected 2 to floor to 1");
@@ -40,19 +41,30 @@ bool TestPopulationFlooringRoundsDownToSquares() {
     return ok;
 }
 
+bool TestPopulationFlooringRoundsDownToWholeRows() {
+    bool ok = true;
+    ok &= ExpectTrue(FloorRowPreservingPopulationSize(24, 5) == 20, "Expected 24 cells to floor to four rows of five");
+    ok &= ExpectTrue(FloorRowPreservingPopulationSize(25, 5) == 25, "Expected 25 cells to remain five rows of five");
+    ok &= ExpectTrue(FloorRowPreservingPopulationSize(4, 5) == 0, "Expected too-small capacity to fit no full row");
+    return ok;
+}
+
 bool TestGridShapeAndIndexRoundTrips() {
     CellularGridShape shape{};
     bool ok = true;
-    ok &= TryMakeCellularGridShape(16, shape);
-    ok &= ExpectTrue(IsValidCellularGridShape(shape), "Expected 4x4 shape to be valid");
-    ok &= ExpectTrue(shape.side_length == 4, "Expected 16 cells to produce side length 4");
-    ok &= ExpectTrue(GridIndexFromRowColumn(shape, 2, 3) == 11, "Expected row/column to map to linear index");
-    ok &= ExpectTrue(GridRowFromIndex(shape, 11) == 2, "Expected linear index to map back to row");
-    ok &= ExpectTrue(GridColumnFromIndex(shape, 11) == 3, "Expected linear index to map back to column");
+    ok &= TryMakeRectangularCellularGridShape(3, 5, shape);
+    ok &= ExpectTrue(IsValidCellularGridShape(shape), "Expected 3x5 shape to be valid");
+    ok &= ExpectTrue(shape.row_count == 3, "Expected rectangular shape to preserve row count");
+    ok &= ExpectTrue(shape.column_count == 5, "Expected rectangular shape to preserve column count");
+    ok &= ExpectTrue(shape.cell_count == 15, "Expected rectangular shape to compute cell count");
+    ok &= ExpectTrue(GridIndexFromRowColumn(shape, 2, 3) == 13, "Expected row/column to map to linear index");
+    ok &= ExpectTrue(GridRowFromIndex(shape, 13) == 2, "Expected linear index to map back to row");
+    ok &= ExpectTrue(GridColumnFromIndex(shape, 13) == 3, "Expected linear index to map back to column");
 
-    CellularGridShape invalid_shape{};
-    ok &= ExpectTrue(!TryMakeCellularGridShape(15, invalid_shape),
-                     "Expected non-square cell counts to be rejected as grid shapes");
+    CellularGridShape square_shape{};
+    ok &= TryMakeCellularGridShape(16, square_shape);
+    ok &= ExpectTrue(square_shape.row_count == 4, "Expected square helper to derive row count");
+    ok &= ExpectTrue(square_shape.column_count == 4, "Expected square helper to derive column count");
     return ok;
 }
 
@@ -85,6 +97,17 @@ bool TestRadiusTwoMooreNeighborhoodHasTwentyFourDistinctCandidatesOnFiveByFiveGr
     return ok;
 }
 
+bool TestRadiusTwoMooreNeighborhoodCanReachDeletedRowParents() {
+    CellularGridShape parent_shape{};
+    CellularNeighborList neighbors{};
+    bool ok = true;
+    ok &= TryMakeRectangularCellularGridShape(5, 5, parent_shape);
+    ok &= TryCollectCellularSecondParentCandidates(parent_shape, GridIndexFromRowColumn(parent_shape, 3, 2), neighbors);
+    ok &= ExpectTrue(ContainsNeighborIndex(neighbors, GridIndexFromRowColumn(parent_shape, 4, 2)),
+                     "Expected bottom-row parents to stay eligible from the last surviving child row");
+    return ok;
+}
+
 bool TestRadiusTwoMooreNeighborhoodDeduplicatesOnSmallToroidalGrids() {
     CellularGridShape shape{};
     CellularNeighborList neighbors{};
@@ -97,28 +120,14 @@ bool TestRadiusTwoMooreNeighborhoodDeduplicatesOnSmallToroidalGrids() {
     return ok;
 }
 
-bool TestGridProjectionMapsShrunkenChildCellsAcrossTheCurrentGrid() {
-    CellularGridShape source_shape{};
-    CellularGridShape target_shape{};
-    bool ok = true;
-    ok &= TryMakeCellularGridShape(25, source_shape);
-    ok &= TryMakeCellularGridShape(9, target_shape);
-
-    std::size_t source_cell_index = 0;
-    ok &= TryProjectCellIndexBetweenSquareGrids(source_shape, target_shape, 0, source_cell_index);
-    ok &= ExpectTrue(source_cell_index == 0, "Expected the top-left child cell to project to the top-left parent");
-    ok &= TryProjectCellIndexBetweenSquareGrids(source_shape, target_shape, 4, source_cell_index);
-    ok &= ExpectTrue(source_cell_index == 12, "Expected the center child cell to project to the center parent");
-    ok &= TryProjectCellIndexBetweenSquareGrids(source_shape, target_shape, 8, source_cell_index);
-    ok &= ExpectTrue(source_cell_index == 24,
-                     "Expected the bottom-right child cell to project to the bottom-right parent");
-    return ok;
-}
-
 } // namespace
 
 int main() {
-    if (!TestPopulationFlooringRoundsDownToSquares()) {
+    if (!TestPopulationFlooringRoundsDownToSquaresForStartup()) {
+        return 1;
+    }
+
+    if (!TestPopulationFlooringRoundsDownToWholeRows()) {
         return 1;
     }
 
@@ -134,11 +143,11 @@ int main() {
         return 1;
     }
 
-    if (!TestRadiusTwoMooreNeighborhoodDeduplicatesOnSmallToroidalGrids()) {
+    if (!TestRadiusTwoMooreNeighborhoodCanReachDeletedRowParents()) {
         return 1;
     }
 
-    if (!TestGridProjectionMapsShrunkenChildCellsAcrossTheCurrentGrid()) {
+    if (!TestRadiusTwoMooreNeighborhoodDeduplicatesOnSmallToroidalGrids()) {
         return 1;
     }
 

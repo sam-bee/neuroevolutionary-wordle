@@ -40,15 +40,19 @@ struct DeviceSlabGARuntimeConfig {
     std::size_t host_spillover_byte_budget_bytes = 0;
     std::size_t action_count = 0;
     std::size_t population_size_ceiling = 0;
+    std::size_t grid_column_count = 0;
 };
 
 constexpr bool IsValidDeviceSlabGARuntimeConfig(const DeviceSlabGARuntimeConfig &config) noexcept {
     return (config.genotype_slab_byte_budget_bytes >= config.generation_byte_budget_bytes) &&
            (config.action_count > 0) &&
+           (config.grid_column_count > 0) &&
+           ((config.population_size_ceiling == 0) || ((config.population_size_ceiling % config.grid_column_count) == 0)) &&
            (genotype_slab::SlabSlotCountForByteBudget(config.genotype_slab_byte_budget_bytes, config.action_count) >
             0) &&
-           (genotype_slab::SlabSlotCountForByteBudget(config.generation_byte_budget_bytes, config.action_count,
-                                                      config.population_size_ceiling) > 0);
+           ((genotype_slab::SlabSlotCountForByteBudget(config.generation_byte_budget_bytes, config.action_count,
+                                                       config.population_size_ceiling) /
+             config.grid_column_count) > 0);
 }
 
 struct DeviceSlabGARuntimeBuffers {
@@ -61,6 +65,8 @@ struct DeviceSlabGARuntimeBuffers {
     std::size_t max_generation_size = 0;
     std::size_t generation_byte_budget_bytes = 0;
     std::size_t host_spillover_byte_budget_bytes = 0;
+    std::size_t grid_column_count = 0;
+    ::neuroevolution::spatial::CellularGridShape epicenter_grid_shape{};
     std::size_t active_training_shard_capacity = 0;
     std::size_t active_training_shard_count = 0;
     std::size_t host_spillover_count = 0;

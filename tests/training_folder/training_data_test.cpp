@@ -10,6 +10,7 @@
 namespace {
 
 using neuroevolution::training_folder::DefaultActionSpacePath;
+using neuroevolution::training_folder::DeterministicTrainingShardCenterCoordinate;
 using neuroevolution::training_folder::DeterministicTrainingShardCenterCellIndex;
 using neuroevolution::training_folder::DoesTrainingDataShardCoverCell;
 using neuroevolution::training_folder::IsValidTrainingWordCatalog;
@@ -23,11 +24,14 @@ using neuroevolution::training_folder::ScheduledWordCountForGeneration;
 using neuroevolution::training_folder::TrainingDataShardRuntime;
 using neuroevolution::training_folder::TrainingDataShardRuntimeSet;
 using neuroevolution::training_folder::TrainingShardRadiusAtGeneration;
+using neuroevolution::training_folder::TrainingShardCenterCoordinate;
 using neuroevolution::training_folder::TrainingWordCatalog;
 using neuroevolution::training_folder::TryBuildTrainingDataShardRuntimeSet;
 using neuroevolution::training_folder::WordCountSchedule;
 using neuroevolution::spatial::CellularGridShape;
+using neuroevolution::spatial::GridIndexFromRowColumn;
 using neuroevolution::spatial::TryMakeCellularGridShape;
+using neuroevolution::spatial::TryMakeRectangularCellularGridShape;
 using neuroevolution::wordle::Word;
 
 constexpr std::array<const char *, kDefaultInitialActiveWordCount> kExpectedTrainingWords = {
@@ -171,14 +175,16 @@ bool TestTrainingShardCoverageUsesToroidalChebyshevRadius() {
     const TrainingDataShardRuntime foundation_shard{
         .first_catalog_word_index = 0,
         .word_count = 20,
-        .center_cell_index = 0,
+        .center_row = 0,
+        .center_column = 0,
         .radius = 0,
         .global_from_outset = 1,
     };
     const TrainingDataShardRuntime local_shard{
         .first_catalog_word_index = 20,
         .word_count = 10,
-        .center_cell_index = 0,
+        .center_row = 0,
+        .center_column = 0,
         .radius = 1,
         .global_from_outset = 0,
     };
@@ -233,7 +239,9 @@ bool TestTrainingShardRuntimeSetBuildsFoundationAndLocalPhaseShards() {
                      "Expected the first local shard to start immediately after the foundation shard");
     ok &= ExpectTrue(first_local_shard.word_count == 10,
                      "Expected the first local shard to contain one configured word-count step");
-    ok &= ExpectTrue(first_local_shard.center_cell_index == DeterministicTrainingShardCenterCellIndex(0, 25),
+    ok &= ExpectTrue(GridIndexFromRowColumn(grid_shape, first_local_shard.center_row,
+                                            first_local_shard.center_column) ==
+                         DeterministicTrainingShardCenterCellIndex(0, 25),
                      "Expected the first local shard center to be derived deterministically from shard ordinal");
     ok &= ExpectTrue(first_local_shard.radius == 1,
                      "Expected the first local shard radius to have grown once after two generations");
@@ -243,10 +251,53 @@ bool TestTrainingShardRuntimeSetBuildsFoundationAndLocalPhaseShards() {
                      "Expected later local shards to keep consuming contiguous catalog ranges");
     ok &= ExpectTrue(second_local_shard.word_count == 10,
                      "Expected the second local shard to contain one configured word-count step");
-    ok &= ExpectTrue(second_local_shard.center_cell_index == DeterministicTrainingShardCenterCellIndex(1, 25),
+    ok &= ExpectTrue(GridIndexFromRowColumn(grid_shape, second_local_shard.center_row,
+                                            second_local_shard.center_column) ==
+                         DeterministicTrainingShardCenterCellIndex(1, 25),
                      "Expected the second local shard center to be derived deterministically from shard ordinal");
     ok &= ExpectTrue(second_local_shard.radius == 0,
                      "Expected a shard introduced on the current generation to start at radius zero");
+    return ok;
+}
+
+bool TestTrainingShardCentersClampWhenRowsAreRemoved() {
+    constexpr WordCountSchedule kSchedule{
+        .initial_word_count = 20,
+        .word_count_step = 10,
+        .word_count_step_period_generations = 3,
+    };
+
+    CellularGridShape original_grid_shape{};
+    CellularGridShape shrunken_grid_shape{};
+    bool ok = TryMakeCellularGridShape(25, original_grid_shape);
+    ok &= TryMakeRectangularCellularGridShape(4, 5, shrunken_grid_shape);
+    if (!ok) {
+        return false;
+    }
+
+    TrainingDataShardRuntimeSet runtime_set{};
+    ok &= ExpectTrue(TryBuildTrainingDataShardRuntimeSet(kSchedule, 30, 3, shrunken_grid_shape, original_grid_shape,
+                                                         kDefaultTrainingShardInitialRadius,
+                                                         kDefaultShardRadiusGrowthPeriodGenerations, runtime_set),
+                     "Expected runtime shard scheduling to accept an original epicenter grid");
+    if (!ok) {
+        return false;
+    }
+
+    const TrainingShardCenterCoordinate original_center =
+        DeterministicTrainingShardCenterCoordinate(0, original_grid_shape);
+    const TrainingDataShardRuntime &local_shard = runtime_set.shards[1];
+    ok &= ExpectTrue(local_shard.center_column == original_center.column,
+                     "Expected row deletion to preserve the shard center column");
+    ok &= ExpectTrue(local_shard.center_row < shrunken_grid_shape.row_count,
+                     "Expected row deletion to keep the shard center on the shrunken grid");
+    if (original_center.row >= shrunken_grid_shape.row_count) {
+        ok &= ExpectTrue(local_shard.center_row == shrunken_grid_shape.row_count - 1,
+                         "Expected deleted-row shard centers to clamp to the last surviving row");
+    } else {
+        ok &= ExpectTrue(local_shard.center_row == original_center.row,
+                         "Expected surviving shard center rows to stay unchanged");
+    }
     return ok;
 }
 
@@ -300,6 +351,7 @@ int main() {
         !TestTrainingShardRadiusGrowthUsesConfiguredCadence() ||
         !TestTrainingShardCoverageUsesToroidalChebyshevRadius() ||
         !TestTrainingShardRuntimeSetBuildsFoundationAndLocalPhaseShards() ||
+        !TestTrainingShardCentersClampWhenRowsAreRemoved() ||
         !TestTrainingShardRuntimeSetCanStartLocalShardsWithInfiniteRadius()) {
         return 1;
     }

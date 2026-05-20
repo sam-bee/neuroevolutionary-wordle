@@ -15,7 +15,8 @@ constexpr float kPositiveSelectionFitnessFloor = 1.40129846e-45f;
 constexpr std::size_t kMaxSizeT = static_cast<std::size_t>(-1);
 
 struct CellularGridShape {
-    std::size_t side_length = 0;
+    std::size_t row_count = 0;
+    std::size_t column_count = 0;
     std::size_t cell_count = 0;
 };
 
@@ -25,9 +26,9 @@ struct CellularNeighborList {
 };
 
 constexpr NEUROEVOLUTION_HOST_DEVICE bool IsValidCellularGridShape(const CellularGridShape &shape) noexcept {
-    return (shape.side_length > 0) && (shape.cell_count > 0) &&
-           (shape.side_length <= (kMaxSizeT / shape.side_length)) &&
-           ((shape.side_length * shape.side_length) == shape.cell_count);
+    return (shape.row_count > 0) && (shape.column_count > 0) && (shape.cell_count > 0) &&
+           (shape.row_count <= (kMaxSizeT / shape.column_count)) &&
+           ((shape.row_count * shape.column_count) == shape.cell_count);
 }
 
 constexpr NEUROEVOLUTION_HOST_DEVICE std::size_t FloorSquareRoot(const std::size_t value) noexcept {
@@ -58,6 +59,29 @@ constexpr NEUROEVOLUTION_HOST_DEVICE std::size_t FloorSquarePopulationSize(const
     return side_length * side_length;
 }
 
+constexpr NEUROEVOLUTION_HOST_DEVICE std::size_t
+FloorRowPreservingPopulationSize(const std::size_t nominal_population_size, const std::size_t column_count) noexcept {
+    if (column_count == 0) {
+        return 0;
+    }
+
+    return (nominal_population_size / column_count) * column_count;
+}
+
+constexpr NEUROEVOLUTION_HOST_DEVICE bool
+TryMakeRectangularCellularGridShape(const std::size_t row_count, const std::size_t column_count,
+                                    CellularGridShape &shape_out) noexcept {
+    shape_out = {};
+    if ((row_count == 0) || (column_count == 0) || (row_count > (kMaxSizeT / column_count))) {
+        return false;
+    }
+
+    shape_out.row_count = row_count;
+    shape_out.column_count = column_count;
+    shape_out.cell_count = row_count * column_count;
+    return true;
+}
+
 constexpr NEUROEVOLUTION_HOST_DEVICE bool TryMakeCellularGridShape(const std::size_t cell_count,
                                                                    CellularGridShape &shape_out) noexcept {
     shape_out = {};
@@ -70,27 +94,36 @@ constexpr NEUROEVOLUTION_HOST_DEVICE bool TryMakeCellularGridShape(const std::si
         return false;
     }
 
-    shape_out.side_length = side_length;
-    shape_out.cell_count = cell_count;
-    return true;
+    return TryMakeRectangularCellularGridShape(side_length, side_length, shape_out);
+}
+
+constexpr NEUROEVOLUTION_HOST_DEVICE bool
+TryMakeCellularGridShapeForColumnCount(const std::size_t cell_count, const std::size_t column_count,
+                                       CellularGridShape &shape_out) noexcept {
+    shape_out = {};
+    if ((cell_count == 0) || (column_count == 0) || ((cell_count % column_count) != 0)) {
+        return false;
+    }
+
+    return TryMakeRectangularCellularGridShape(cell_count / column_count, column_count, shape_out);
 }
 
 constexpr NEUROEVOLUTION_HOST_DEVICE std::size_t GridRowFromIndex(const CellularGridShape &shape,
                                                                   const std::size_t cell_index) noexcept {
-    return (!IsValidCellularGridShape(shape) || (shape.side_length == 0)) ? 0 : (cell_index / shape.side_length);
+    return (!IsValidCellularGridShape(shape) || (shape.column_count == 0)) ? 0 : (cell_index / shape.column_count);
 }
 
 constexpr NEUROEVOLUTION_HOST_DEVICE std::size_t GridColumnFromIndex(const CellularGridShape &shape,
                                                                      const std::size_t cell_index) noexcept {
-    return (!IsValidCellularGridShape(shape) || (shape.side_length == 0)) ? 0 : (cell_index % shape.side_length);
+    return (!IsValidCellularGridShape(shape) || (shape.column_count == 0)) ? 0 : (cell_index % shape.column_count);
 }
 
 constexpr NEUROEVOLUTION_HOST_DEVICE std::size_t GridIndexFromRowColumn(const CellularGridShape &shape,
                                                                         const std::size_t row,
                                                                         const std::size_t column) noexcept {
-    return (!IsValidCellularGridShape(shape) || (row >= shape.side_length) || (column >= shape.side_length))
+    return (!IsValidCellularGridShape(shape) || (row >= shape.row_count) || (column >= shape.column_count))
                ? 0
-               : ((row * shape.side_length) + column);
+               : ((row * shape.column_count) + column);
 }
 
 constexpr NEUROEVOLUTION_HOST_DEVICE std::size_t WrapToroidalCoordinate(const std::ptrdiff_t coordinate,
@@ -130,10 +163,10 @@ constexpr NEUROEVOLUTION_HOST_DEVICE std::size_t ToroidalChebyshevDistance(const
     }
 
     const std::size_t row_distance = ToroidalAxisDistance(GridRowFromIndex(shape, first_cell_index),
-                                                          GridRowFromIndex(shape, second_cell_index), shape.side_length);
+                                                          GridRowFromIndex(shape, second_cell_index), shape.row_count);
     const std::size_t column_distance =
         ToroidalAxisDistance(GridColumnFromIndex(shape, first_cell_index),
-                             GridColumnFromIndex(shape, second_cell_index), shape.side_length);
+                             GridColumnFromIndex(shape, second_cell_index), shape.column_count);
     return (row_distance > column_distance) ? row_distance : column_distance;
 }
 
@@ -154,7 +187,7 @@ constexpr NEUROEVOLUTION_HOST_DEVICE bool TryCollectMooreRadiusNeighbors(const C
                                                                          CellularNeighborList &neighbors_out) noexcept {
     neighbors_out = {};
     if (!IsValidCellularGridShape(shape) || (focal_cell_index >= shape.cell_count) ||
-        (radius > shape.side_length + shape.side_length)) {
+        (radius > shape.row_count + shape.column_count)) {
         return false;
     }
 
@@ -170,9 +203,9 @@ constexpr NEUROEVOLUTION_HOST_DEVICE bool TryCollectMooreRadiusNeighbors(const C
             }
 
             const std::size_t neighbor_row =
-                WrapToroidalCoordinate(static_cast<std::ptrdiff_t>(focal_row) + row_offset, shape.side_length);
+                WrapToroidalCoordinate(static_cast<std::ptrdiff_t>(focal_row) + row_offset, shape.row_count);
             const std::size_t neighbor_column =
-                WrapToroidalCoordinate(static_cast<std::ptrdiff_t>(focal_column) + column_offset, shape.side_length);
+                WrapToroidalCoordinate(static_cast<std::ptrdiff_t>(focal_column) + column_offset, shape.column_count);
             const std::size_t neighbor_index = GridIndexFromRowColumn(shape, neighbor_row, neighbor_column);
 
             if ((neighbor_index == focal_cell_index) || ContainsNeighborIndex(neighbors_out, neighbor_index)) {
@@ -195,29 +228,6 @@ constexpr NEUROEVOLUTION_HOST_DEVICE bool
 TryCollectCellularSecondParentCandidates(const CellularGridShape &shape, const std::size_t focal_cell_index,
                                          CellularNeighborList &neighbors_out) noexcept {
     return TryCollectMooreRadiusNeighbors(shape, focal_cell_index, kCellularBreedingRadius, neighbors_out);
-}
-
-constexpr NEUROEVOLUTION_HOST_DEVICE bool
-TryProjectCellIndexBetweenSquareGrids(const CellularGridShape &source_shape, const CellularGridShape &target_shape,
-                                      const std::size_t target_cell_index, std::size_t &source_cell_index_out) noexcept {
-    source_cell_index_out = 0;
-    if (!IsValidCellularGridShape(source_shape) || !IsValidCellularGridShape(target_shape) ||
-        (target_cell_index >= target_shape.cell_count)) {
-        return false;
-    }
-
-    const std::size_t target_row = GridRowFromIndex(target_shape, target_cell_index);
-    const std::size_t target_column = GridColumnFromIndex(target_shape, target_cell_index);
-    const std::size_t source_row = (target_shape.side_length == 1)
-                                       ? (source_shape.side_length / 2)
-                                       : ((target_row * (source_shape.side_length - 1)) /
-                                          (target_shape.side_length - 1));
-    const std::size_t source_column = (target_shape.side_length == 1)
-                                          ? (source_shape.side_length / 2)
-                                          : ((target_column * (source_shape.side_length - 1)) /
-                                             (target_shape.side_length - 1));
-    source_cell_index_out = GridIndexFromRowColumn(source_shape, source_row, source_column);
-    return source_cell_index_out < source_shape.cell_count;
 }
 
 } // namespace neuroevolution::spatial

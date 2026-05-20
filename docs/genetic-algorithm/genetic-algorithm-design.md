@@ -12,7 +12,7 @@ collection, see [`genotype-slab-design.md`](genotype-slab-design.md).
 - **Do we use elitism?**
   No.
 - **How is parent selection done?**
-  Spatially. The first parent is the focal cell occupant, and the second parent is chosen by local roulette selection.
+  Spatially. Both parents are chosen by local roulette selection from the focal cell's radius-2 neighborhood.
 - **Do we use self-parenting?**
   Configurable in principle, but the current runtime defaults to no.
 - **What is fitness based on?**
@@ -41,14 +41,16 @@ generational GA.
 
 ## Spatial Population Structure
 
-The active population is laid out on a square toroidal grid.
+The startup population is laid out on a square toroidal grid. Later generations may become rectangular if genotype
+growth forces the runtime to reduce population size.
 
 That means:
 
 - one organism per cell
 - top wraps to bottom
 - left wraps to right
-- population size is floored to a square number so the grid stays regular
+- startup population size is floored to a square number
+- later population reductions remove whole rows from the maximum-y side while preserving the original column count
 
 This same grid is also used by the spatial training-data shards.
 
@@ -58,12 +60,13 @@ The current runtime is a cellular GA.
 
 For each child cell:
 
-- the **first parent** is the organism currently occupying that cell
-- the **second parent** is chosen from the 24 surrounding cells in the radius-2 Moore neighborhood
-- the second parent is sampled by local roulette-wheel selection over normalized local fitness
-- the focal cell is excluded from the second-parent candidate set by default
+- both parents are chosen from the surrounding cells in the radius-2 Moore neighborhood
+- each parent is sampled by local roulette-wheel selection over normalized local fitness
+- the two parents must be different
+- the focal child cell is excluded from the parent candidate set
 
-Children are written back to the same cell position in the next-generation grid.
+When the next generation is smaller, no child is produced for cells in removed rows. Parents in those removed rows are
+still eligible through the current generation's toroidal neighborhood during assembly-plan construction.
 
 So the runtime is spatially local in mating, but still synchronous and generational in replacement.
 
@@ -144,6 +147,10 @@ The practical consequence is:
 
 - when genotype width stays the same, population size stays the same
 - when genotype width grows, the allowed population may shrink
+- when population shrinks, it shrinks by deleting complete rows rather than rescaling the whole grid
+
+Local training-data shards keep stable two-dimensional epicentres. If a row deletion removes a shard epicentre's cell,
+the epicentre's row is clamped upward to the last surviving row while its column is preserved.
 
 ## What This GA Is Not
 
