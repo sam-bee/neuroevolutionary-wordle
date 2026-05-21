@@ -4,5 +4,8 @@
 profiling/*
 !profiling/.gitkeep
 
+checkpoints/*
+!checkpoints/.gitkeep
+
 models/*
 !models/.gitkeep
