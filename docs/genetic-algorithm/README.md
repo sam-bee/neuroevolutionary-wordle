@@ -10,6 +10,8 @@
   Benchmark-backed notes on the tested concurrency architectures and the selected evaluator.
 - [`genotype-slab-design.md`](genotype-slab-design.md)
   The shared genotype slab, slab allocator, GC, and spillover design.
+- [`runtime-checkpoints.md`](runtime-checkpoints.md)
+  Logical save/resume checkpoints at the post-GC, pre-recombination runtime boundary.
 - [`startup-bootstrap.md`](startup-bootstrap.md)
   How startup bootstraps generation 0 directly into device slab slots.
 - [`winner-artifacts.md`](winner-artifacts.md)

@@ -3,8 +3,12 @@
 #include <cuda_runtime.h>
 
 #include <algorithm>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
+#include <fstream>
+#include <future>
 #include <iostream>
 #include <limits>
 #include <memory>
@@ -52,8 +56,8 @@ using spatial::TryMakeCellularGridShape;
 using spatial::TryMakeCellularGridShapeForColumnCount;
 using spatial::TryMakeRectangularCellularGridShape;
 using training_folder::DeviceTrainingWordCatalog;
-using training_folder::TrainingWordCatalog;
 using training_folder::TrainingDataShardRuntimeSet;
+using training_folder::TrainingWordCatalog;
 using training_folder::TryBuildTrainingDataShardRuntimeSet;
 
 constexpr std::size_t kSlabGARuntimeThreadBlockSize = 256;
@@ -118,8 +122,7 @@ inline bool TryUploadActiveTrainingShardsForCurrentGeneration(DeviceSlabGARuntim
     if (!TryBuildTrainingDataShardRuntimeSet(runtime_word_counts.training_word_schedule,
                                              runtime_word_counts.training_word_count,
                                              buffers.genotype_slab.current_generation_index, current_grid_shape_out,
-                                             buffers.epicenter_grid_shape,
-                                             runtime_word_counts.shard_initial_radius,
+                                             buffers.epicenter_grid_shape, runtime_word_counts.shard_initial_radius,
                                              runtime_word_counts.shard_radius_growth_period_generations, runtime_set) ||
         (runtime_set.shard_count == 0) || (runtime_set.shard_count > buffers.active_training_shard_capacity)) {
         return false;
@@ -196,9 +199,9 @@ inline std::size_t SelectEvaluationBlocksPerIndividual(const std::size_t populat
     const std::size_t maximum_useful_blocks_per_individual =
         CeilDivide(runtime_word_counts.training_word_count * device_evaluation_ops::kEpisodesPerTrainingWordCount,
                    kEvaluationWarpsPerBlock);
-    const std::size_t bounded_minimum =
-        (minimum_blocks_per_individual < kMaxEvaluationBlocksPerIndividual) ? minimum_blocks_per_individual
-                                                                            : kMaxEvaluationBlocksPerIndividual;
+    const std::size_t bounded_minimum = (minimum_blocks_per_individual < kMaxEvaluationBlocksPerIndividual)
+                                            ? minimum_blocks_per_individual
+                                            : kMaxEvaluationBlocksPerIndividual;
 
     if (maximum_useful_blocks_per_individual == 0) {
         return 1;
@@ -238,7 +241,8 @@ __global__ void EvaluateSlabGenerationFitnessKernel(
     if (threadIdx.x == 0) {
         shared_slot_index = current_slot_indices[individual_index];
         shared_status_code = DeviceSlabGARuntimeStatusCode::kOk;
-        if ((shared_slot_index == genotype_slab::kInvalidSlabSlotIndex) || (shared_slot_index >= slab_layout.slot_count)) {
+        if ((shared_slot_index == genotype_slab::kInvalidSlabSlotIndex) ||
+            (shared_slot_index >= slab_layout.slot_count)) {
             shared_status_code = DeviceSlabGARuntimeStatusCode::kInvalidGeneration;
         } else if (!slot_states[shared_slot_index].occupied || (slot_states[shared_slot_index].liveness_count == 0)) {
             shared_status_code = DeviceSlabGARuntimeStatusCode::kInvalidSlab;
@@ -255,11 +259,11 @@ __global__ void EvaluateSlabGenerationFitnessKernel(
 
     float fitness = 0.0f;
     std::size_t local_training_word_count = 0;
-    const DeviceGenomeEvaluationStatusCode evaluation_status = TryEvaluateGenomeFitnessConcurrently<
-        kDynamicPolicyThreadsPerBlock>(
-        genotype_slab::SlabSlotBytesAt(slab_storage, slab_layout, shared_slot_index), slab_layout.action_count,
-        runtime_word_counts, active_training_shards, active_training_shard_count, current_grid_shape, individual_index,
-        evaluation_scratch, fitness, local_training_word_count);
+    const DeviceGenomeEvaluationStatusCode evaluation_status =
+        TryEvaluateGenomeFitnessConcurrently<kDynamicPolicyThreadsPerBlock>(
+            genotype_slab::SlabSlotBytesAt(slab_storage, slab_layout, shared_slot_index), slab_layout.action_count,
+            runtime_word_counts, active_training_shards, active_training_shard_count, current_grid_shape,
+            individual_index, evaluation_scratch, fitness, local_training_word_count);
     if (evaluation_status != DeviceGenomeEvaluationStatusCode::kOk) {
         if (threadIdx.x == 0) {
             SetFailureStatus(status, MapEvaluationStatus(evaluation_status));
@@ -280,8 +284,8 @@ __global__ void EvaluateSlabGenerationFitnessByEpisodeKernel(
     const genotype_slab::GenotypeSlabLayout slab_layout, const std::uint32_t *current_slot_indices,
     const std::size_t current_generation_size, const RuntimeWordCounts runtime_word_counts,
     const training_folder::TrainingDataShardRuntime *active_training_shards, const std::size_t active_shard_count,
-    const CellularGridShape current_grid_shape, const std::size_t blocks_per_individual,
-    float *fitness_partial_sums, std::uint32_t *current_local_training_word_counts, int *status) {
+    const CellularGridShape current_grid_shape, const std::size_t blocks_per_individual, float *fitness_partial_sums,
+    std::uint32_t *current_local_training_word_counts, int *status) {
     const std::size_t individual_index = blockIdx.x;
     const std::size_t block_tile_index = blockIdx.y;
     const std::size_t warp_index = static_cast<std::size_t>(threadIdx.x / kDynamicPolicyWarpSize);
@@ -343,8 +347,8 @@ __global__ void EvaluateSlabGenerationFitnessByEpisodeKernel(
                                                     : runtime_word_counts.action_space_word_count;
     const std::size_t episode_tile_stride = blocks_per_individual * kEvaluationWarpsPerBlock;
 
-    for (std::size_t episode_tile_base = (block_tile_index * kEvaluationWarpsPerBlock); episode_tile_base < episode_count;
-         episode_tile_base += episode_tile_stride) {
+    for (std::size_t episode_tile_base = (block_tile_index * kEvaluationWarpsPerBlock);
+         episode_tile_base < episode_count; episode_tile_base += episode_tile_stride) {
         const std::size_t episode_index = episode_tile_base + warp_index;
         if (lane_index == 0) {
             const bool warp_has_episode = episode_index < episode_count;
@@ -352,9 +356,10 @@ __global__ void EvaluateSlabGenerationFitnessByEpisodeKernel(
             tensor_tile_scratch.warp_active[warp_index] = warp_has_episode ? 1U : 0U;
             evaluation_scratch[warp_index].status = static_cast<int>(DeviceGenomeEvaluationStatusCode::kOk);
             if (warp_has_episode) {
-                evaluation_scratch[warp_index].status = static_cast<int>(TryInitializeEpisodeGrid(
-                    training_word_catalog, active_training_shards, active_shard_count, current_grid_shape,
-                    individual_index, episode_index, shared_local_training_word_count, evaluation_scratch[warp_index].grid));
+                evaluation_scratch[warp_index].status = static_cast<int>(
+                    TryInitializeEpisodeGrid(training_word_catalog, active_training_shards, active_shard_count,
+                                             current_grid_shape, individual_index, episode_index,
+                                             shared_local_training_word_count, evaluation_scratch[warp_index].grid));
             }
         }
         __syncthreads();
@@ -420,8 +425,8 @@ __global__ void EvaluateSlabGenerationFitnessByEpisodeWarpKernel(
     const genotype_slab::GenotypeSlabLayout slab_layout, const std::uint32_t *current_slot_indices,
     const std::size_t current_generation_size, const RuntimeWordCounts runtime_word_counts,
     const training_folder::TrainingDataShardRuntime *active_training_shards, const std::size_t active_shard_count,
-    const CellularGridShape current_grid_shape, const std::size_t blocks_per_individual,
-    float *fitness_partial_sums, std::uint32_t *current_local_training_word_counts, int *status) {
+    const CellularGridShape current_grid_shape, const std::size_t blocks_per_individual, float *fitness_partial_sums,
+    std::uint32_t *current_local_training_word_counts, int *status) {
     const std::size_t individual_index = blockIdx.x;
     const std::size_t block_tile_index = blockIdx.y;
     const std::size_t warp_index = static_cast<std::size_t>(threadIdx.x / kDynamicPolicyWarpSize);
@@ -481,9 +486,8 @@ __global__ void EvaluateSlabGenerationFitnessByEpisodeWarpKernel(
         const DeviceGenomeEvaluationStatusCode evaluation_status =
             TryEvaluateGenomeEpisodeConcurrently<kDynamicPolicyWarpSize>(
                 genotype_slab::SlabSlotBytesAt(slab_storage, slab_layout, shared_slot_index), slab_layout.action_count,
-                runtime_word_counts, active_training_shards, active_shard_count, current_grid_shape,
-                individual_index, episode_index, shared_local_training_word_count, evaluation_scratch[warp_index],
-                episode_score);
+                runtime_word_counts, active_training_shards, active_shard_count, current_grid_shape, individual_index,
+                episode_index, shared_local_training_word_count, evaluation_scratch[warp_index], episode_score);
         if (evaluation_status != DeviceGenomeEvaluationStatusCode::kOk) {
             if (lane_index == 0) {
                 SetFailureStatus(status, MapEvaluationStatus(evaluation_status));
@@ -515,11 +519,12 @@ __global__ void EvaluateSlabGenerationFitnessByEpisodeWarpKernel(
     }
 }
 
-__global__ void FinalizeSlabGenerationFitnessKernel(
-    const float *fitness_partial_sums, const std::size_t blocks_per_individual,
-    const std::size_t current_generation_size, const std::uint32_t *current_local_training_word_counts,
-    float *current_fitness, std::uint32_t *current_evaluation_counts, std::uint8_t *current_has_fitness,
-    int *status) {
+__global__ void FinalizeSlabGenerationFitnessKernel(const float *fitness_partial_sums,
+                                                    const std::size_t blocks_per_individual,
+                                                    const std::size_t current_generation_size,
+                                                    const std::uint32_t *current_local_training_word_counts,
+                                                    float *current_fitness, std::uint32_t *current_evaluation_counts,
+                                                    std::uint8_t *current_has_fitness, int *status) {
     const std::size_t individual_index =
         (static_cast<std::size_t>(blockIdx.x) * static_cast<std::size_t>(blockDim.x)) + threadIdx.x;
     if ((fitness_partial_sums == nullptr) || (current_local_training_word_counts == nullptr) ||
@@ -932,8 +937,8 @@ bool TryCreateDeviceSlabGARuntimeBuffers(DeviceSlabGARuntimeBuffers &buffers, co
     buffers.max_generation_size = max_generation_size;
     buffers.host_spillover_byte_budget_bytes = config.host_spillover_byte_budget_bytes;
     buffers.grid_column_count = config.grid_column_count;
-    if (!TryMakeRectangularCellularGridShape(max_generation_size / config.grid_column_count,
-                                             config.grid_column_count, buffers.epicenter_grid_shape)) {
+    if (!TryMakeRectangularCellularGridShape(max_generation_size / config.grid_column_count, config.grid_column_count,
+                                             buffers.epicenter_grid_shape)) {
         DestroyDeviceSlabGARuntimeBuffers(buffers);
         return false;
     }
@@ -1093,16 +1098,16 @@ bool TryEvaluateCurrentGenerationFitnessOnDevice(DeviceSlabGARuntimeBuffers &buf
         EvaluateSlabGenerationFitnessByEpisodeKernel<<<evaluation_grid, kEvaluationThreadsPerBlock>>>(
             buffers.genotype_slab.slab_storage, buffers.genotype_slab.slot_states, buffers.genotype_slab.slab_layout,
             buffers.genotype_slab.current_slot_indices, buffers.genotype_slab.current_generation_size,
-            runtime_word_counts, buffers.active_training_shards, buffers.active_training_shard_count, current_grid_shape,
-            blocks_per_individual, buffers.fitness_partial_sums, buffers.current_local_training_word_counts,
-            buffers.status);
+            runtime_word_counts, buffers.active_training_shards, buffers.active_training_shard_count,
+            current_grid_shape, blocks_per_individual, buffers.fitness_partial_sums,
+            buffers.current_local_training_word_counts, buffers.status);
     } else {
         EvaluateSlabGenerationFitnessByEpisodeWarpKernel<<<evaluation_grid, kEvaluationThreadsPerBlock>>>(
             buffers.genotype_slab.slab_storage, buffers.genotype_slab.slot_states, buffers.genotype_slab.slab_layout,
             buffers.genotype_slab.current_slot_indices, buffers.genotype_slab.current_generation_size,
-            runtime_word_counts, buffers.active_training_shards, buffers.active_training_shard_count, current_grid_shape,
-            blocks_per_individual, buffers.fitness_partial_sums, buffers.current_local_training_word_counts,
-            buffers.status);
+            runtime_word_counts, buffers.active_training_shards, buffers.active_training_shard_count,
+            current_grid_shape, blocks_per_individual, buffers.fitness_partial_sums,
+            buffers.current_local_training_word_counts, buffers.status);
     }
     if (!CheckCuda(cudaGetLastError()) || !CheckCuda(cudaDeviceSynchronize()) ||
         !KernelCompletedSuccessfully(buffers)) {
@@ -1145,12 +1150,191 @@ bool TryReadPopulationFitnessSummaryFromDevice(const DeviceSlabGARuntimeBuffers 
     return CheckCuda(cudaMemcpy(&summary, buffers.summary, sizeof(PopulationFitnessSummary), cudaMemcpyDeviceToHost));
 }
 
-bool TryAdvanceGenerationOnDevice(DeviceSlabGARuntimeBuffers &buffers, const std::uint32_t generation_seed,
-                                  const RuntimeWordCounts &runtime_word_counts, const GenerationAssemblyConfig &config,
-                                  const PendingOutputEmbeddingInjection &pending_output_embedding_injection,
-                                  const training_folder::TrainingWordCatalog *host_training_word_catalog,
-                                  const bool verbose) {
-    (void)host_training_word_catalog;
+namespace {
+
+constexpr std::uint64_t kCheckpointMagic = 0x4b4350474147524eULL; // NRGAGPCK, little-endian marker.
+
+inline void MixCheckpointBytes(std::uint64_t &hash, const void *data, const std::size_t byte_count) noexcept {
+    const auto *bytes = static_cast<const std::uint8_t *>(data);
+    for (std::size_t byte_index = 0; byte_index < byte_count; ++byte_index) {
+        hash ^= bytes[byte_index];
+        hash *= 1099511628211ULL;
+    }
+}
+
+template <typename Value> void MixCheckpointValue(std::uint64_t &hash, const Value &value) noexcept {
+    MixCheckpointBytes(hash, &value, sizeof(Value));
+}
+
+std::uint64_t ComputeRuntimeCheckpointChecksum(const RuntimeCheckpoint &checkpoint) {
+    std::uint64_t hash = 1469598103934665603ULL;
+    MixCheckpointValue(hash, checkpoint.schema_version);
+    MixCheckpointValue(hash, checkpoint.genome_layout_version);
+    const auto resume_phase = static_cast<std::uint32_t>(checkpoint.resume_phase);
+    MixCheckpointValue(hash, resume_phase);
+    MixCheckpointValue(hash, checkpoint.training_data_identity_hash);
+    MixCheckpointValue(hash, checkpoint.generation_seed);
+    MixCheckpointBytes(hash, &checkpoint.runtime_word_counts, sizeof(checkpoint.runtime_word_counts));
+    MixCheckpointBytes(hash, &checkpoint.assembly_config, sizeof(checkpoint.assembly_config));
+    MixCheckpointBytes(hash, &checkpoint.pending_output_embedding_injection,
+                       sizeof(checkpoint.pending_output_embedding_injection));
+    MixCheckpointBytes(hash, &checkpoint.runtime_config, sizeof(checkpoint.runtime_config));
+    MixCheckpointBytes(hash, &checkpoint.slab_layout, sizeof(checkpoint.slab_layout));
+    MixCheckpointBytes(hash, &checkpoint.current_grid_shape, sizeof(checkpoint.current_grid_shape));
+    MixCheckpointBytes(hash, &checkpoint.next_grid_shape, sizeof(checkpoint.next_grid_shape));
+    MixCheckpointBytes(hash, &checkpoint.epicenter_grid_shape, sizeof(checkpoint.epicenter_grid_shape));
+    MixCheckpointValue(hash, checkpoint.current_generation.generation_index);
+    MixCheckpointValue(hash, checkpoint.current_generation.active_individual_count);
+    for (std::size_t individual_index = 0; individual_index < checkpoint.current_generation.active_individual_count;
+         ++individual_index) {
+        MixCheckpointValue(hash, checkpoint.current_generation.slot_indices[individual_index]);
+        MixCheckpointValue(hash, checkpoint.current_generation.fitness[individual_index]);
+        MixCheckpointValue(hash, checkpoint.current_generation.evaluation_counts[individual_index]);
+        MixCheckpointValue(hash, checkpoint.current_generation.has_fitness[individual_index]);
+    }
+    MixCheckpointValue(hash, checkpoint.assembly_plan.child_count);
+    for (std::size_t child_index = 0; child_index < checkpoint.assembly_plan.child_count; ++child_index) {
+        MixCheckpointValue(hash, checkpoint.assembly_plan.parent_pairs[child_index]);
+    }
+    const std::uint64_t live_count = checkpoint.live_genotypes.size();
+    MixCheckpointValue(hash, live_count);
+    for (const RuntimeCheckpointGenotypeRecord &record : checkpoint.live_genotypes) {
+        MixCheckpointValue(hash, record.organism_index);
+        const std::uint64_t genome_byte_count = record.genome_bytes.size();
+        MixCheckpointValue(hash, genome_byte_count);
+        if (!record.genome_bytes.empty()) {
+            MixCheckpointBytes(hash, record.genome_bytes.data(), record.genome_bytes.size());
+        }
+    }
+    return hash;
+}
+
+bool TryDownloadAssemblyPlanFromDevice(const DeviceSlabGARuntimeBuffers &buffers, const std::size_t child_count,
+                                       genotype_slab::SlabAssemblyPlan &plan) {
+    if (!genotype_slab::TryCreateSlabAssemblyPlan(plan, child_count)) {
+        return false;
+    }
+
+    return CheckCuda(cudaMemcpy(plan.parent_pairs.get(), buffers.genotype_slab.assembly_parent_pairs,
+                                child_count * sizeof(genotype_slab::SlabParentPair), cudaMemcpyDeviceToHost));
+}
+
+bool TryDownloadBoundaryCheckpointPayload(const DeviceSlabGARuntimeBuffers &buffers,
+                                          const std::uint32_t generation_seed,
+                                          const RuntimeWordCounts &runtime_word_counts,
+                                          const GenerationAssemblyConfig &config,
+                                          const PendingOutputEmbeddingInjection &pending_output_embedding_injection,
+                                          const DeviceSlabGARuntimeConfig &runtime_config,
+                                          const training_folder::TrainingWordCatalog *host_training_word_catalog,
+                                          RuntimeCheckpoint &checkpoint_out, const bool verbose) {
+    checkpoint_out = {};
+    const auto checkpoint_start_time = ProgressClock::now();
+    const auto log_verbose_line = [&](const std::string &message) {
+        if (verbose) {
+            PrintTimestampedProgressLine(std::cout, message);
+        }
+    };
+    const auto log_verbose_duration = [&](const std::string &message, const ProgressClock::time_point start_time) {
+        if (verbose) {
+            PrintTimestampedProgressDuration(std::cout, message, start_time);
+        }
+    };
+
+    checkpoint_out.generation_seed = generation_seed;
+    std::uint64_t training_identity_hash = 1469598103934665603ULL;
+    MixCheckpointBytes(training_identity_hash, &runtime_word_counts, sizeof(runtime_word_counts));
+    if (host_training_word_catalog != nullptr) {
+        MixCheckpointValue(training_identity_hash, host_training_word_catalog->word_count);
+        for (std::size_t word_index = 0; word_index < host_training_word_catalog->word_count; ++word_index) {
+            MixCheckpointBytes(training_identity_hash, &host_training_word_catalog->words[word_index],
+                               sizeof(host_training_word_catalog->words[word_index]));
+        }
+    }
+    checkpoint_out.training_data_identity_hash = training_identity_hash;
+    checkpoint_out.runtime_word_counts = runtime_word_counts;
+    checkpoint_out.assembly_config = config;
+    checkpoint_out.pending_output_embedding_injection = pending_output_embedding_injection;
+    checkpoint_out.runtime_config = runtime_config;
+    checkpoint_out.slab_layout = buffers.genotype_slab.slab_layout;
+    checkpoint_out.epicenter_grid_shape = buffers.epicenter_grid_shape;
+
+    const auto metadata_download_start_time = ProgressClock::now();
+    log_verbose_line("Generation " + std::to_string(buffers.genotype_slab.current_generation_index) +
+                     ": downloading checkpoint metadata and assembly plan");
+    if (!TryMakeCellularGridShapeForColumnCount(buffers.genotype_slab.current_generation_size,
+                                                buffers.grid_column_count, checkpoint_out.current_grid_shape) ||
+        !TryMakeCellularGridShapeForColumnCount(buffers.genotype_slab.next_generation_size, buffers.grid_column_count,
+                                                checkpoint_out.next_grid_shape) ||
+        !genotype_slab::device::TryDownloadCurrentGenerationFromDevice(buffers.genotype_slab,
+                                                                       checkpoint_out.current_generation) ||
+        !TryDownloadAssemblyPlanFromDevice(buffers, buffers.genotype_slab.planned_child_count,
+                                           checkpoint_out.assembly_plan)) {
+        checkpoint_out = {};
+        return false;
+    }
+    log_verbose_duration("Generation " + std::to_string(checkpoint_out.current_generation.generation_index) +
+                             ": checkpoint metadata and assembly plan downloaded",
+                         metadata_download_start_time);
+
+    const auto genotype_copy_start_time = ProgressClock::now();
+    if (verbose) {
+        std::ostringstream stream;
+        stream << "Generation " << checkpoint_out.current_generation.generation_index
+               << ": copying live checkpoint genotypes to host"
+               << " (population=" << checkpoint_out.current_generation.active_individual_count
+               << ", slot_stride_bytes=" << checkpoint_out.slab_layout.slot_stride_bytes << ')';
+        log_verbose_line(stream.str());
+    }
+    for (std::size_t individual_index = 0; individual_index < checkpoint_out.current_generation.active_individual_count;
+         ++individual_index) {
+        const std::uint32_t slot_index = checkpoint_out.current_generation.slot_indices[individual_index];
+        if (slot_index == genotype_slab::kInvalidSlabSlotIndex) {
+            continue;
+        }
+
+        RuntimeCheckpointGenotypeRecord record{};
+        record.organism_index = static_cast<std::uint32_t>(individual_index);
+        record.genome_bytes.resize(checkpoint_out.slab_layout.slot_stride_bytes);
+        if (!CheckCuda(cudaMemcpy(record.genome_bytes.data(),
+                                  genotype_slab::SlabSlotBytesAt(buffers.genotype_slab.slab_storage,
+                                                                 checkpoint_out.slab_layout, slot_index),
+                                  checkpoint_out.slab_layout.slot_stride_bytes, cudaMemcpyDeviceToHost))) {
+            checkpoint_out = {};
+            return false;
+        }
+
+        checkpoint_out.live_genotypes.push_back(std::move(record));
+    }
+    if (verbose) {
+        std::ostringstream stream;
+        stream << "Generation " << checkpoint_out.current_generation.generation_index
+               << ": copied live checkpoint genotypes to host"
+               << " (live_genotypes=" << checkpoint_out.live_genotypes.size() << ')';
+        PrintTimestampedProgressDuration(std::cout, stream.str(), genotype_copy_start_time);
+    }
+
+    const auto checksum_start_time = ProgressClock::now();
+    log_verbose_line("Generation " + std::to_string(checkpoint_out.current_generation.generation_index) +
+                     ": checksumming runtime checkpoint");
+    checkpoint_out.checksum = ComputeRuntimeCheckpointChecksum(checkpoint_out);
+    log_verbose_duration("Generation " + std::to_string(checkpoint_out.current_generation.generation_index) +
+                             ": runtime checkpoint checksummed",
+                         checksum_start_time);
+    log_verbose_duration("Generation " + std::to_string(checkpoint_out.current_generation.generation_index) +
+                             ": checkpoint payload ready on host",
+                         checkpoint_start_time);
+    return true;
+}
+
+bool TryPreparePrebreedingBoundaryOnDevice(DeviceSlabGARuntimeBuffers &buffers, const std::uint32_t generation_seed,
+                                           const RuntimeWordCounts &runtime_word_counts,
+                                           const GenerationAssemblyConfig &config,
+                                           const PendingOutputEmbeddingInjection &pending_output_embedding_injection,
+                                           std::size_t &parent_action_count_out,
+                                           DeviceSlabGARuntimeConfig &checkpoint_runtime_config_out,
+                                           const bool verbose) {
+    parent_action_count_out = 0;
+    checkpoint_runtime_config_out = {};
     buffers.last_generation_used_host_spillover = false;
     const std::size_t next_generation_index = buffers.genotype_slab.current_generation_index + 1;
     const auto log_verbose_line = [&](const std::string &message) {
@@ -1163,7 +1347,6 @@ bool TryAdvanceGenerationOnDevice(DeviceSlabGARuntimeBuffers &buffers, const std
             PrintTimestampedProgressDuration(std::cout, message, start_time);
         }
     };
-    const auto overall_start_time = ProgressClock::now();
 
     if (verbose) {
         std::ostringstream stream;
@@ -1261,6 +1444,32 @@ bool TryAdvanceGenerationOnDevice(DeviceSlabGARuntimeBuffers &buffers, const std
     log_verbose_duration("Generation " + std::to_string(next_generation_index) +
                              ": next-generation assembly state initialized",
                          initialize_assembly_start_time);
+
+    checkpoint_runtime_config_out.genotype_slab_byte_budget_bytes = buffers.genotype_slab.slab_layout.slab_bytes;
+    checkpoint_runtime_config_out.generation_byte_budget_bytes = buffers.generation_byte_budget_bytes;
+    checkpoint_runtime_config_out.host_spillover_byte_budget_bytes = buffers.host_spillover_byte_budget_bytes;
+    checkpoint_runtime_config_out.action_count = buffers.genotype_slab.slab_layout.action_count;
+    checkpoint_runtime_config_out.population_size_ceiling = buffers.max_generation_size;
+    checkpoint_runtime_config_out.grid_column_count = buffers.grid_column_count;
+    parent_action_count_out = parent_action_count;
+    return true;
+}
+
+bool TryAssemblePreparedGenerationOnDevice(DeviceSlabGARuntimeBuffers &buffers, const std::uint32_t generation_seed,
+                                           const genotype_slab::device::SlabDeviceAssemblyConfig &slab_assembly_config,
+                                           const bool verbose) {
+    const std::size_t next_generation_index = buffers.genotype_slab.next_generation_index;
+    const auto log_verbose_line = [&](const std::string &message) {
+        if (verbose) {
+            PrintTimestampedProgressLine(std::cout, message);
+        }
+    };
+    const auto log_verbose_duration = [&](const std::string &message, const ProgressClock::time_point start_time) {
+        if (verbose) {
+            PrintTimestampedProgressDuration(std::cout, message, start_time);
+        }
+    };
+    const auto overall_start_time = ProgressClock::now();
 
     bool used_host_spillover = false;
     std::size_t spilled_child_count = 0;
@@ -1406,6 +1615,422 @@ bool TryAdvanceGenerationOnDevice(DeviceSlabGARuntimeBuffers &buffers, const std
     log_verbose_duration("Generation " + std::to_string(next_generation_index) + ": advancement finished",
                          overall_start_time);
     return true;
+}
+
+} // namespace
+
+bool TryAdvanceGenerationOnDevice(DeviceSlabGARuntimeBuffers &buffers, const std::uint32_t generation_seed,
+                                  const RuntimeWordCounts &runtime_word_counts, const GenerationAssemblyConfig &config,
+                                  const PendingOutputEmbeddingInjection &pending_output_embedding_injection,
+                                  const training_folder::TrainingWordCatalog *host_training_word_catalog,
+                                  const bool verbose) {
+    (void)host_training_word_catalog;
+    std::size_t parent_action_count = 0;
+    DeviceSlabGARuntimeConfig checkpoint_runtime_config{};
+    if (!TryPreparePrebreedingBoundaryOnDevice(buffers, generation_seed, runtime_word_counts, config,
+                                               pending_output_embedding_injection, parent_action_count,
+                                               checkpoint_runtime_config, verbose)) {
+        return false;
+    }
+
+    genotype_slab::device::SlabDeviceAssemblyConfig slab_assembly_config{};
+    slab_assembly_config.breeding = config.breeding;
+    slab_assembly_config.mutation = config.mutation;
+    slab_assembly_config.parent_action_count = parent_action_count;
+    slab_assembly_config.pending_output_embedding_injection = pending_output_embedding_injection;
+    return TryAssemblePreparedGenerationOnDevice(buffers, generation_seed, slab_assembly_config, verbose);
+}
+
+bool TryCreatePrebreedingCheckpointOnDevice(DeviceSlabGARuntimeBuffers &buffers, const std::uint32_t generation_seed,
+                                            const RuntimeWordCounts &runtime_word_counts,
+                                            const GenerationAssemblyConfig &config,
+                                            const PendingOutputEmbeddingInjection &pending_output_embedding_injection,
+                                            RuntimeCheckpoint &checkpoint_out,
+                                            const training_folder::TrainingWordCatalog *host_training_word_catalog,
+                                            const bool verbose) {
+    std::size_t parent_action_count = 0;
+    DeviceSlabGARuntimeConfig checkpoint_runtime_config{};
+    if (!TryPreparePrebreedingBoundaryOnDevice(buffers, generation_seed, runtime_word_counts, config,
+                                               pending_output_embedding_injection, parent_action_count,
+                                               checkpoint_runtime_config, verbose)) {
+        checkpoint_out = {};
+        return false;
+    }
+
+    return TryDownloadBoundaryCheckpointPayload(buffers, generation_seed, runtime_word_counts, config,
+                                                pending_output_embedding_injection, checkpoint_runtime_config,
+                                                host_training_word_catalog, checkpoint_out, verbose);
+}
+
+bool TryRestorePrebreedingCheckpointToDevice(const RuntimeCheckpoint &checkpoint, DeviceSlabGARuntimeBuffers &buffers) {
+    if ((checkpoint.schema_version != kRuntimeCheckpointSchemaVersion) ||
+        (checkpoint.genome_layout_version != kRuntimeCheckpointGenomeLayoutVersion) ||
+        (checkpoint.resume_phase != RuntimeCheckpointResumePhase::kPreRecombinationPreMutation) ||
+        (checkpoint.checksum != ComputeRuntimeCheckpointChecksum(checkpoint)) ||
+        !genotype_slab::IsValidGenotypeSlabLayout(checkpoint.slab_layout) ||
+        !genotype_slab::IsValidSlabGeneration(checkpoint.current_generation) ||
+        !genotype_slab::IsValidSlabAssemblyPlan(checkpoint.assembly_plan)) {
+        return false;
+    }
+
+    const std::size_t restore_generation_capacity =
+        std::max(checkpoint.current_generation.active_individual_count, checkpoint.assembly_plan.child_count);
+    genotype_slab::device::DeviceSlabRuntimeConfig slab_config{};
+    slab_config.slot_count = checkpoint.slab_layout.slot_count;
+    slab_config.action_count = checkpoint.slab_layout.action_count;
+    slab_config.max_generation_size = restore_generation_capacity;
+    if (!genotype_slab::device::TryCreateDeviceSlabRuntimeBuffers(buffers.genotype_slab, slab_config)) {
+        DestroyDeviceSlabGARuntimeBuffers(buffers);
+        return false;
+    }
+    buffers.max_generation_size = restore_generation_capacity;
+    buffers.generation_byte_budget_bytes = checkpoint.runtime_config.generation_byte_budget_bytes;
+    buffers.host_spillover_byte_budget_bytes = checkpoint.runtime_config.host_spillover_byte_budget_bytes;
+    buffers.grid_column_count = checkpoint.runtime_config.grid_column_count;
+    buffers.epicenter_grid_shape = checkpoint.epicenter_grid_shape;
+    buffers.active_training_shard_capacity = training_folder::kTrainingWordCatalogCapacity;
+    bool allocate_ok = true;
+    allocate_ok &= CheckCuda(cudaMalloc(&buffers.summary, sizeof(PopulationFitnessSummary)));
+    allocate_ok &= CheckCuda(cudaMalloc(&buffers.status, sizeof(int)));
+    allocate_ok &=
+        CheckCuda(cudaMalloc(&buffers.active_training_shards, buffers.active_training_shard_capacity *
+                                                                  sizeof(training_folder::TrainingDataShardRuntime)));
+    allocate_ok &= CheckCuda(
+        cudaMalloc(&buffers.current_local_training_word_counts, buffers.max_generation_size * sizeof(std::uint32_t)));
+    allocate_ok &=
+        CheckCuda(cudaMalloc(&buffers.fitness_partial_sums,
+                             buffers.max_generation_size * kMaxEvaluationBlocksPerIndividual * sizeof(float)));
+    if (!allocate_ok || !CheckCuda(cudaMemset(buffers.summary, 0, sizeof(PopulationFitnessSummary))) ||
+        !CheckCuda(cudaMemset(buffers.status, 0, sizeof(int))) ||
+        !CheckCuda(
+            cudaMemset(buffers.active_training_shards, 0,
+                       buffers.active_training_shard_capacity * sizeof(training_folder::TrainingDataShardRuntime))) ||
+        !CheckCuda(cudaMemset(buffers.current_local_training_word_counts, 0,
+                              buffers.max_generation_size * sizeof(std::uint32_t))) ||
+        !CheckCuda(cudaMemset(buffers.fitness_partial_sums, 0,
+                              buffers.max_generation_size * kMaxEvaluationBlocksPerIndividual * sizeof(float)))) {
+        DestroyDeviceSlabGARuntimeBuffers(buffers);
+        return false;
+    }
+
+    genotype_slab::GenotypeSlabLayout compact_restore_layout = checkpoint.slab_layout;
+    compact_restore_layout.slab_bytes = compact_restore_layout.slot_count * compact_restore_layout.slot_stride_bytes;
+    genotype_slab::HostGenotypeSlab host_slab{};
+    if (!genotype_slab::TryCreateHostGenotypeSlab(host_slab, compact_restore_layout)) {
+        DestroyDeviceSlabGARuntimeBuffers(buffers);
+        return false;
+    }
+
+    genotype_slab::SlabGeneration restored_generation{};
+    if (!genotype_slab::TryCreateSlabGeneration(restored_generation,
+                                                checkpoint.current_generation.active_individual_count,
+                                                checkpoint.current_generation.generation_index)) {
+        DestroyDeviceSlabGARuntimeBuffers(buffers);
+        return false;
+    }
+    for (std::size_t individual_index = 0; individual_index < restored_generation.active_individual_count;
+         ++individual_index) {
+        restored_generation.fitness[individual_index] = checkpoint.current_generation.fitness[individual_index];
+        restored_generation.evaluation_counts[individual_index] =
+            checkpoint.current_generation.evaluation_counts[individual_index];
+        restored_generation.has_fitness[individual_index] = checkpoint.current_generation.has_fitness[individual_index];
+    }
+
+    std::vector<bool> restored_indices(restored_generation.active_individual_count, false);
+    for (const RuntimeCheckpointGenotypeRecord &record : checkpoint.live_genotypes) {
+        if ((record.organism_index >= restored_generation.active_individual_count) ||
+            restored_indices[record.organism_index] ||
+            (record.genome_bytes.size() != checkpoint.slab_layout.slot_stride_bytes) ||
+            (checkpoint.current_generation.slot_indices[record.organism_index] ==
+             genotype_slab::kInvalidSlabSlotIndex)) {
+            DestroyDeviceSlabGARuntimeBuffers(buffers);
+            return false;
+        }
+
+        std::uint32_t slot_index = genotype_slab::kInvalidSlabSlotIndex;
+        if (!genotype_slab::TryAllocateSlabSlot(host_slab, slot_index) ||
+            !genotype_slab::TryCopyGenomeBytesIntoSlabSlot(host_slab, slot_index, record.genome_bytes.data(),
+                                                           record.genome_bytes.size()) ||
+            !genotype_slab::TrySetSlabGenerationSlot(restored_generation, record.organism_index, slot_index)) {
+            DestroyDeviceSlabGARuntimeBuffers(buffers);
+            return false;
+        }
+        restored_indices[record.organism_index] = true;
+    }
+
+    for (std::size_t child_index = 0; child_index < checkpoint.assembly_plan.child_count; ++child_index) {
+        const genotype_slab::SlabParentPair &parent_pair = checkpoint.assembly_plan.parent_pairs[child_index];
+        if ((parent_pair.first_parent_index >= restored_generation.active_individual_count) ||
+            (parent_pair.second_parent_index >= restored_generation.active_individual_count) ||
+            !restored_indices[parent_pair.first_parent_index] || !restored_indices[parent_pair.second_parent_index]) {
+            DestroyDeviceSlabGARuntimeBuffers(buffers);
+            return false;
+        }
+    }
+
+    if (!genotype_slab::device::TryUploadSlabToDevice(host_slab, buffers.genotype_slab)) {
+        DestroyDeviceSlabGARuntimeBuffers(buffers);
+        return false;
+    }
+    if (!genotype_slab::device::TryUploadCurrentGenerationToDevice(restored_generation, buffers.genotype_slab)) {
+        DestroyDeviceSlabGARuntimeBuffers(buffers);
+        return false;
+    }
+    if (!genotype_slab::device::TryUploadAssemblyPlanToDevice(checkpoint.assembly_plan, buffers.genotype_slab)) {
+        DestroyDeviceSlabGARuntimeBuffers(buffers);
+        return false;
+    }
+
+    genotype_slab::device::SlabDeviceAssemblyConfig slab_assembly_config{};
+    slab_assembly_config.breeding = checkpoint.assembly_config.breeding;
+    slab_assembly_config.mutation = checkpoint.assembly_config.mutation;
+    slab_assembly_config.parent_action_count =
+        checkpoint.pending_output_embedding_injection.enabled
+            ? checkpoint.pending_output_embedding_injection.first_catalog_word_index
+            : checkpoint.slab_layout.action_count;
+    slab_assembly_config.pending_output_embedding_injection = checkpoint.pending_output_embedding_injection;
+    if (!genotype_slab::device::TryInitializeNextGenerationAssemblyOnDevice(buffers.genotype_slab,
+                                                                            slab_assembly_config)) {
+        DestroyDeviceSlabGARuntimeBuffers(buffers);
+        return false;
+    }
+
+    return true;
+}
+
+bool TryResumeGenerationFromCheckpointOnDevice(DeviceSlabGARuntimeBuffers &buffers, const RuntimeCheckpoint &checkpoint,
+                                               const bool verbose) {
+    genotype_slab::device::SlabDeviceAssemblyConfig slab_assembly_config{};
+    slab_assembly_config.breeding = checkpoint.assembly_config.breeding;
+    slab_assembly_config.mutation = checkpoint.assembly_config.mutation;
+    slab_assembly_config.parent_action_count =
+        checkpoint.pending_output_embedding_injection.enabled
+            ? checkpoint.pending_output_embedding_injection.first_catalog_word_index
+            : checkpoint.slab_layout.action_count;
+    slab_assembly_config.pending_output_embedding_injection = checkpoint.pending_output_embedding_injection;
+    return TryAssemblePreparedGenerationOnDevice(buffers, checkpoint.generation_seed, slab_assembly_config, verbose);
+}
+
+namespace {
+
+template <typename Value> bool WriteBinaryValue(std::ofstream &stream, const Value &value) {
+    stream.write(reinterpret_cast<const char *>(&value), sizeof(Value));
+    return static_cast<bool>(stream);
+}
+
+bool WriteBinaryBytes(std::ofstream &stream, const void *data, const std::size_t byte_count) {
+    if (byte_count == 0) {
+        return true;
+    }
+    stream.write(static_cast<const char *>(data), static_cast<std::streamsize>(byte_count));
+    return static_cast<bool>(stream);
+}
+
+template <typename Value> bool ReadBinaryValue(std::ifstream &stream, Value &value) {
+    stream.read(reinterpret_cast<char *>(&value), sizeof(Value));
+    return static_cast<bool>(stream);
+}
+
+bool ReadBinaryBytes(std::ifstream &stream, void *data, const std::size_t byte_count) {
+    if (byte_count == 0) {
+        return true;
+    }
+    stream.read(static_cast<char *>(data), static_cast<std::streamsize>(byte_count));
+    return static_cast<bool>(stream);
+}
+
+} // namespace
+
+bool TryWriteRuntimeCheckpointAtomically(const RuntimeCheckpoint &checkpoint,
+                                         const std::filesystem::path &checkpoint_path) {
+    if (checkpoint.checksum != ComputeRuntimeCheckpointChecksum(checkpoint)) {
+        return false;
+    }
+
+    const std::filesystem::path temporary_path = checkpoint_path.string() + ".tmp";
+    std::error_code directory_error;
+    if (!checkpoint_path.parent_path().empty()) {
+        std::filesystem::create_directories(checkpoint_path.parent_path(), directory_error);
+        if (directory_error) {
+            return false;
+        }
+    }
+    std::ofstream stream(temporary_path, std::ios::binary | std::ios::trunc);
+    if (!stream) {
+        return false;
+    }
+
+    bool ok = true;
+    ok &= WriteBinaryValue(stream, kCheckpointMagic);
+    ok &= WriteBinaryValue(stream, checkpoint.schema_version);
+    ok &= WriteBinaryValue(stream, checkpoint.genome_layout_version);
+    ok &= WriteBinaryValue(stream, checkpoint.checksum);
+    ok &= WriteBinaryValue(stream, checkpoint.training_data_identity_hash);
+    const auto resume_phase = static_cast<std::uint32_t>(checkpoint.resume_phase);
+    ok &= WriteBinaryValue(stream, resume_phase);
+    ok &= WriteBinaryValue(stream, checkpoint.generation_seed);
+    ok &= WriteBinaryValue(stream, checkpoint.runtime_word_counts);
+    ok &= WriteBinaryValue(stream, checkpoint.assembly_config);
+    ok &= WriteBinaryValue(stream, checkpoint.pending_output_embedding_injection);
+    ok &= WriteBinaryValue(stream, checkpoint.runtime_config);
+    ok &= WriteBinaryValue(stream, checkpoint.slab_layout);
+    ok &= WriteBinaryValue(stream, checkpoint.current_grid_shape);
+    ok &= WriteBinaryValue(stream, checkpoint.next_grid_shape);
+    ok &= WriteBinaryValue(stream, checkpoint.epicenter_grid_shape);
+    ok &= WriteBinaryValue(stream, checkpoint.current_generation.generation_index);
+    ok &= WriteBinaryValue(stream, checkpoint.current_generation.active_individual_count);
+    for (std::size_t individual_index = 0;
+         ok && (individual_index < checkpoint.current_generation.active_individual_count); ++individual_index) {
+        ok &= WriteBinaryValue(stream, checkpoint.current_generation.slot_indices[individual_index]);
+        ok &= WriteBinaryValue(stream, checkpoint.current_generation.fitness[individual_index]);
+        ok &= WriteBinaryValue(stream, checkpoint.current_generation.evaluation_counts[individual_index]);
+        ok &= WriteBinaryValue(stream, checkpoint.current_generation.has_fitness[individual_index]);
+    }
+    ok &= WriteBinaryValue(stream, checkpoint.assembly_plan.child_count);
+    for (std::size_t child_index = 0; ok && (child_index < checkpoint.assembly_plan.child_count); ++child_index) {
+        ok &= WriteBinaryValue(stream, checkpoint.assembly_plan.parent_pairs[child_index]);
+    }
+    const std::uint64_t live_count = checkpoint.live_genotypes.size();
+    ok &= WriteBinaryValue(stream, live_count);
+    for (const RuntimeCheckpointGenotypeRecord &record : checkpoint.live_genotypes) {
+        const std::uint64_t byte_count = record.genome_bytes.size();
+        ok &= WriteBinaryValue(stream, record.organism_index);
+        ok &= WriteBinaryValue(stream, byte_count);
+        ok &= WriteBinaryBytes(stream, record.genome_bytes.data(), record.genome_bytes.size());
+    }
+    stream.close();
+    if (!ok || !stream) {
+        std::filesystem::remove(temporary_path);
+        return false;
+    }
+
+    std::error_code error_code;
+    std::filesystem::rename(temporary_path, checkpoint_path, error_code);
+    if (error_code) {
+        std::filesystem::remove(checkpoint_path, error_code);
+        error_code.clear();
+        std::filesystem::rename(temporary_path, checkpoint_path, error_code);
+    }
+    if (error_code) {
+        std::filesystem::remove(temporary_path);
+        return false;
+    }
+    return true;
+}
+
+bool TryReadRuntimeCheckpoint(const std::filesystem::path &checkpoint_path, RuntimeCheckpoint &checkpoint_out) {
+    checkpoint_out = {};
+    std::ifstream stream(checkpoint_path, std::ios::binary);
+    if (!stream) {
+        return false;
+    }
+
+    std::uint64_t magic = 0;
+    std::uint32_t resume_phase = 0;
+    bool ok = true;
+    ok &= ReadBinaryValue(stream, magic);
+    ok &= (magic == kCheckpointMagic);
+    ok &= ReadBinaryValue(stream, checkpoint_out.schema_version);
+    ok &= ReadBinaryValue(stream, checkpoint_out.genome_layout_version);
+    ok &= ReadBinaryValue(stream, checkpoint_out.checksum);
+    ok &= ReadBinaryValue(stream, checkpoint_out.training_data_identity_hash);
+    ok &= ReadBinaryValue(stream, resume_phase);
+    checkpoint_out.resume_phase = static_cast<RuntimeCheckpointResumePhase>(resume_phase);
+    ok &= ReadBinaryValue(stream, checkpoint_out.generation_seed);
+    ok &= ReadBinaryValue(stream, checkpoint_out.runtime_word_counts);
+    ok &= ReadBinaryValue(stream, checkpoint_out.assembly_config);
+    ok &= ReadBinaryValue(stream, checkpoint_out.pending_output_embedding_injection);
+    ok &= ReadBinaryValue(stream, checkpoint_out.runtime_config);
+    ok &= ReadBinaryValue(stream, checkpoint_out.slab_layout);
+    ok &= ReadBinaryValue(stream, checkpoint_out.current_grid_shape);
+    ok &= ReadBinaryValue(stream, checkpoint_out.next_grid_shape);
+    ok &= ReadBinaryValue(stream, checkpoint_out.epicenter_grid_shape);
+    std::size_t generation_index = 0;
+    std::size_t active_individual_count = 0;
+    ok &= ReadBinaryValue(stream, generation_index);
+    ok &= ReadBinaryValue(stream, active_individual_count);
+    ok &= genotype_slab::TryCreateSlabGeneration(checkpoint_out.current_generation, active_individual_count,
+                                                 generation_index);
+    for (std::size_t individual_index = 0; ok && (individual_index < active_individual_count); ++individual_index) {
+        ok &= ReadBinaryValue(stream, checkpoint_out.current_generation.slot_indices[individual_index]);
+        ok &= ReadBinaryValue(stream, checkpoint_out.current_generation.fitness[individual_index]);
+        ok &= ReadBinaryValue(stream, checkpoint_out.current_generation.evaluation_counts[individual_index]);
+        ok &= ReadBinaryValue(stream, checkpoint_out.current_generation.has_fitness[individual_index]);
+    }
+    std::size_t child_count = 0;
+    ok &= ReadBinaryValue(stream, child_count);
+    ok &= genotype_slab::TryCreateSlabAssemblyPlan(checkpoint_out.assembly_plan, child_count);
+    for (std::size_t child_index = 0; ok && (child_index < child_count); ++child_index) {
+        ok &= ReadBinaryValue(stream, checkpoint_out.assembly_plan.parent_pairs[child_index]);
+    }
+    std::uint64_t live_count = 0;
+    ok &= ReadBinaryValue(stream, live_count);
+    if (live_count > active_individual_count) {
+        ok = false;
+    }
+    checkpoint_out.live_genotypes.resize(static_cast<std::size_t>(live_count));
+    for (RuntimeCheckpointGenotypeRecord &record : checkpoint_out.live_genotypes) {
+        std::uint64_t byte_count = 0;
+        ok &= ReadBinaryValue(stream, record.organism_index);
+        ok &= ReadBinaryValue(stream, byte_count);
+        ok &= (byte_count == checkpoint_out.slab_layout.slot_stride_bytes);
+        record.genome_bytes.resize(static_cast<std::size_t>(byte_count));
+        ok &= ReadBinaryBytes(stream, record.genome_bytes.data(), record.genome_bytes.size());
+    }
+
+    if (!ok || (checkpoint_out.schema_version != kRuntimeCheckpointSchemaVersion) ||
+        (checkpoint_out.genome_layout_version != kRuntimeCheckpointGenomeLayoutVersion) ||
+        (checkpoint_out.checksum != ComputeRuntimeCheckpointChecksum(checkpoint_out))) {
+        checkpoint_out = {};
+        return false;
+    }
+
+    return true;
+}
+
+bool RuntimeCheckpointAsyncWriter::IsWriteInProgress() {
+    return pending_write_.valid() && (pending_write_.wait_for(std::chrono::seconds(0)) != std::future_status::ready);
+}
+
+bool RuntimeCheckpointAsyncWriter::TryCollectFinishedWrite(bool &write_finished_out, bool &write_succeeded_out) {
+    write_finished_out = false;
+    write_succeeded_out = true;
+    if (!pending_write_.valid()) {
+        return true;
+    }
+
+    if (IsWriteInProgress()) {
+        return true;
+    }
+
+    write_finished_out = true;
+    write_succeeded_out = pending_write_.get();
+    return write_succeeded_out;
+}
+
+bool RuntimeCheckpointAsyncWriter::TryStartWrite(RuntimeCheckpoint checkpoint, std::filesystem::path checkpoint_path) {
+    if (IsWriteInProgress()) {
+        return false;
+    }
+    if (pending_write_.valid()) {
+        if (!pending_write_.get()) {
+            return false;
+        }
+    }
+
+    pending_write_ = std::async(std::launch::async, [checkpoint = std::move(checkpoint),
+                                                     checkpoint_path = std::move(checkpoint_path)]() mutable {
+        return TryWriteRuntimeCheckpointAtomically(checkpoint, checkpoint_path);
+    });
+    return true;
+}
+
+bool RuntimeCheckpointAsyncWriter::TryWaitForWrite() {
+    if (!pending_write_.valid()) {
+        return true;
+    }
+
+    return pending_write_.get();
 }
 
 void SwapDeviceSlabGenerationBuffers(DeviceSlabGARuntimeBuffers &buffers) noexcept {

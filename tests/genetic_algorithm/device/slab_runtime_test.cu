@@ -4,6 +4,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <filesystem>
 #include <iostream>
 #include <memory>
 #include <string_view>
@@ -28,8 +29,8 @@ using neuroevolution::genetic_algorithm::genotype_slab::ComputeSlabSlotStrideByt
 using neuroevolution::genetic_algorithm::genotype_slab::HostGenotypeSlab;
 using neuroevolution::genetic_algorithm::genotype_slab::HostSlabSlotBytesAt;
 using neuroevolution::genetic_algorithm::genotype_slab::SlabAssemblyPlan;
-using neuroevolution::genetic_algorithm::genotype_slab::SlabParentPair;
 using neuroevolution::genetic_algorithm::genotype_slab::SlabGeneration;
+using neuroevolution::genetic_algorithm::genotype_slab::SlabParentPair;
 using neuroevolution::genetic_algorithm::genotype_slab::SlabSlotCountForByteBudget;
 using neuroevolution::genetic_algorithm::genotype_slab::TryCreateSlabAssemblyPlan;
 using neuroevolution::genetic_algorithm::slab_device::DeviceSlabGARuntimeBuffers;
@@ -37,16 +38,22 @@ using neuroevolution::genetic_algorithm::slab_device::DeviceSlabGARuntimeConfig;
 using neuroevolution::genetic_algorithm::slab_device::DeviceSlabGARuntimeStatusCode;
 using neuroevolution::genetic_algorithm::slab_device::PendingOutputEmbeddingInjection;
 using neuroevolution::genetic_algorithm::slab_device::PopulationFitnessSummary;
+using neuroevolution::genetic_algorithm::slab_device::RuntimeCheckpoint;
 using neuroevolution::genetic_algorithm::slab_device::RuntimeWordCounts;
 using neuroevolution::genetic_algorithm::slab_device::TryAdvanceGenerationOnDevice;
 using neuroevolution::genetic_algorithm::slab_device::TryBootstrapRandomCurrentGenerationOnDevice;
 using neuroevolution::genetic_algorithm::slab_device::TryCreateDeviceSlabGARuntimeBuffers;
+using neuroevolution::genetic_algorithm::slab_device::TryCreatePrebreedingCheckpointOnDevice;
 using neuroevolution::genetic_algorithm::slab_device::TryDownloadCurrentGenerationFromDevice;
 using neuroevolution::genetic_algorithm::slab_device::TryDownloadSlabFromDevice;
 using neuroevolution::genetic_algorithm::slab_device::TryDownloadSlabSlotBytesFromDevice;
 using neuroevolution::genetic_algorithm::slab_device::TryEvaluateCurrentGenerationFitnessOnDevice;
 using neuroevolution::genetic_algorithm::slab_device::TryReadDeviceSlabGARuntimeStatus;
 using neuroevolution::genetic_algorithm::slab_device::TryReadPopulationFitnessSummaryFromDevice;
+using neuroevolution::genetic_algorithm::slab_device::TryReadRuntimeCheckpoint;
+using neuroevolution::genetic_algorithm::slab_device::TryRestorePrebreedingCheckpointToDevice;
+using neuroevolution::genetic_algorithm::slab_device::TryResumeGenerationFromCheckpointOnDevice;
+using neuroevolution::genetic_algorithm::slab_device::TryWriteRuntimeCheckpointAtomically;
 using neuroevolution::genetic_algorithm::spatial::CellularGridShape;
 using neuroevolution::genetic_algorithm::spatial::CellularNeighborList;
 using neuroevolution::genetic_algorithm::spatial::ContainsNeighborIndex;
@@ -54,8 +61,8 @@ using neuroevolution::genetic_algorithm::spatial::FloorRowPreservingPopulationSi
 using neuroevolution::genetic_algorithm::spatial::FloorSquareRoot;
 using neuroevolution::genetic_algorithm::spatial::TryCollectCellularSecondParentCandidates;
 using neuroevolution::genetic_algorithm::spatial::TryMakeCellularGridShape;
-using neuroevolution::training_folder::LoadTrainingWordCatalogFromActionSpace;
 using neuroevolution::training_folder::DeterministicTrainingShardCenterCellIndex;
+using neuroevolution::training_folder::LoadTrainingWordCatalogFromActionSpace;
 using neuroevolution::training_folder::TrainingWordCatalog;
 using neuroevolution::training_folder::UploadTrainingWordCatalogToDeviceConstantMemory;
 
@@ -279,8 +286,8 @@ bool TestSlabRuntimeBootstrapsRandomCurrentGenerationOnDevice() {
         found_non_zero_parameter |= (std::fabs(sample_weight) > 0.0f);
     }
 
-    ok &= ExpectTrue(found_non_zero_parameter,
-                     "Expected device bootstrap to produce non-zero random policy parameters");
+    ok &=
+        ExpectTrue(found_non_zero_parameter, "Expected device bootstrap to produce non-zero random policy parameters");
     return ok;
 }
 
@@ -316,10 +323,10 @@ bool TestSlabRuntimeDownloadsOneWinningSlabSlot() {
 
     ok &= ExpectTrue(downloaded_slot_byte_count == downloaded_buffer.layout.slot_stride_bytes,
                      "Expected single-slot download to copy one full genome stride");
-    ok &= ExpectTrue(
-        std::memcmp(downloaded_slot_bytes.get(), HostSlabSlotBytesAt(downloaded_buffer, summary.best_slot_index),
-                    downloaded_slot_byte_count) == 0,
-        "Expected single-slot download to match the corresponding downloaded slab slot");
+    ok &= ExpectTrue(std::memcmp(downloaded_slot_bytes.get(),
+                                 HostSlabSlotBytesAt(downloaded_buffer, summary.best_slot_index),
+                                 downloaded_slot_byte_count) == 0,
+                     "Expected single-slot download to match the corresponding downloaded slab slot");
     return ok;
 }
 
@@ -341,10 +348,12 @@ bool TestSlabRuntimeRejectsInvalidSingleSlotDownloads() {
 
     std::unique_ptr<std::uint8_t[]> downloaded_slot_bytes{};
     std::size_t downloaded_slot_byte_count = 0;
-    ok &= ExpectTrue(!TryDownloadSlabSlotBytesFromDevice(buffers, 7U, downloaded_slot_bytes, downloaded_slot_byte_count),
-                     "Expected single-slot download to reject an unoccupied slab slot");
-    ok &= ExpectTrue(!TryDownloadSlabSlotBytesFromDevice(buffers, 8U, downloaded_slot_bytes, downloaded_slot_byte_count),
-                     "Expected single-slot download to reject an out-of-range slab slot index");
+    ok &=
+        ExpectTrue(!TryDownloadSlabSlotBytesFromDevice(buffers, 7U, downloaded_slot_bytes, downloaded_slot_byte_count),
+                   "Expected single-slot download to reject an unoccupied slab slot");
+    ok &=
+        ExpectTrue(!TryDownloadSlabSlotBytesFromDevice(buffers, 8U, downloaded_slot_bytes, downloaded_slot_byte_count),
+                   "Expected single-slot download to reject an out-of-range slab slot index");
     ok &= ExpectTrue(downloaded_slot_bytes == nullptr,
                      "Expected failed single-slot downloads to leave the output buffer empty");
     ok &= ExpectTrue(downloaded_slot_byte_count == 0,
@@ -488,8 +497,7 @@ bool TestSlabRuntimeBuildsCellularLocalAssemblyPlan() {
     if (!ok) {
         DeviceSlabGARuntimeStatusCode status_code = DeviceSlabGARuntimeStatusCode::kOk;
         (void)TryReadDeviceSlabGARuntimeStatus(buffers, status_code);
-        std::cerr << "FAIL: cellular-plan generation step failed with status " << static_cast<int>(status_code)
-                  << '\n';
+        std::cerr << "FAIL: cellular-plan generation step failed with status " << static_cast<int>(status_code) << '\n';
         neuroevolution::genetic_algorithm::slab_device::DestroyDeviceSlabGARuntimeBuffers(buffers);
         return false;
     }
@@ -537,9 +545,8 @@ bool TestSlabRuntimeEvaluatesSpatialTrainingShardExposurePerCell() {
 
     DeviceSlabGARuntimeBuffers buffers{};
     bool ok = TryCreateAndBootstrapRuntime(buffers, runtime_config, 25, 151U, 1);
-    ok &= TryEvaluateCurrentGenerationFitnessOnDevice(buffers,
-                                                     MakeSpatialShardRuntimeWordCounts(kExpandedActionCount,
-                                                                                       kExpandedActionCount));
+    ok &= TryEvaluateCurrentGenerationFitnessOnDevice(
+        buffers, MakeSpatialShardRuntimeWordCounts(kExpandedActionCount, kExpandedActionCount));
     if (!ok) {
         DeviceSlabGARuntimeStatusCode status_code = DeviceSlabGARuntimeStatusCode::kOk;
         (void)TryReadDeviceSlabGARuntimeStatus(buffers, status_code);
@@ -559,9 +566,9 @@ bool TestSlabRuntimeEvaluatesSpatialTrainingShardExposurePerCell() {
 
     const std::size_t shard_center_cell_index = DeterministicTrainingShardCenterCellIndex(0, 25);
     for (std::size_t cell_index = 0; cell_index < 25; ++cell_index) {
-        const std::uint32_t expected_local_word_count =
-            (cell_index == shard_center_cell_index) ? static_cast<std::uint32_t>(kExpandedActionCount)
-                                                    : static_cast<std::uint32_t>(kActionCount);
+        const std::uint32_t expected_local_word_count = (cell_index == shard_center_cell_index)
+                                                            ? static_cast<std::uint32_t>(kExpandedActionCount)
+                                                            : static_cast<std::uint32_t>(kActionCount);
         ok &= ExpectTrue(local_training_word_counts[cell_index] == expected_local_word_count,
                          "Expected only the shard-center cell to see the newly introduced local evaluation words");
     }
@@ -585,11 +592,10 @@ bool TestSlabRuntimeGrowsActionCountWithSlabRepacking() {
 
     const DeviceSlabGARuntimeConfig runtime_config = MakeRuntimeConfig(18, 9, kActionCount);
     const std::size_t next_action_count = kActionCount + kInjectedWordCount;
-    const std::size_t expected_next_generation_size =
-        FloorRowPreservingPopulationSize(SlabSlotCountForByteBudget(ComputeGenerationByteBudgetBytes(runtime_config),
-                                                                    next_action_count,
-                                                                    runtime_config.population_size_ceiling),
-                                         runtime_config.grid_column_count);
+    const std::size_t expected_next_generation_size = FloorRowPreservingPopulationSize(
+        SlabSlotCountForByteBudget(ComputeGenerationByteBudgetBytes(runtime_config), next_action_count,
+                                   runtime_config.population_size_ceiling),
+        runtime_config.grid_column_count);
     bool ok = true;
     ok &= ExpectTrue(expected_next_generation_size == 6,
                      "Expected the fixed generation byte budget to shrink the grown generation by one row");
@@ -665,8 +671,8 @@ bool TestSlabRuntimeGrowsActionCountWithSlabRepacking() {
             ok &= TrySeedOutputEmbeddingTailFromHintGrids(
                 GenomePolicyModelParameters(
                     HostSlabSlotBytesAt(parent_buffer, parent_generation.slot_indices[parent_pair.first_parent_index])),
-                training_word_catalog.words[pending_output_embedding_injection.first_catalog_word_index +
-                                            injection_offset],
+                training_word_catalog
+                    .words[pending_output_embedding_injection.first_catalog_word_index + injection_offset],
                 expected_tail);
             ok &= ExpectTailEquals(
                 GenomeTailRows(HostSlabSlotBytesAt(downloaded_buffer, slot_index))[kActionCount + injection_offset],
@@ -690,8 +696,9 @@ bool TestSlabRuntimeRejectsGrowthWhenGenerationBudgetCannotFitOneChild() {
     const std::size_t next_action_count = kActionCount + 1;
     const std::size_t expected_next_generation_size = SlabSlotCountForByteBudget(
         ComputeGenerationByteBudgetBytes(runtime_config), next_action_count, runtime_config.population_size_ceiling);
-    bool ok = ExpectTrue(expected_next_generation_size == 0,
-                     "Expected the fixed generation byte budget to reject a larger genotype that cannot fit one child");
+    bool ok =
+        ExpectTrue(expected_next_generation_size == 0,
+                   "Expected the fixed generation byte budget to reject a larger genotype that cannot fit one child");
     if (!ok) {
         return false;
     }
@@ -795,6 +802,90 @@ bool TestSlabRuntimeAdvancesGenerationWithTightDeviceSlack() {
     return ok;
 }
 
+bool TestSlabRuntimeCheckpointsAndResumesPrebreedingBoundary() {
+    TrainingWordCatalog training_word_catalog{};
+    if (!InitializeTrainingCatalog(training_word_catalog)) {
+        std::cerr << "FAIL: could not upload training-word catalog to device constant memory\n";
+        return false;
+    }
+
+    constexpr std::size_t kInjectedWordCount = 3;
+    PendingOutputEmbeddingInjection pending_output_embedding_injection{};
+    pending_output_embedding_injection.enabled = true;
+    pending_output_embedding_injection.first_catalog_word_index = kActionCount;
+    pending_output_embedding_injection.injection_count = kInjectedWordCount;
+
+    const DeviceSlabGARuntimeConfig runtime_config = MakeRuntimeConfig(18, 9, kActionCount);
+    const std::size_t next_action_count = kActionCount + kInjectedWordCount;
+
+    DeviceSlabGARuntimeBuffers checkpoint_buffers{};
+    bool ok = TryCreateAndBootstrapRuntime(checkpoint_buffers, runtime_config, 9, 173U, 4);
+    RuntimeCheckpoint checkpoint{};
+    ok &=
+        TryCreatePrebreedingCheckpointOnDevice(checkpoint_buffers, 29U, MakeRuntimeWordCounts(), MakeAssemblyConfig(),
+                                               pending_output_embedding_injection, checkpoint, &training_word_catalog);
+    if (!ok) {
+        std::cerr << "FAIL: could not create prebreeding checkpoint\n";
+        neuroevolution::genetic_algorithm::slab_device::DestroyDeviceSlabGARuntimeBuffers(checkpoint_buffers);
+        return false;
+    }
+
+    ok &= ExpectTrue(checkpoint.current_generation.generation_index == 4,
+                     "Expected checkpoint to preserve evaluated generation N");
+    ok &= ExpectTrue(checkpoint.current_generation.active_individual_count == 9,
+                     "Expected checkpoint to keep the evaluated generation N descriptor");
+    ok &= ExpectTrue(checkpoint.assembly_plan.child_count == 6,
+                     "Expected checkpoint to include the full generation N+1 assembly plan");
+    ok &=
+        ExpectTrue(!checkpoint.live_genotypes.empty(), "Expected checkpoint to include compact live genotype records");
+    ok &= ExpectTrue(checkpoint.training_data_identity_hash != 0,
+                     "Expected checkpoint to include a training-data identity hash");
+    ok &= ExpectTrue(checkpoint.live_genotypes.size() <= checkpoint.current_generation.active_individual_count,
+                     "Expected checkpoint to omit non-live genotype slots");
+
+    const std::filesystem::path checkpoint_path = std::filesystem::temp_directory_path() /
+                                                  "neuroevolution-wordle-slab-runtime-checkpoint-test" /
+                                                  "checkpoint.bin";
+    ok &= TryWriteRuntimeCheckpointAtomically(checkpoint, checkpoint_path);
+    RuntimeCheckpoint loaded_checkpoint{};
+    ok &= TryReadRuntimeCheckpoint(checkpoint_path, loaded_checkpoint);
+    neuroevolution::genetic_algorithm::slab_device::DestroyDeviceSlabGARuntimeBuffers(checkpoint_buffers);
+    if (!ok) {
+        std::cerr << "FAIL: could not write/read prebreeding checkpoint\n";
+        return false;
+    }
+
+    DeviceSlabGARuntimeBuffers restored_buffers{};
+    if (!TryRestorePrebreedingCheckpointToDevice(loaded_checkpoint, restored_buffers)) {
+        std::cerr << "FAIL: could not restore prebreeding checkpoint\n";
+        return false;
+    }
+    if (!TryResumeGenerationFromCheckpointOnDevice(restored_buffers, loaded_checkpoint)) {
+        std::cerr << "FAIL: could not resume prebreeding checkpoint assembly\n";
+        neuroevolution::genetic_algorithm::slab_device::DestroyDeviceSlabGARuntimeBuffers(restored_buffers);
+        return false;
+    }
+
+    SlabGeneration resumed_generation{};
+    PopulationFitnessSummary resumed_summary{};
+    ok = TryDownloadCurrentGenerationFromDevice(restored_buffers, resumed_generation);
+    ok &= TryEvaluateCurrentGenerationFitnessOnDevice(restored_buffers, MakeRuntimeWordCounts(next_action_count));
+    ok &= TryReadPopulationFitnessSummaryFromDevice(restored_buffers, resumed_summary);
+    neuroevolution::genetic_algorithm::slab_device::DestroyDeviceSlabGARuntimeBuffers(restored_buffers);
+    if (!ok) {
+        std::cerr << "FAIL: could not restore and resume prebreeding checkpoint\n";
+        return false;
+    }
+
+    ok &= ExpectTrue(resumed_generation.generation_index == 5,
+                     "Expected resume to assemble generation N+1 from the saved plan");
+    ok &= ExpectTrue(resumed_generation.active_individual_count == loaded_checkpoint.assembly_plan.child_count,
+                     "Expected resumed generation size to match the saved assembly plan");
+    ok &= ExpectTrue(resumed_summary.generation_index == 5,
+                     "Expected resumed generation to be evaluable without rerunning generation N selection");
+    return ok;
+}
+
 } // namespace
 
 int main() {
@@ -802,14 +893,15 @@ int main() {
         return 1;
     }
 
-    if (!TestSlabRuntimeBootstrapsRandomCurrentGenerationOnDevice() ||
-        !TestSlabRuntimeDownloadsOneWinningSlabSlot() || !TestSlabRuntimeRejectsInvalidSingleSlotDownloads() ||
+    if (!TestSlabRuntimeBootstrapsRandomCurrentGenerationOnDevice() || !TestSlabRuntimeDownloadsOneWinningSlabSlot() ||
+        !TestSlabRuntimeRejectsInvalidSingleSlotDownloads() ||
         !TestSlabRuntimeEvaluatesAndSummarizesCurrentGeneration() || !TestSlabRuntimeAdvancesOneGeneration() ||
         !TestSlabRuntimeBuildsCellularLocalAssemblyPlan() ||
         !TestSlabRuntimeEvaluatesSpatialTrainingShardExposurePerCell() ||
         !TestSlabRuntimeGrowsActionCountWithSlabRepacking() ||
         !TestSlabRuntimeRejectsGrowthWhenGenerationBudgetCannotFitOneChild() ||
-        !TestSlabRuntimeAdvancesGenerationWithTightDeviceSlack()) {
+        !TestSlabRuntimeAdvancesGenerationWithTightDeviceSlack() ||
+        !TestSlabRuntimeCheckpointsAndResumesPrebreedingBoundary()) {
         return 1;
     }
 
