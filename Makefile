@@ -47,7 +47,7 @@ smoke: test-gpu
 run-ga-desktop: GA_TARGET_GENOTYPE_VRAM_GB := 12
 run-ga-laptop: GA_TARGET_GENOTYPE_VRAM_GB := 6
 
-run-ga-desktop run-ga-laptop: .env
+run-ga-laptop: .env
 	cmake --build build --target run_genetic_algorithm
 	./build/run_genetic_algorithm \
 		--generations $(GA_GENERATIONS) \
@@ -56,6 +56,17 @@ run-ga-desktop run-ga-laptop: .env
 		--word-count-step 20 \
 		--word-count-step-period 25 \
 		--shard-radius-growth-period 2 $(GA_SEED_ARG) $(GA_VERBOSE_ARG)
+
+run-ga-prod: .env
+	cmake --build build --target run_genetic_algorithm
+	./build/run_genetic_algorithm \
+		--generations 3000 \
+		--genotype-vram-gb 12 \
+		--initial-word-count 50 \
+		--word-count-step 50 \
+		--word-count-step-period 20 \
+		--shard-radius-growth-period 2
+		--verbose
 
 run-ga-growth-smoke: .env
 	cmake --build build --target run_genetic_algorithm
