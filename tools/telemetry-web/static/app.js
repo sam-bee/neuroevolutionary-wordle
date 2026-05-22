@@ -36,13 +36,19 @@ async function fetchJson(path) {
 }
 
 async function loadRuns() {
+  const selectedFilename = runSelect.value;
   const runs = await fetchJson("/api/runs");
   runSelect.innerHTML = "";
+  let selectedRunStillExists = false;
 
   for (const run of runs) {
     const option = document.createElement("option");
     option.value = run.filename;
     option.textContent = run.filename;
+    if (run.filename === selectedFilename) {
+      option.selected = true;
+      selectedRunStillExists = true;
+    }
     runSelect.appendChild(option);
   }
 
@@ -52,6 +58,9 @@ async function loadRuns() {
     return;
   }
 
+  if (!selectedRunStillExists) {
+    runSelect.value = runs[0].filename;
+  }
   setStatus(`Loaded ${runs.length} telemetry run${runs.length === 1 ? "" : "s"}.`);
   await loadSelectedRun();
 }
