@@ -63,7 +63,7 @@ run-ga-prod: .env
 		--generation-vram-gb 8 \
 		--initial-word-count 50 \
 		--word-count-step 50 \
-		--word-count-step-period 20 \
+		--word-count-step-period 30 \
 		--shard-radius-growth-period 2 \
 		--checkpoint-path checkpoints/ga-runtime.bin \
 		--checkpoint-every 10 \
