@@ -10,17 +10,6 @@ export CUDA_VISIBLE_DEVICES
 AGENTS_CUDA_DEVICE_ORDER := $(if $(CUDA_DEVICE_ORDER),$(CUDA_DEVICE_ORDER),FASTEST_FIRST)
 AGENTS_CUDA_VISIBLE_DEVICES := $(if $(CUDA_VISIBLE_DEVICES),$(CUDA_VISIBLE_DEVICES),0)
 
-GA_GENERATIONS ?= 1000
-GA_SEED ?=
-GA_VERBOSE ?= 1
-GA_SEED_ARG := $(if $(GA_SEED),--seed $(GA_SEED))
-GA_VERBOSE_ARG := $(if $(filter 0 false no off,$(GA_VERBOSE)),,--verbose)
-GA_BENCHMARK_POPULATION_SIZE ?= 1024
-GA_BENCHMARK_GENOTYPE_VRAM_GB ?= 1
-GA_BENCHMARK_GENERATION_VRAM_GB ?= 0.5
-PLAY_WORDLE_MODEL ?=
-PLAY_WORDLE_METADATA ?= $(patsubst %.bin,%.json,$(PLAY_WORDLE_MODEL))
-
 FORMAT_FILES := $(shell find src tests -type f \( -name '*.hpp' -o -name '*.cpp' -o -name '*.cu' \) | sort)
 
 configure: .env
@@ -44,18 +33,27 @@ test-gpu-sanitized: .env
 
 smoke: test-gpu
 
-run-ga-desktop: GA_TARGET_GENOTYPE_VRAM_GB := 12
-run-ga-laptop: GA_TARGET_GENOTYPE_VRAM_GB := 6
+run-ga-desktop: .env
+	cmake --build build --target run_genetic_algorithm
+	./build/run_genetic_algorithm \
+		--generations 1000 \
+		--genotype-vram-gb 12 \
+		--initial-word-count 20 \
+		--word-count-step 20 \
+		--word-count-step-period 25 \
+		--shard-radius-growth-period 2 \
+		--verbose
 
 run-ga-laptop: .env
 	cmake --build build --target run_genetic_algorithm
 	./build/run_genetic_algorithm \
-		--generations $(GA_GENERATIONS) \
-		--genotype-vram-gb $(GA_TARGET_GENOTYPE_VRAM_GB) \
+		--generations 1000 \
+		--genotype-vram-gb 6 \
 		--initial-word-count 20 \
 		--word-count-step 20 \
 		--word-count-step-period 25 \
-		--shard-radius-growth-period 2 $(GA_SEED_ARG) $(GA_VERBOSE_ARG)
+		--shard-radius-growth-period 2 \
+		--verbose
 
 run-ga-prod: .env
 	cmake --build build --target run_genetic_algorithm
@@ -80,35 +78,33 @@ run-ga-growth-smoke: .env
 		--initial-word-count 20 \
 		--word-count-step 20 \
 		--word-count-step-period 2 \
-		--shard-radius-growth-period 2 $(GA_VERBOSE_ARG)
+		--shard-radius-growth-period 2 \
+		--verbose
 
 run-ga-benchmark-two-gen: .env
 	cmake --build build --target run_genetic_algorithm
 	stdbuf -oL -eL ./build/run_genetic_algorithm \
 		--generations 2 \
-		--population-size $(GA_BENCHMARK_POPULATION_SIZE) \
-		--genotype-vram-gb $(GA_BENCHMARK_GENOTYPE_VRAM_GB) \
-		--generation-vram-gb $(GA_BENCHMARK_GENERATION_VRAM_GB) \
+		--population-size 1024 \
+		--genotype-vram-gb 1 \
+		--generation-vram-gb 0.5 \
 		--initial-word-count 20 \
 		--word-count-step 1980 \
 		--word-count-step-period 1 \
-		--shard-initial-radius-infinite $(GA_SEED_ARG) $(GA_VERBOSE_ARG)
+		--shard-initial-radius-infinite \
+		--verbose
 
 play-wordle: .env
-	@if [ -z "$(PLAY_WORDLE_MODEL)" ]; then \
-		echo "Set PLAY_WORDLE_MODEL=path/to/winner.bin"; \
+	@if [ ! -f "models/winner-2026-05-21_01-56-52-g0-seed7.bin" ]; then \
+		echo "Model file not found: models/winner-2026-05-21_01-56-52-g0-seed7.bin"; \
 		exit 1; \
 	fi
-	@if [ ! -f "$(PLAY_WORDLE_MODEL)" ]; then \
-		echo "Model file not found: $(PLAY_WORDLE_MODEL)"; \
-		exit 1; \
-	fi
-	@if [ ! -f "$(PLAY_WORDLE_METADATA)" ]; then \
-		echo "Metadata file not found: $(PLAY_WORDLE_METADATA)"; \
+	@if [ ! -f "models/winner-2026-05-21_01-56-52-g0-seed7.json" ]; then \
+		echo "Metadata file not found: models/winner-2026-05-21_01-56-52-g0-seed7.json"; \
 		exit 1; \
 	fi
 	cmake --build build --target play_wordle
-	./build/play_wordle "$(PLAY_WORDLE_MODEL)" "$(PLAY_WORDLE_METADATA)"
+	./build/play_wordle "models/winner-2026-05-21_01-56-52-g0-seed7.bin" "models/winner-2026-05-21_01-56-52-g0-seed7.json"
 
 format:
 	clang-format -i $(FORMAT_FILES)
