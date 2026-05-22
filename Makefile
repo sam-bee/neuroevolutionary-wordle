@@ -62,10 +62,13 @@ run-ga-prod: .env
 	./build/run_genetic_algorithm \
 		--generations 3000 \
 		--genotype-vram-gb 12 \
+		--generation-vram-gb 8 \
 		--initial-word-count 50 \
 		--word-count-step 50 \
 		--word-count-step-period 20 \
-		--shard-radius-growth-period 2
+		--shard-radius-growth-period 2 \
+		--checkpoint-path checkpoints/ga-runtime.bin \
+		--checkpoint-every 10 \
 		--verbose
 
 run-ga-growth-smoke: .env
