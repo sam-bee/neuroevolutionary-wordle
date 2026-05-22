@@ -9,6 +9,10 @@ const trainingDataChartCanvas = document.getElementById("training-data-chart");
 const breedingParentUsageChartCanvas = document.getElementById("breeding-parent-usage-chart");
 const seriesControls = document.getElementById("series-controls");
 const sectionNavLinks = document.querySelectorAll(".section-nav a");
+const chartModal = document.getElementById("chart-modal");
+const chartModalTitle = document.getElementById("chart-modal-title");
+const chartModalCanvas = document.getElementById("chart-modal-canvas");
+const chartModalClose = document.getElementById("chart-modal-close");
 
 let fitnessChart = null;
 let stddevChart = null;
@@ -16,6 +20,7 @@ let distinctValuesChart = null;
 let populationChart = null;
 let trainingDataChart = null;
 let breedingParentUsageChart = null;
+let modalChart = null;
 const fitnessSeriesDefinitions = [
   { key: "min", label: "min fitness", color: "#7aa2f7" },
   { key: "mean", label: "mean fitness", color: "#9ece6a" },
@@ -187,27 +192,85 @@ function updateOrCreateChart(existingChart, canvas, labels, datasets, yAxisTitle
   return new Chart(canvas, {
     type: "line",
     data: { labels, datasets },
-    options: {
-      responsive: true,
-      maintainAspectRatio: false,
-      animation: false,
-      interaction: { mode: "index", intersect: false },
-      plugins: {
-        legend: { labels: { color: "#d7dde5" } },
+    options: chartOptions(yAxisTitle),
+  });
+}
+
+function chartOptions(yAxisTitle) {
+  return {
+    responsive: true,
+    maintainAspectRatio: false,
+    animation: false,
+    interaction: { mode: "index", intersect: false },
+    plugins: {
+      legend: { labels: { color: "#d7dde5" } },
+    },
+    scales: {
+      x: {
+        title: { display: true, text: "Generation", color: "#d7dde5" },
+        ticks: { color: "#9aa6b5" },
+        grid: { color: "#2a3340" },
       },
-      scales: {
-        x: {
-          title: { display: true, text: "Generation", color: "#d7dde5" },
-          ticks: { color: "#9aa6b5" },
-          grid: { color: "#2a3340" },
-        },
-        y: {
-          title: { display: true, text: yAxisTitle, color: "#d7dde5" },
-          ticks: { color: "#9aa6b5" },
-          grid: { color: "#2a3340" },
-        },
+      y: {
+        title: { display: true, text: yAxisTitle, color: "#d7dde5" },
+        ticks: { color: "#9aa6b5" },
+        grid: { color: "#2a3340" },
       },
     },
+  };
+}
+
+function chartTitleForCanvas(canvas) {
+  const details = canvas.closest("details");
+  const summaryText = details?.querySelector(":scope > summary span")?.textContent;
+  return summaryText || "Telemetry Graph";
+}
+
+function cloneDatasetsForModal(sourceChart) {
+  return sourceChart.data.datasets.map((sourceDataset, index) => ({
+    ...sourceDataset,
+    data: [...sourceDataset.data],
+    hidden: !sourceChart.isDatasetVisible(index),
+    pointRadius: sourceDataset.pointRadius ?? 0,
+  }));
+}
+
+function openChartModal(sourceChart, title, yAxisTitle) {
+  if (!sourceChart) {
+    return;
+  }
+
+  if (modalChart) {
+    modalChart.destroy();
+    modalChart = null;
+  }
+
+  chartModalTitle.textContent = title;
+  chartModal.classList.add("is-open");
+  chartModal.setAttribute("aria-hidden", "false");
+  modalChart = new Chart(chartModalCanvas, {
+    type: "line",
+    data: {
+      labels: [...sourceChart.data.labels],
+      datasets: cloneDatasetsForModal(sourceChart),
+    },
+    options: chartOptions(yAxisTitle),
+  });
+}
+
+function closeChartModal() {
+  chartModal.classList.remove("is-open");
+  chartModal.setAttribute("aria-hidden", "true");
+  if (modalChart) {
+    modalChart.destroy();
+    modalChart = null;
+  }
+}
+
+function attachChartModal(canvas, chartGetter, yAxisTitle) {
+  const clickTarget = canvas.closest(".chart-shell") || canvas;
+  clickTarget.addEventListener("click", () => {
+    openChartModal(chartGetter(), chartTitleForCanvas(canvas), yAxisTitle);
   });
 }
 
@@ -236,6 +299,25 @@ sectionNavLinks.forEach((link) => {
     }
   });
 });
+
+chartModalClose.addEventListener("click", closeChartModal);
+chartModal.addEventListener("click", (event) => {
+  if (event.target.hasAttribute("data-chart-modal-close")) {
+    closeChartModal();
+  }
+});
+document.addEventListener("keydown", (event) => {
+  if (event.key === "Escape" && chartModal.classList.contains("is-open")) {
+    closeChartModal();
+  }
+});
+
+attachChartModal(chartCanvas, () => fitnessChart, "Fitness");
+attachChartModal(stddevChartCanvas, () => stddevChart, "Stddev Fitness");
+attachChartModal(distinctValuesChartCanvas, () => distinctValuesChart, "Distinct Values");
+attachChartModal(populationChartCanvas, () => populationChart, "Population Size");
+attachChartModal(trainingDataChartCanvas, () => trainingDataChart, "Training Words");
+attachChartModal(breedingParentUsageChartCanvas, () => breedingParentUsageChart, "Parent Count");
 
 renderSeriesControls();
 loadRuns().catch((error) => setStatus(error.message));
