@@ -52,10 +52,10 @@ async function loadSelectedRun() {
 function updateChart(rows) {
   const labels = rows.map((row) => row.generation);
   const datasets = [
-    dataset("min", rows.map((row) => row.min), "#5267d6"),
-    dataset("max", rows.map((row) => row.max), "#d65252"),
-    dataset("mean", rows.map((row) => row.mean), "#2d8a54"),
-    dataset("median", rows.map((row) => row.median), "#8a5ab8"),
+    dataset("min", rows.map((row) => row.min), "#7aa2f7"),
+    dataset("max", rows.map((row) => row.max), "#f7768e"),
+    dataset("mean", rows.map((row) => row.mean), "#9ece6a"),
+    dataset("median", rows.map((row) => row.median), "#bb9af7"),
   ];
 
   if (chart) {
@@ -73,9 +73,20 @@ function updateChart(rows) {
       maintainAspectRatio: false,
       animation: false,
       interaction: { mode: "index", intersect: false },
+      plugins: {
+        legend: { labels: { color: "#d7dde5" } },
+      },
       scales: {
-        x: { title: { display: true, text: "Generation" } },
-        y: { title: { display: true, text: "Fitness" } },
+        x: {
+          title: { display: true, text: "Generation", color: "#d7dde5" },
+          ticks: { color: "#9aa6b5" },
+          grid: { color: "#2a3340" },
+        },
+        y: {
+          title: { display: true, text: "Fitness", color: "#d7dde5" },
+          ticks: { color: "#9aa6b5" },
+          grid: { color: "#2a3340" },
+        },
       },
     },
   });
