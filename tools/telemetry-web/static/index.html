@@ -4,11 +4,42 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>GA Telemetry</title>
-    <link rel="stylesheet" href="/static/styles.css?v=chart-modal-2">
+    <link rel="stylesheet" href="/static/styles.css?v=nav-tree-1">
     <script src="/static/chart.umd.js"></script>
   </head>
   <body>
     <div class="page-shell">
+      <nav class="section-nav" aria-label="Telemetry sections">
+        <a class="nav-top-link" href="#top">Top</a>
+        <ol>
+          <li>
+            <a class="nav-section-link" href="#fitness-scores">Fitness Scores</a>
+            <ol>
+              <li><a href="#fitness-over-time">Fitness Scores Over Time</a></li>
+              <li><a href="#fitness-stddev">Fitness Standard Deviation</a></li>
+              <li><a href="#distinct-fitness-values">Distinct Fitness Values</a></li>
+            </ol>
+          </li>
+          <li>
+            <a class="nav-section-link" href="#population">Population</a>
+            <ol>
+              <li><a href="#population-size">Population Size</a></li>
+            </ol>
+          </li>
+          <li>
+            <a class="nav-section-link" href="#training-data">Training Data</a>
+            <ol>
+              <li><a href="#training-word-count">Training Word Count</a></li>
+            </ol>
+          </li>
+          <li>
+            <a class="nav-section-link" href="#breeding">Breeding</a>
+            <ol>
+              <li><a href="#breeding-parent-usage">Parent Usage</a></li>
+            </ol>
+          </li>
+        </ol>
+      </nav>
       <main>
         <header id="top">
           <h1>GA Telemetry</h1>
@@ -52,37 +83,42 @@
           <summary>
             <span>Population</span>
           </summary>
-          <div class="chart-shell chart-shell-small">
-            <canvas id="population-chart"></canvas>
-          </div>
+          <details id="population-size" class="metric-subsection" open>
+            <summary>
+              <span>Population Size Over Time</span>
+            </summary>
+            <div class="chart-shell chart-shell-small">
+              <canvas id="population-chart"></canvas>
+            </div>
+          </details>
         </details>
         <details id="training-data" class="metric-section" open>
           <summary>
             <span>Training Data</span>
           </summary>
-          <div class="chart-shell chart-shell-small">
-            <canvas id="training-data-chart"></canvas>
-          </div>
+          <details id="training-word-count" class="metric-subsection" open>
+            <summary>
+              <span>Training Word Count Over Time</span>
+            </summary>
+            <div class="chart-shell chart-shell-small">
+              <canvas id="training-data-chart"></canvas>
+            </div>
+          </details>
         </details>
         <details id="breeding" class="metric-section" open>
           <summary>
             <span>Breeding</span>
           </summary>
-          <div class="chart-shell chart-shell-small">
-            <canvas id="breeding-parent-usage-chart"></canvas>
-          </div>
+          <details id="breeding-parent-usage" class="metric-subsection" open>
+            <summary>
+              <span>Parent Usage Over Time</span>
+            </summary>
+            <div class="chart-shell chart-shell-small">
+              <canvas id="breeding-parent-usage-chart"></canvas>
+            </div>
+          </details>
         </details>
       </main>
-      <nav class="section-nav" aria-label="Telemetry sections">
-        <a href="#top">Top</a>
-        <a href="#fitness-scores">Fitness Scores</a>
-        <a href="#fitness-over-time">Fitness Lines</a>
-        <a href="#fitness-stddev">Fitness Stddev</a>
-        <a href="#distinct-fitness-values">Distinct Values</a>
-        <a href="#population">Population</a>
-        <a href="#training-data">Training Data</a>
-        <a href="#breeding">Breeding</a>
-      </nav>
     </div>
     <div id="chart-modal" class="chart-modal" aria-hidden="true">
       <div class="chart-modal-backdrop" data-chart-modal-close></div>
@@ -96,6 +132,6 @@
         </div>
       </section>
     </div>
-    <script src="/static/app.js?v=chart-modal-2"></script>
+    <script src="/static/app.js?v=nav-tree-1"></script>
   </body>
 </html>
