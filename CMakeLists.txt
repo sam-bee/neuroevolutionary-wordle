@@ -5,6 +5,7 @@ set(CMAKE_CUDA_ARCHITECTURES 120)
 project(neuroevolution_wordle LANGUAGES CXX CUDA)
 
 find_package(CUDAToolkit REQUIRED)
+find_package(SQLite3 REQUIRED)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -242,6 +243,7 @@ add_executable(run_genetic_algorithm
 target_link_libraries(run_genetic_algorithm PRIVATE
     genetic_algorithm_slab_device
     model_artifact
+    SQLite::SQLite3
 )
 
 enable_project_warnings(run_genetic_algorithm)

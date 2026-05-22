@@ -68,6 +68,7 @@ run-ga-prod: .env
 		--checkpoint-path checkpoints/ga-runtime.bin \
 		--checkpoint-every 10 \
 		--breeding-radius 3 \
+		--telemetry-dir telemetry/runs \
 		--verbose
 
 run-ga-growth-smoke: .env

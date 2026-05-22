@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>GA Telemetry</title>
+    <link rel="stylesheet" href="/static/styles.css">
+    <script src="/static/chart.umd.js"></script>
+  </head>
+  <body>
+    <main>
+      <header>
+        <h1>GA Telemetry</h1>
+        <div class="controls">
+          <select id="run-select" aria-label="Telemetry run"></select>
+          <button id="refresh-button" type="button">Refresh</button>
+        </div>
+      </header>
+      <section id="status" class="status">Loading telemetry runs...</section>
+      <section class="chart-shell">
+        <canvas id="fitness-chart"></canvas>
+      </section>
+    </main>
+    <script src="/static/app.js"></script>
+  </body>
+</html>

@@ -9,3 +9,6 @@ checkpoints/*
 
 models/*
 !models/.gitkeep
+
+telemetry/*
+!telemetry/.gitkeep

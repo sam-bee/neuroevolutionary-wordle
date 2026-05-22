@@ -1332,7 +1332,8 @@ bool TryPreparePrebreedingBoundaryOnDevice(DeviceSlabGARuntimeBuffers &buffers, 
                                            const PendingOutputEmbeddingInjection &pending_output_embedding_injection,
                                            std::size_t &parent_action_count_out,
                                            DeviceSlabGARuntimeConfig &checkpoint_runtime_config_out,
-                                           const bool verbose) {
+                                           const bool verbose,
+                                           const PostFitnessEvaluationCallback &post_fitness_evaluation_callback) {
     parent_action_count_out = 0;
     checkpoint_runtime_config_out = {};
     buffers.last_generation_used_host_spillover = false;
@@ -1370,6 +1371,9 @@ bool TryPreparePrebreedingBoundaryOnDevice(DeviceSlabGARuntimeBuffers &buffers, 
     log_verbose_duration("Generation " + std::to_string(next_generation_index) +
                              ": current generation fitness evaluation finished",
                          evaluation_start_time);
+    if (post_fitness_evaluation_callback && !post_fitness_evaluation_callback(buffers)) {
+        return false;
+    }
 
     std::size_t next_action_count = buffers.genotype_slab.slab_layout.action_count;
     std::size_t next_generation_size = buffers.genotype_slab.current_generation_size;
@@ -1623,13 +1627,15 @@ bool TryAdvanceGenerationOnDevice(DeviceSlabGARuntimeBuffers &buffers, const std
                                   const RuntimeWordCounts &runtime_word_counts, const GenerationAssemblyConfig &config,
                                   const PendingOutputEmbeddingInjection &pending_output_embedding_injection,
                                   const training_folder::TrainingWordCatalog *host_training_word_catalog,
-                                  const bool verbose) {
+                                  const bool verbose,
+                                  const PostFitnessEvaluationCallback &post_fitness_evaluation_callback) {
     (void)host_training_word_catalog;
     std::size_t parent_action_count = 0;
     DeviceSlabGARuntimeConfig checkpoint_runtime_config{};
     if (!TryPreparePrebreedingBoundaryOnDevice(buffers, generation_seed, runtime_word_counts, config,
                                                pending_output_embedding_injection, parent_action_count,
-                                               checkpoint_runtime_config, verbose)) {
+                                               checkpoint_runtime_config, verbose,
+                                               post_fitness_evaluation_callback)) {
         return false;
     }
 
@@ -1647,12 +1653,14 @@ bool TryCreatePrebreedingCheckpointOnDevice(DeviceSlabGARuntimeBuffers &buffers,
                                             const PendingOutputEmbeddingInjection &pending_output_embedding_injection,
                                             RuntimeCheckpoint &checkpoint_out,
                                             const training_folder::TrainingWordCatalog *host_training_word_catalog,
-                                            const bool verbose) {
+                                            const bool verbose,
+                                            const PostFitnessEvaluationCallback &post_fitness_evaluation_callback) {
     std::size_t parent_action_count = 0;
     DeviceSlabGARuntimeConfig checkpoint_runtime_config{};
     if (!TryPreparePrebreedingBoundaryOnDevice(buffers, generation_seed, runtime_word_counts, config,
                                                pending_output_embedding_injection, parent_action_count,
-                                               checkpoint_runtime_config, verbose)) {
+                                               checkpoint_runtime_config, verbose,
+                                               post_fitness_evaluation_callback)) {
         checkpoint_out = {};
         return false;
     }

@@ -1,5 +1,7 @@
 #include <cuda_runtime.h>
+#include <sqlite3.h>
 
+#include <algorithm>
 #include <chrono>
 #include <cmath>
 #include <cstddef>
@@ -16,6 +18,7 @@
 #include <string>
 #include <string_view>
 #include <utility>
+#include <vector>
 
 #include "common/progress_log.hpp"
 #include "genetic_algorithm/device/slab_runtime.hpp"
@@ -98,6 +101,10 @@ struct CliConfig {
     bool checkpoint_every_was_provided = false;
     std::filesystem::path resume_checkpoint_path{};
     bool resume_checkpoint_path_was_provided = false;
+    std::filesystem::path telemetry_path{};
+    bool telemetry_path_was_provided = false;
+    std::filesystem::path telemetry_dir{};
+    bool telemetry_dir_was_provided = false;
 };
 
 enum class ArgumentParseResult {
@@ -111,7 +118,8 @@ void PrintUsage() {
                  "[--genotype-vram-gb F] [--generation-vram-gb F] [--initial-word-count N] [--word-count-step N] "
                  "[--word-count-step-period N] [--breeding-radius N] [--shard-initial-radius N] "
                  "[--shard-initial-radius-infinite] [--shard-radius-growth-period N] "
-                 "[--checkpoint-path PATH] [--checkpoint-every N] [--resume-from-checkpoint PATH]\n"
+                 "[--checkpoint-path PATH] [--checkpoint-every N] [--resume-from-checkpoint PATH] "
+                 "[--telemetry-path PATH] [--telemetry-dir DIR]\n"
               << "If --population-size is omitted, the program does not apply an extra population ceiling.\n"
               << "The shared training/action schedule defaults to initial_word_count="
               << neuroevolution::training_folder::kDefaultInitialActiveWordCount
@@ -143,7 +151,9 @@ void PrintUsage() {
                  "written at every inter-generation boundary. If a previous async checkpoint write is still running, "
                  "the next checkpoint is skipped.\n"
               << "--resume-from-checkpoint loads a pre-recombination checkpoint, restores the saved assembly plan, "
-                 "and resumes without rerunning the completed generation's fitness evaluation or selection.\n";
+                 "and resumes without rerunning the completed generation's fitness evaluation or selection.\n"
+              << "--telemetry-path writes per-generation fitness summaries to the given SQLite database. "
+                 "--telemetry-dir creates a datetime-named SQLite database in the given directory.\n";
 }
 
 bool CheckCuda(const cudaError_t error, const std::string_view action) {
@@ -205,6 +215,20 @@ std::uint32_t MakeSeedFromCurrentTimeMicroseconds() {
     return lower_bits ^ upper_bits;
 }
 
+std::string MakeFilesystemTimestamp() {
+    const std::time_t now = std::time(nullptr);
+    std::tm local_time{};
+    localtime_r(&now, &local_time);
+
+    std::ostringstream stream;
+    stream << std::put_time(&local_time, "%Y-%m-%dT%H-%M-%S");
+    return stream.str();
+}
+
+std::filesystem::path MakeTelemetryPathFromDirectory(const std::filesystem::path &telemetry_dir) {
+    return telemetry_dir / ("ga-telemetry-" + MakeFilesystemTimestamp() + ".sqlite");
+}
+
 ArgumentParseResult TryParseArguments(const int argc, char **argv, CliConfig &config) {
     for (int arg_index = 1; arg_index < argc; ++arg_index) {
         const std::string_view argument = argv[arg_index];
@@ -224,23 +248,30 @@ ArgumentParseResult TryParseArguments(const int argc, char **argv, CliConfig &co
             continue;
         }
 
-        if ((argument == "--checkpoint-path") || (argument == "--resume-from-checkpoint")) {
+        if ((argument == "--checkpoint-path") || (argument == "--resume-from-checkpoint") ||
+            (argument == "--telemetry-path") || (argument == "--telemetry-dir")) {
             if ((arg_index + 1) >= argc) {
                 std::cerr << "Missing value for " << argument << '\n';
                 return ArgumentParseResult::kFailure;
             }
 
             if (argv[arg_index + 1][0] == '\0') {
-                std::cerr << "Checkpoint path for " << argument << " must not be empty.\n";
+                std::cerr << "Path for " << argument << " must not be empty.\n";
                 return ArgumentParseResult::kFailure;
             }
 
             if (argument == "--checkpoint-path") {
                 config.checkpoint_path = argv[arg_index + 1];
                 config.checkpoint_path_was_provided = true;
-            } else {
+            } else if (argument == "--resume-from-checkpoint") {
                 config.resume_checkpoint_path = argv[arg_index + 1];
                 config.resume_checkpoint_path_was_provided = true;
+            } else if (argument == "--telemetry-path") {
+                config.telemetry_path = argv[arg_index + 1];
+                config.telemetry_path_was_provided = true;
+            } else {
+                config.telemetry_dir = argv[arg_index + 1];
+                config.telemetry_dir_was_provided = true;
             }
 
             ++arg_index;
@@ -359,6 +390,10 @@ ArgumentParseResult TryParseArguments(const int argc, char **argv, CliConfig &co
     if (config.checkpoint_path_was_provided && !config.checkpoint_every_was_provided) {
         config.checkpoint_every_generations = 1;
     }
+    if (config.telemetry_path_was_provided && config.telemetry_dir_was_provided) {
+        std::cerr << "Use either --telemetry-path or --telemetry-dir, not both.\n";
+        return ArgumentParseResult::kFailure;
+    }
 
     return ArgumentParseResult::kSuccess;
 }
@@ -372,6 +407,175 @@ bool ReportDeviceSlabRuntimeFailure(const DeviceSlabGARuntimeBuffers &buffers, c
     }
 
     return false;
+}
+
+struct GenerationFitnessTelemetryRow {
+    std::size_t generation = 0;
+    float fitness_min = 0.0f;
+    float fitness_max = 0.0f;
+    float fitness_mean = 0.0f;
+    float fitness_median = 0.0f;
+};
+
+class TelemetryWriter {
+  public:
+    TelemetryWriter() = default;
+
+    ~TelemetryWriter() {
+        if (db_ != nullptr) {
+            sqlite3_close(db_);
+        }
+    }
+
+    TelemetryWriter(const TelemetryWriter &) = delete;
+    TelemetryWriter &operator=(const TelemetryWriter &) = delete;
+
+    bool TryOpen(const std::filesystem::path &telemetry_path) {
+        path_ = telemetry_path;
+        const std::filesystem::path parent_path = telemetry_path.parent_path();
+        if (!parent_path.empty()) {
+            std::error_code error_code;
+            std::filesystem::create_directories(parent_path, error_code);
+            if (error_code) {
+                std::cerr << "Could not create telemetry directory " << parent_path.string() << ": "
+                          << error_code.message() << '\n';
+                return false;
+            }
+        }
+
+        if (sqlite3_open(telemetry_path.string().c_str(), &db_) != SQLITE_OK) {
+            std::cerr << "Could not open telemetry SQLite database " << telemetry_path.string() << ": "
+                      << LastError() << '\n';
+            return false;
+        }
+
+        return TryExec("PRAGMA journal_mode=WAL;") && TryExec("PRAGMA synchronous=NORMAL;") &&
+               TryExec("PRAGMA busy_timeout=5000;") &&
+               TryExec("CREATE TABLE IF NOT EXISTS generation_fitness ("
+                       "generation INTEGER PRIMARY KEY,"
+                       "fitness_min REAL NOT NULL,"
+                       "fitness_max REAL NOT NULL,"
+                       "fitness_mean REAL NOT NULL,"
+                       "fitness_median REAL NOT NULL,"
+                       "logged_at TEXT NOT NULL"
+                       ");");
+    }
+
+    bool TryLogGenerationFitness(const GenerationFitnessTelemetryRow &row) {
+        static constexpr const char *kInsertSql =
+            "INSERT OR REPLACE INTO generation_fitness "
+            "(generation, fitness_min, fitness_max, fitness_mean, fitness_median, logged_at) "
+            "VALUES (?, ?, ?, ?, ?, datetime('now'));";
+
+        sqlite3_stmt *statement = nullptr;
+        if (sqlite3_prepare_v2(db_, kInsertSql, -1, &statement, nullptr) != SQLITE_OK) {
+            std::cerr << "Could not prepare telemetry insert for " << path_.string() << ": " << LastError() << '\n';
+            return false;
+        }
+
+        bool ok = true;
+        ok &= sqlite3_bind_int64(statement, 1, static_cast<sqlite3_int64>(row.generation)) == SQLITE_OK;
+        ok &= sqlite3_bind_double(statement, 2, static_cast<double>(row.fitness_min)) == SQLITE_OK;
+        ok &= sqlite3_bind_double(statement, 3, static_cast<double>(row.fitness_max)) == SQLITE_OK;
+        ok &= sqlite3_bind_double(statement, 4, static_cast<double>(row.fitness_mean)) == SQLITE_OK;
+        ok &= sqlite3_bind_double(statement, 5, static_cast<double>(row.fitness_median)) == SQLITE_OK;
+
+        if (!ok) {
+            std::cerr << "Could not bind telemetry row for " << path_.string() << ": " << LastError() << '\n';
+            sqlite3_finalize(statement);
+            return false;
+        }
+
+        const int step_result = sqlite3_step(statement);
+        if (step_result != SQLITE_DONE) {
+            std::cerr << "Could not write telemetry row for generation " << row.generation << " to " << path_.string()
+                      << ": " << LastError() << '\n';
+            sqlite3_finalize(statement);
+            return false;
+        }
+
+        sqlite3_finalize(statement);
+        return true;
+    }
+
+    const std::filesystem::path &path() const noexcept {
+        return path_;
+    }
+
+  private:
+    const char *LastError() const noexcept {
+        return (db_ == nullptr) ? "unknown SQLite error" : sqlite3_errmsg(db_);
+    }
+
+    bool TryExec(const char *sql) {
+        char *error_message = nullptr;
+        if (sqlite3_exec(db_, sql, nullptr, nullptr, &error_message) != SQLITE_OK) {
+            std::cerr << "Telemetry SQLite statement failed for " << path_.string() << ": "
+                      << ((error_message == nullptr) ? LastError() : error_message) << '\n';
+            sqlite3_free(error_message);
+            return false;
+        }
+
+        return true;
+    }
+
+    sqlite3 *db_ = nullptr;
+    std::filesystem::path path_{};
+};
+
+bool TryCollectGenerationFitnessTelemetry(const DeviceSlabGARuntimeBuffers &buffers,
+                                          GenerationFitnessTelemetryRow &row_out) {
+    row_out = {};
+    const std::size_t population_size = buffers.genotype_slab.current_generation_size;
+    if (population_size == 0) {
+        std::cerr << "Cannot collect telemetry for an empty generation.\n";
+        return false;
+    }
+
+    std::vector<float> fitness_values(population_size);
+    std::vector<std::uint8_t> has_fitness_flags(population_size);
+    if (!CheckCuda(cudaMemcpy(fitness_values.data(), buffers.genotype_slab.current_fitness,
+                              population_size * sizeof(float), cudaMemcpyDeviceToHost),
+                   "copying fitness values for telemetry") ||
+        !CheckCuda(cudaMemcpy(has_fitness_flags.data(), buffers.genotype_slab.current_has_fitness,
+                              population_size * sizeof(std::uint8_t), cudaMemcpyDeviceToHost),
+                   "copying fitness flags for telemetry")) {
+        return false;
+    }
+
+    for (std::size_t individual_index = 0; individual_index < population_size; ++individual_index) {
+        if (has_fitness_flags[individual_index] == 0) {
+            std::cerr << "Cannot collect telemetry before every organism has a fitness value.\n";
+            return false;
+        }
+    }
+
+    std::sort(fitness_values.begin(), fitness_values.end());
+    double fitness_sum = 0.0;
+    for (const float fitness : fitness_values) {
+        fitness_sum += static_cast<double>(fitness);
+    }
+
+    const std::size_t median_index = population_size / 2;
+    const float median = (population_size % 2 == 0)
+                             ? ((fitness_values[median_index - 1] + fitness_values[median_index]) * 0.5f)
+                             : fitness_values[median_index];
+
+    row_out.generation = buffers.genotype_slab.current_generation_index;
+    row_out.fitness_min = fitness_values.front();
+    row_out.fitness_max = fitness_values.back();
+    row_out.fitness_mean = static_cast<float>(fitness_sum / static_cast<double>(population_size));
+    row_out.fitness_median = median;
+    return true;
+}
+
+bool TryLogTelemetryForCurrentGeneration(const DeviceSlabGARuntimeBuffers &buffers, TelemetryWriter *telemetry_writer) {
+    if (telemetry_writer == nullptr) {
+        return true;
+    }
+
+    GenerationFitnessTelemetryRow row{};
+    return TryCollectGenerationFitnessTelemetry(buffers, row) && telemetry_writer->TryLogGenerationFitness(row);
 }
 
 GenerationAssemblyConfig MakeAssemblyConfig(const CliConfig &cli_config) {
@@ -833,6 +1037,26 @@ int main(int argc, char **argv) {
             std::cout << "  checkpoint_path=" << cli_config.checkpoint_path.string() << '\n'
                       << "  checkpoint_every_generations=" << cli_config.checkpoint_every_generations << '\n';
         }
+
+        TelemetryWriter telemetry_writer{};
+        TelemetryWriter *active_telemetry_writer = nullptr;
+        if (cli_config.telemetry_path_was_provided || cli_config.telemetry_dir_was_provided) {
+            const std::filesystem::path telemetry_path =
+                cli_config.telemetry_path_was_provided ? cli_config.telemetry_path
+                                                       : MakeTelemetryPathFromDirectory(cli_config.telemetry_dir);
+            if (!telemetry_writer.TryOpen(telemetry_path)) {
+                DestroyDeviceSlabGARuntimeBuffers(buffers);
+                return 1;
+            }
+
+            active_telemetry_writer = &telemetry_writer;
+            std::cout << "  telemetry_path=" << telemetry_writer.path().string() << '\n';
+        }
+
+        const auto log_telemetry_after_fitness = [&](const DeviceSlabGARuntimeBuffers &telemetry_buffers) {
+            return TryLogTelemetryForCurrentGeneration(telemetry_buffers, active_telemetry_writer);
+        };
+
         std::cout << std::fixed << std::setprecision(4);
 
         if (buffers.genotype_slab.current_generation_index >= cli_config.generation_count) {
@@ -872,7 +1096,7 @@ int main(int argc, char **argv) {
                     }
                     if (!TryAdvanceGenerationOnDevice(buffers, generation_seed, runtime_word_counts, assembly_config,
                                                       pending_output_embedding_injection, &training_word_catalog,
-                                                      cli_config.verbose)) {
+                                                      cli_config.verbose, log_telemetry_after_fitness)) {
                         (void)ReportDeviceSlabRuntimeFailure(buffers, "Next-generation assembly");
                         DestroyDeviceSlabGARuntimeBuffers(buffers);
                         return 1;
@@ -882,7 +1106,7 @@ int main(int argc, char **argv) {
                     if (!TryCreatePrebreedingCheckpointOnDevice(buffers, generation_seed, runtime_word_counts,
                                                                 assembly_config, pending_output_embedding_injection,
                                                                 checkpoint, &training_word_catalog,
-                                                                cli_config.verbose)) {
+                                                                cli_config.verbose, log_telemetry_after_fitness)) {
                         (void)ReportDeviceSlabRuntimeFailure(buffers, "Checkpoint creation");
                         DestroyDeviceSlabGARuntimeBuffers(buffers);
                         return 1;
@@ -919,7 +1143,7 @@ int main(int argc, char **argv) {
             } else {
                 if (!TryAdvanceGenerationOnDevice(buffers, generation_seed, runtime_word_counts, assembly_config,
                                                   pending_output_embedding_injection, &training_word_catalog,
-                                                  cli_config.verbose)) {
+                                                  cli_config.verbose, log_telemetry_after_fitness)) {
                     (void)ReportDeviceSlabRuntimeFailure(buffers, "Next-generation assembly");
                     DestroyDeviceSlabGARuntimeBuffers(buffers);
                     return 1;
@@ -960,6 +1184,10 @@ int main(int argc, char **argv) {
                                              fitness_start_time);
         }
         if (!PrintCurrentPopulationSummary(buffers, final_summary)) {
+            DestroyDeviceSlabGARuntimeBuffers(buffers);
+            return 1;
+        }
+        if (!TryLogTelemetryForCurrentGeneration(buffers, active_telemetry_writer)) {
             DestroyDeviceSlabGARuntimeBuffers(buffers);
             return 1;
         }

@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <future>
+#include <functional>
 #include <memory>
 #include <vector>
 
@@ -78,6 +79,7 @@ struct DeviceSlabGARuntimeBuffers {
 
 using PendingOutputEmbeddingInjection = genotype_slab::device::PendingOutputEmbeddingInjection;
 using DeviceSlabBootstrapConfig = genotype_slab::device::DeviceSlabBootstrapConfig;
+using PostFitnessEvaluationCallback = std::function<bool(const DeviceSlabGARuntimeBuffers &)>;
 
 constexpr std::uint32_t kRuntimeCheckpointSchemaVersion = 2;
 constexpr std::uint32_t kRuntimeCheckpointGenomeLayoutVersion = 1;
@@ -141,13 +143,14 @@ bool TryAdvanceGenerationOnDevice(DeviceSlabGARuntimeBuffers &buffers, std::uint
                                   const GenerationAssemblyConfig &config = {},
                                   const PendingOutputEmbeddingInjection &pending_output_embedding_injection = {},
                                   const training_folder::TrainingWordCatalog *host_training_word_catalog = nullptr,
-                                  bool verbose = false);
+                                  bool verbose = false,
+                                  const PostFitnessEvaluationCallback &post_fitness_evaluation_callback = {});
 
 bool TryCreatePrebreedingCheckpointOnDevice(
     DeviceSlabGARuntimeBuffers &buffers, std::uint32_t generation_seed, const RuntimeWordCounts &runtime_word_counts,
     const GenerationAssemblyConfig &config, const PendingOutputEmbeddingInjection &pending_output_embedding_injection,
     RuntimeCheckpoint &checkpoint_out, const training_folder::TrainingWordCatalog *host_training_word_catalog = nullptr,
-    bool verbose = false);
+    bool verbose = false, const PostFitnessEvaluationCallback &post_fitness_evaluation_callback = {});
 
 bool TryRestorePrebreedingCheckpointToDevice(const RuntimeCheckpoint &checkpoint, DeviceSlabGARuntimeBuffers &buffers);
 
