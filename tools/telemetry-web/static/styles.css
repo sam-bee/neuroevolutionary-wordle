@@ -29,6 +29,12 @@ h1 {
   font-weight: 700;
 }
 
+h2 {
+  margin: 0 0 12px;
+  font-size: 18px;
+  font-weight: 650;
+}
+
 .controls {
   display: flex;
   gap: 8px;
@@ -58,6 +64,10 @@ button {
   min-height: 24px;
   margin-bottom: 12px;
   color: #9aa6b5;
+}
+
+.metric-section {
+  margin-top: 8px;
 }
 
 .chart-shell {
