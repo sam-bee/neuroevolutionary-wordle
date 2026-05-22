@@ -6,6 +6,7 @@
 
 #include "common/fixed_buffer.hpp"
 #include "genetic_algorithm/population.hpp"
+#include "genetic_algorithm/spatial/grid.hpp"
 
 namespace neuroevolution::genetic_algorithm {
 
@@ -16,6 +17,7 @@ constexpr std::size_t kNoIndividualIndex = std::numeric_limits<std::size_t>::max
 struct ParentSelectionConfig {
     std::size_t tournament_size = 3;
     bool allow_self_parenting = false;
+    std::size_t cellular_breeding_radius = spatial::kCellularBreedingRadius;
 };
 
 struct ParentPair {
@@ -24,7 +26,7 @@ struct ParentPair {
 };
 
 constexpr NEUROEVOLUTION_HOST_DEVICE bool IsValidParentSelectionConfig(const ParentSelectionConfig &config) noexcept {
-    return config.tournament_size > 0;
+    return (config.tournament_size > 0) && (config.cellular_breeding_radius > 0);
 }
 
 namespace detail {

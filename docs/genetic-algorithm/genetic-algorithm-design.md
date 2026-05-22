@@ -12,7 +12,7 @@ collection, see [`genotype-slab-design.md`](genotype-slab-design.md).
 - **Do we use elitism?**
   No.
 - **How is parent selection done?**
-  Spatially. Both parents are chosen by local roulette selection from the focal cell's radius-2 neighborhood.
+  Spatially. Both parents are chosen by local roulette selection from the focal cell's configurable Moore neighborhood.
 - **Do we use self-parenting?**
   No. The current cellular runtime requires two different parents.
 - **What is fitness based on?**
@@ -60,10 +60,14 @@ The current runtime is a cellular GA.
 
 For each child cell:
 
-- both parents are chosen from the surrounding cells in the radius-2 Moore neighborhood
+- both parents are chosen from the surrounding cells in the configured Moore neighborhood
 - each parent is sampled by local roulette-wheel selection over normalized local fitness
 - the two parents must be different
 - the focal child cell is excluded from the parent candidate set
+
+The default breeding radius is `2`, which gives a `5 x 5` Moore neighborhood before excluding the focal cell. The
+`run_genetic_algorithm` CLI exposes this as `--breeding-radius N`. Radius uses the grid's toroidal Chebyshev/Moore
+interpretation, so radius `1` is `3 x 3`, radius `2` is `5 x 5`, and edges wrap.
 
 When the next generation is smaller, no child is produced for cells in removed rows. Parents in those removed rows are
 still eligible through the current generation's toroidal neighborhood during assembly-plan construction.

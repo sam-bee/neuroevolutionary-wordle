@@ -81,6 +81,7 @@ struct CliConfig {
     std::size_t initial_word_count = neuroevolution::training_folder::kDefaultInitialActiveWordCount;
     std::size_t word_count_step = 0;
     std::size_t word_count_step_period_generations = 1;
+    std::size_t breeding_radius = neuroevolution::genetic_algorithm::spatial::kCellularBreedingRadius;
     std::size_t shard_initial_radius = neuroevolution::training_folder::kDefaultTrainingShardInitialRadius;
     std::size_t shard_radius_growth_period_generations =
         neuroevolution::training_folder::kDefaultShardRadiusGrowthPeriodGenerations;
@@ -108,7 +109,7 @@ enum class ArgumentParseResult {
 void PrintUsage() {
     std::cout << "Usage: run_genetic_algorithm [--verbose] [--seed N] [--generations N] [--population-size N] "
                  "[--genotype-vram-gb F] [--generation-vram-gb F] [--initial-word-count N] [--word-count-step N] "
-                 "[--word-count-step-period N] [--shard-initial-radius N] "
+                 "[--word-count-step-period N] [--breeding-radius N] [--shard-initial-radius N] "
                  "[--shard-initial-radius-infinite] [--shard-radius-growth-period N] "
                  "[--checkpoint-path PATH] [--checkpoint-every N] [--resume-from-checkpoint PATH]\n"
               << "If --population-size is omitted, the program does not apply an extra population ceiling.\n"
@@ -118,6 +119,8 @@ void PrintUsage() {
               << "Spatial training-data shards grow their evaluation radius every "
               << neuroevolution::training_folder::kDefaultShardRadiusGrowthPeriodGenerations
               << " generations by default.\n"
+              << "--breeding-radius controls the toroidal Moore/Chebyshev parent-selection radius and defaults to "
+              << neuroevolution::genetic_algorithm::spatial::kCellularBreedingRadius << ".\n"
               << "--shard-initial-radius-infinite starts every newly introduced non-foundation shard at a radius "
                  "large enough to cover the whole current population grid.\n"
               << "Positive word-count growth is handled by slab compaction/repacking, so later generations may "
@@ -247,7 +250,8 @@ ArgumentParseResult TryParseArguments(const int argc, char **argv, CliConfig &co
         if ((argument == "--seed") || (argument == "--generations") || (argument == "--population-size") ||
             (argument == "--genotype-vram-gb") || (argument == "--generation-vram-gb") ||
             (argument == "--initial-word-count") || (argument == "--word-count-step") ||
-            (argument == "--word-count-step-period") || (argument == "--shard-initial-radius") ||
+            (argument == "--word-count-step-period") || (argument == "--breeding-radius") ||
+            (argument == "--shard-initial-radius") ||
             (argument == "--shard-radius-growth-period") || (argument == "--checkpoint-every")) {
             if ((arg_index + 1) >= argc) {
                 std::cerr << "Missing value for " << argument << '\n';
@@ -307,6 +311,13 @@ ArgumentParseResult TryParseArguments(const int argc, char **argv, CliConfig &co
                     config.initial_word_count = static_cast<std::size_t>(parsed_value);
                 } else if (argument == "--word-count-step") {
                     config.word_count_step = static_cast<std::size_t>(parsed_value);
+                } else if (argument == "--breeding-radius") {
+                    if (parsed_value == 0) {
+                        std::cerr << "Breeding radius must be at least 1.\n";
+                        return ArgumentParseResult::kFailure;
+                    }
+
+                    config.breeding_radius = static_cast<std::size_t>(parsed_value);
                 } else if (argument == "--shard-initial-radius") {
                     config.shard_initial_radius = static_cast<std::size_t>(parsed_value);
                 } else if (argument == "--checkpoint-every") {
@@ -363,10 +374,11 @@ bool ReportDeviceSlabRuntimeFailure(const DeviceSlabGARuntimeBuffers &buffers, c
     return false;
 }
 
-GenerationAssemblyConfig MakeAssemblyConfig() {
+GenerationAssemblyConfig MakeAssemblyConfig(const CliConfig &cli_config) {
     GenerationAssemblyConfig config{};
     config.parent_selection.tournament_size = 3;
     config.parent_selection.allow_self_parenting = false;
+    config.parent_selection.cellular_breeding_radius = cli_config.breeding_radius;
     config.breeding.first_parent_probability = 0.5f;
     config.mutation.mutation_probability = 0.02f;
     config.mutation.mutation_sigma = 0.05f;
@@ -626,7 +638,7 @@ int main(int argc, char **argv) {
         }
 
         DeviceSlabGARuntimeBuffers buffers{};
-        const GenerationAssemblyConfig assembly_config = MakeAssemblyConfig();
+        const GenerationAssemblyConfig assembly_config = MakeAssemblyConfig(cli_config);
         RuntimeWordCounts runtime_word_counts{};
 
         if (cli_config.resume_checkpoint_path_was_provided) {
@@ -809,6 +821,7 @@ int main(int argc, char **argv) {
                       << "  schedule_word_count_step=" << word_count_schedule.word_count_step << '\n'
                       << "  schedule_word_count_step_period_generations="
                       << word_count_schedule.word_count_step_period_generations << '\n'
+                      << "  breeding_radius=" << assembly_config.parent_selection.cellular_breeding_radius << '\n'
                       << "  shard_initial_radius=" << TrainingShardRadiusLabel(runtime_word_counts.shard_initial_radius)
                       << '\n'
                       << "  shard_radius_growth_period_generations="

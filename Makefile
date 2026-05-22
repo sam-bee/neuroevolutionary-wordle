@@ -69,6 +69,7 @@ run-ga-prod: .env
 		--shard-radius-growth-period 2 \
 		--checkpoint-path checkpoints/ga-runtime.bin \
 		--checkpoint-every 10 \
+		--breeding-radius 3 \
 		--verbose
 
 run-ga-growth-smoke: .env
