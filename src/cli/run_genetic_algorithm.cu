@@ -36,6 +36,7 @@ using neuroevolution::common::ProgressClock;
 using neuroevolution::genetic_algorithm::GenerationAssemblyConfig;
 using neuroevolution::genetic_algorithm::genotype_slab::ComputeSlabSlotStrideBytes;
 using neuroevolution::genetic_algorithm::genotype_slab::SlabSlotCountForByteBudget;
+using neuroevolution::genetic_algorithm::genotype_slab::SlabParentPair;
 using neuroevolution::genetic_algorithm::slab_device::DestroyDeviceSlabGARuntimeBuffers;
 using neuroevolution::genetic_algorithm::slab_device::DeviceSlabBootstrapConfig;
 using neuroevolution::genetic_algorithm::slab_device::DeviceSlabGARuntimeBuffers;
@@ -421,6 +422,10 @@ struct GenerationFitnessTelemetryRow {
     float fitness_max = 0.0f;
     float fitness_stddev = 0.0f;
     std::size_t distinct_fitness_count = 0;
+    bool has_breeding_metrics = false;
+    std::size_t parent_childless_count = 0;
+    std::size_t parent_one_child_count = 0;
+    std::size_t parent_multiple_children_count = 0;
 };
 
 class TelemetryWriter {
@@ -469,6 +474,9 @@ class TelemetryWriter {
                        "fitness_p99 REAL NOT NULL DEFAULT 0,"
                        "fitness_stddev REAL NOT NULL DEFAULT 0,"
                        "distinct_fitness_count INTEGER NOT NULL DEFAULT 0,"
+                       "parent_childless_count INTEGER,"
+                       "parent_one_child_count INTEGER,"
+                       "parent_multiple_children_count INTEGER,"
                        "logged_at TEXT NOT NULL"
                        ");") &&
                TryEnsureColumn("population_size", "INTEGER NOT NULL DEFAULT 0") &&
@@ -476,15 +484,19 @@ class TelemetryWriter {
                TryEnsureColumn("fitness_p90", "REAL NOT NULL DEFAULT 0") &&
                TryEnsureColumn("fitness_p99", "REAL NOT NULL DEFAULT 0") &&
                TryEnsureColumn("fitness_stddev", "REAL NOT NULL DEFAULT 0") &&
-               TryEnsureColumn("distinct_fitness_count", "INTEGER NOT NULL DEFAULT 0");
+               TryEnsureColumn("distinct_fitness_count", "INTEGER NOT NULL DEFAULT 0") &&
+               TryEnsureColumn("parent_childless_count", "INTEGER") &&
+               TryEnsureColumn("parent_one_child_count", "INTEGER") &&
+               TryEnsureColumn("parent_multiple_children_count", "INTEGER");
     }
 
     bool TryLogGenerationFitness(const GenerationFitnessTelemetryRow &row) {
         static constexpr const char *kInsertSql =
             "INSERT OR REPLACE INTO generation_fitness "
             "(generation, population_size, training_word_count, fitness_min, fitness_mean, fitness_median, "
-            "fitness_p90, fitness_p99, fitness_max, fitness_stddev, distinct_fitness_count, logged_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'));";
+            "fitness_p90, fitness_p99, fitness_max, fitness_stddev, distinct_fitness_count, "
+            "parent_childless_count, parent_one_child_count, parent_multiple_children_count, logged_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'));";
 
         sqlite3_stmt *statement = nullptr;
         if (sqlite3_prepare_v2(db_, kInsertSql, -1, &statement, nullptr) != SQLITE_OK) {
@@ -504,6 +516,18 @@ class TelemetryWriter {
         ok &= sqlite3_bind_double(statement, 9, static_cast<double>(row.fitness_max)) == SQLITE_OK;
         ok &= sqlite3_bind_double(statement, 10, static_cast<double>(row.fitness_stddev)) == SQLITE_OK;
         ok &= sqlite3_bind_int64(statement, 11, static_cast<sqlite3_int64>(row.distinct_fitness_count)) == SQLITE_OK;
+        if (row.has_breeding_metrics) {
+            ok &= sqlite3_bind_int64(statement, 12, static_cast<sqlite3_int64>(row.parent_childless_count)) ==
+                  SQLITE_OK;
+            ok &= sqlite3_bind_int64(statement, 13, static_cast<sqlite3_int64>(row.parent_one_child_count)) ==
+                  SQLITE_OK;
+            ok &= sqlite3_bind_int64(statement, 14, static_cast<sqlite3_int64>(row.parent_multiple_children_count)) ==
+                  SQLITE_OK;
+        } else {
+            ok &= sqlite3_bind_null(statement, 12) == SQLITE_OK;
+            ok &= sqlite3_bind_null(statement, 13) == SQLITE_OK;
+            ok &= sqlite3_bind_null(statement, 14) == SQLITE_OK;
+        }
 
         if (!ok) {
             std::cerr << "Could not bind telemetry row for " << path_.string() << ": " << LastError() << '\n';
@@ -584,6 +608,7 @@ class TelemetryWriter {
 
 bool TryCollectGenerationFitnessTelemetry(const DeviceSlabGARuntimeBuffers &buffers,
                                           const RuntimeWordCounts &runtime_word_counts,
+                                          const bool collect_breeding_metrics,
                                           GenerationFitnessTelemetryRow &row_out) {
     row_out = {};
     const std::size_t population_size = buffers.genotype_slab.current_generation_size;
@@ -651,18 +676,55 @@ bool TryCollectGenerationFitnessTelemetry(const DeviceSlabGARuntimeBuffers &buff
     row_out.fitness_max = fitness_values.back();
     row_out.fitness_stddev = static_cast<float>(std::sqrt(squared_delta_sum / static_cast<double>(population_size)));
     row_out.distinct_fitness_count = distinct_fitness_count;
+    if (collect_breeding_metrics) {
+        const std::size_t child_count = buffers.genotype_slab.planned_child_count;
+        if (child_count == 0) {
+            std::cerr << "Cannot collect breeding telemetry before the assembly plan is available.\n";
+            return false;
+        }
+
+        std::vector<SlabParentPair> parent_pairs(child_count);
+        if (!CheckCuda(cudaMemcpy(parent_pairs.data(), buffers.genotype_slab.assembly_parent_pairs,
+                                  child_count * sizeof(SlabParentPair), cudaMemcpyDeviceToHost),
+                       "copying assembly parent pairs for telemetry")) {
+            return false;
+        }
+
+        std::vector<std::size_t> parent_child_counts(population_size, 0);
+        for (const SlabParentPair &parent_pair : parent_pairs) {
+            if ((parent_pair.first_parent_index >= population_size) ||
+                (parent_pair.second_parent_index >= population_size)) {
+                std::cerr << "Cannot collect breeding telemetry from an assembly plan with an invalid parent index.\n";
+                return false;
+            }
+            ++parent_child_counts[parent_pair.first_parent_index];
+            ++parent_child_counts[parent_pair.second_parent_index];
+        }
+
+        row_out.has_breeding_metrics = true;
+        for (const std::size_t child_count_for_parent : parent_child_counts) {
+            if (child_count_for_parent == 0) {
+                ++row_out.parent_childless_count;
+            } else if (child_count_for_parent == 1) {
+                ++row_out.parent_one_child_count;
+            } else {
+                ++row_out.parent_multiple_children_count;
+            }
+        }
+    }
     return true;
 }
 
 bool TryLogTelemetryForCurrentGeneration(const DeviceSlabGARuntimeBuffers &buffers,
                                          const RuntimeWordCounts &runtime_word_counts,
+                                         const bool collect_breeding_metrics,
                                          TelemetryWriter *telemetry_writer) {
     if (telemetry_writer == nullptr) {
         return true;
     }
 
     GenerationFitnessTelemetryRow row{};
-    return TryCollectGenerationFitnessTelemetry(buffers, runtime_word_counts, row) &&
+    return TryCollectGenerationFitnessTelemetry(buffers, runtime_word_counts, collect_breeding_metrics, row) &&
            telemetry_writer->TryLogGenerationFitness(row);
 }
 
@@ -1143,7 +1205,7 @@ int main(int argc, char **argv) {
 
         const auto log_telemetry_after_fitness = [&](const DeviceSlabGARuntimeBuffers &telemetry_buffers,
                                                      const RuntimeWordCounts &telemetry_word_counts) {
-            return TryLogTelemetryForCurrentGeneration(telemetry_buffers, telemetry_word_counts,
+            return TryLogTelemetryForCurrentGeneration(telemetry_buffers, telemetry_word_counts, true,
                                                        active_telemetry_writer);
         };
 
@@ -1277,7 +1339,7 @@ int main(int argc, char **argv) {
             DestroyDeviceSlabGARuntimeBuffers(buffers);
             return 1;
         }
-        if (!TryLogTelemetryForCurrentGeneration(buffers, runtime_word_counts, active_telemetry_writer)) {
+        if (!TryLogTelemetryForCurrentGeneration(buffers, runtime_word_counts, false, active_telemetry_writer)) {
             DestroyDeviceSlabGARuntimeBuffers(buffers);
             return 1;
         }

@@ -1371,10 +1371,6 @@ bool TryPreparePrebreedingBoundaryOnDevice(DeviceSlabGARuntimeBuffers &buffers, 
     log_verbose_duration("Generation " + std::to_string(next_generation_index) +
                              ": current generation fitness evaluation finished",
                          evaluation_start_time);
-    if (post_fitness_evaluation_callback && !post_fitness_evaluation_callback(buffers, runtime_word_counts)) {
-        return false;
-    }
-
     std::size_t next_action_count = buffers.genotype_slab.slab_layout.action_count;
     std::size_t next_generation_size = buffers.genotype_slab.current_generation_size;
     const auto planning_start_time = ProgressClock::now();
@@ -1410,6 +1406,9 @@ bool TryPreparePrebreedingBoundaryOnDevice(DeviceSlabGARuntimeBuffers &buffers, 
                          assembly_plan_start_time);
 
     buffers.genotype_slab.planned_child_count = next_generation_size;
+    if (post_fitness_evaluation_callback && !post_fitness_evaluation_callback(buffers, runtime_word_counts)) {
+        return false;
+    }
 
     const std::size_t parent_action_count = buffers.genotype_slab.slab_layout.action_count;
     if (pending_output_embedding_injection.enabled &&

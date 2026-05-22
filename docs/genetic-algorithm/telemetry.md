@@ -38,6 +38,9 @@ CREATE TABLE IF NOT EXISTS generation_fitness (
     fitness_max REAL NOT NULL,
     fitness_stddev REAL NOT NULL DEFAULT 0,
     distinct_fitness_count INTEGER NOT NULL DEFAULT 0,
+    parent_childless_count INTEGER,
+    parent_one_child_count INTEGER,
+    parent_multiple_children_count INTEGER,
     logged_at TEXT NOT NULL
 );
 ```
@@ -45,6 +48,10 @@ CREATE TABLE IF NOT EXISTS generation_fitness (
 Writes use `INSERT OR REPLACE`, so resuming into an existing telemetry file updates an already-present generation row
 instead of duplicating it. The database is opened in WAL mode so the local visualiser can read while the GA is still
 running.
+
+The parent count columns are collected from the next-generation assembly plan after fitness evaluation and before
+recombination/mutation. They are nullable because the terminal generation can be evaluated without a next-generation
+assembly plan.
 
 ## Run the visualiser
 

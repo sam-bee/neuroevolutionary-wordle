@@ -6,6 +6,7 @@ const stddevChartCanvas = document.getElementById("stddev-chart");
 const distinctValuesChartCanvas = document.getElementById("distinct-values-chart");
 const populationChartCanvas = document.getElementById("population-chart");
 const trainingDataChartCanvas = document.getElementById("training-data-chart");
+const breedingParentUsageChartCanvas = document.getElementById("breeding-parent-usage-chart");
 const seriesControls = document.getElementById("series-controls");
 const sectionNavLinks = document.querySelectorAll(".section-nav a");
 
@@ -14,6 +15,7 @@ let stddevChart = null;
 let distinctValuesChart = null;
 let populationChart = null;
 let trainingDataChart = null;
+let breedingParentUsageChart = null;
 const fitnessSeriesDefinitions = [
   { key: "min", label: "min fitness", color: "#7aa2f7" },
   { key: "mean", label: "mean fitness", color: "#9ece6a" },
@@ -116,6 +118,17 @@ function updateCharts(rows) {
     labels,
     [dataset("training words", rows.map((row) => row.training_word_count), "#a9b1d6")],
     "Training Words",
+  );
+  breedingParentUsageChart = updateOrCreateChart(
+    breedingParentUsageChart,
+    breedingParentUsageChartCanvas,
+    labels,
+    [
+      dataset("childless parents", rows.map((row) => row.parent_childless_count), "#f7768e"),
+      dataset("one-child parents", rows.map((row) => row.parent_one_child_count), "#9ece6a"),
+      dataset("multiple-child parents", rows.map((row) => row.parent_multiple_children_count), "#e0af68"),
+    ],
+    "Parent Count",
   );
 }
 

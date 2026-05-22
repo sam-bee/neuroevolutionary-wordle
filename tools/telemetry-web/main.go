@@ -156,7 +156,10 @@ fitness_median AS median,
 ` + expr("fitness_p99", "fitness_max") + ` AS p99,
 fitness_max AS max,
 ` + expr("fitness_stddev", "0") + ` AS stddev,
-` + expr("distinct_fitness_count", "0") + ` AS distinct_values
+` + expr("distinct_fitness_count", "0") + ` AS distinct_values,
+` + expr("parent_childless_count", "NULL") + ` AS parent_childless_count,
+` + expr("parent_one_child_count", "NULL") + ` AS parent_one_child_count,
+` + expr("parent_multiple_children_count", "NULL") + ` AS parent_multiple_children_count
 FROM generation_fitness
 ORDER BY generation;`, nil
 }
