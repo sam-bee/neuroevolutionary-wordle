@@ -28,10 +28,16 @@ The schema is intentionally small:
 ```sql
 CREATE TABLE IF NOT EXISTS generation_fitness (
     generation INTEGER PRIMARY KEY,
+    population_size INTEGER NOT NULL DEFAULT 0,
+    training_word_count INTEGER NOT NULL DEFAULT 0,
     fitness_min REAL NOT NULL,
-    fitness_max REAL NOT NULL,
     fitness_mean REAL NOT NULL,
     fitness_median REAL NOT NULL,
+    fitness_p90 REAL NOT NULL DEFAULT 0,
+    fitness_p99 REAL NOT NULL DEFAULT 0,
+    fitness_max REAL NOT NULL,
+    fitness_stddev REAL NOT NULL DEFAULT 0,
+    distinct_fitness_count INTEGER NOT NULL DEFAULT 0,
     logged_at TEXT NOT NULL
 );
 ```

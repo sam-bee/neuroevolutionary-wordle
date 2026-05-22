@@ -114,13 +114,11 @@ func (s *server) handleRunFitness(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	query := `SELECT generation AS generation,
-fitness_min AS min,
-fitness_max AS max,
-fitness_mean AS mean,
-fitness_median AS median
-FROM generation_fitness
-ORDER BY generation;`
+	query, err := fitnessQuery(dbPath)
+	if err != nil {
+		http.Error(w, "could not inspect telemetry database", http.StatusInternalServerError)
+		return
+	}
 	command := exec.Command("sqlite3", "-readonly", "-json", dbPath, query)
 	output, err := command.Output()
 	if err != nil {
@@ -133,6 +131,55 @@ ORDER BY generation;`
 
 	w.Header().Set("Content-Type", "application/json")
 	_, _ = w.Write(output)
+}
+
+func fitnessQuery(dbPath string) (string, error) {
+	columns, err := generationFitnessColumns(dbPath)
+	if err != nil {
+		return "", err
+	}
+
+	expr := func(column string, fallback string) string {
+		if columns[column] {
+			return column
+		}
+		return fallback
+	}
+
+	return `SELECT generation AS generation,
+` + expr("population_size", "0") + ` AS population_size,
+` + expr("training_word_count", "0") + ` AS training_word_count,
+fitness_min AS min,
+fitness_mean AS mean,
+fitness_median AS median,
+` + expr("fitness_p90", "fitness_max") + ` AS p90,
+` + expr("fitness_p99", "fitness_max") + ` AS p99,
+fitness_max AS max,
+` + expr("fitness_stddev", "0") + ` AS stddev,
+` + expr("distinct_fitness_count", "0") + ` AS distinct_values
+FROM generation_fitness
+ORDER BY generation;`, nil
+}
+
+func generationFitnessColumns(dbPath string) (map[string]bool, error) {
+	command := exec.Command("sqlite3", "-readonly", "-json", dbPath, "PRAGMA table_info(generation_fitness);")
+	output, err := command.Output()
+	if err != nil {
+		return nil, err
+	}
+
+	var rows []struct {
+		Name string `json:"name"`
+	}
+	if err := json.Unmarshal(output, &rows); err != nil {
+		return nil, err
+	}
+
+	columns := make(map[string]bool, len(rows))
+	for _, row := range rows {
+		columns[row.Name] = true
+	}
+	return columns, nil
 }
 
 func (s *server) databasePath(filename string) (string, error) {

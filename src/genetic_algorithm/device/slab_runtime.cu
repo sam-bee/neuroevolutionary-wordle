@@ -1371,7 +1371,7 @@ bool TryPreparePrebreedingBoundaryOnDevice(DeviceSlabGARuntimeBuffers &buffers, 
     log_verbose_duration("Generation " + std::to_string(next_generation_index) +
                              ": current generation fitness evaluation finished",
                          evaluation_start_time);
-    if (post_fitness_evaluation_callback && !post_fitness_evaluation_callback(buffers)) {
+    if (post_fitness_evaluation_callback && !post_fitness_evaluation_callback(buffers, runtime_word_counts)) {
         return false;
     }
 

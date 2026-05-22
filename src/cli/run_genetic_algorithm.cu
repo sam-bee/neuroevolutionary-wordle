@@ -411,10 +411,16 @@ bool ReportDeviceSlabRuntimeFailure(const DeviceSlabGARuntimeBuffers &buffers, c
 
 struct GenerationFitnessTelemetryRow {
     std::size_t generation = 0;
+    std::size_t population_size = 0;
+    std::size_t training_word_count = 0;
     float fitness_min = 0.0f;
-    float fitness_max = 0.0f;
     float fitness_mean = 0.0f;
     float fitness_median = 0.0f;
+    float fitness_p90 = 0.0f;
+    float fitness_p99 = 0.0f;
+    float fitness_max = 0.0f;
+    float fitness_stddev = 0.0f;
+    std::size_t distinct_fitness_count = 0;
 };
 
 class TelemetryWriter {
@@ -453,19 +459,32 @@ class TelemetryWriter {
                TryExec("PRAGMA busy_timeout=5000;") &&
                TryExec("CREATE TABLE IF NOT EXISTS generation_fitness ("
                        "generation INTEGER PRIMARY KEY,"
+                       "population_size INTEGER NOT NULL DEFAULT 0,"
+                       "training_word_count INTEGER NOT NULL DEFAULT 0,"
                        "fitness_min REAL NOT NULL,"
                        "fitness_max REAL NOT NULL,"
                        "fitness_mean REAL NOT NULL,"
                        "fitness_median REAL NOT NULL,"
+                       "fitness_p90 REAL NOT NULL DEFAULT 0,"
+                       "fitness_p99 REAL NOT NULL DEFAULT 0,"
+                       "fitness_stddev REAL NOT NULL DEFAULT 0,"
+                       "distinct_fitness_count INTEGER NOT NULL DEFAULT 0,"
                        "logged_at TEXT NOT NULL"
-                       ");");
+                       ");") &&
+               TryEnsureColumn("population_size", "INTEGER NOT NULL DEFAULT 0") &&
+               TryEnsureColumn("training_word_count", "INTEGER NOT NULL DEFAULT 0") &&
+               TryEnsureColumn("fitness_p90", "REAL NOT NULL DEFAULT 0") &&
+               TryEnsureColumn("fitness_p99", "REAL NOT NULL DEFAULT 0") &&
+               TryEnsureColumn("fitness_stddev", "REAL NOT NULL DEFAULT 0") &&
+               TryEnsureColumn("distinct_fitness_count", "INTEGER NOT NULL DEFAULT 0");
     }
 
     bool TryLogGenerationFitness(const GenerationFitnessTelemetryRow &row) {
         static constexpr const char *kInsertSql =
             "INSERT OR REPLACE INTO generation_fitness "
-            "(generation, fitness_min, fitness_max, fitness_mean, fitness_median, logged_at) "
-            "VALUES (?, ?, ?, ?, ?, datetime('now'));";
+            "(generation, population_size, training_word_count, fitness_min, fitness_mean, fitness_median, "
+            "fitness_p90, fitness_p99, fitness_max, fitness_stddev, distinct_fitness_count, logged_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'));";
 
         sqlite3_stmt *statement = nullptr;
         if (sqlite3_prepare_v2(db_, kInsertSql, -1, &statement, nullptr) != SQLITE_OK) {
@@ -475,10 +494,16 @@ class TelemetryWriter {
 
         bool ok = true;
         ok &= sqlite3_bind_int64(statement, 1, static_cast<sqlite3_int64>(row.generation)) == SQLITE_OK;
-        ok &= sqlite3_bind_double(statement, 2, static_cast<double>(row.fitness_min)) == SQLITE_OK;
-        ok &= sqlite3_bind_double(statement, 3, static_cast<double>(row.fitness_max)) == SQLITE_OK;
-        ok &= sqlite3_bind_double(statement, 4, static_cast<double>(row.fitness_mean)) == SQLITE_OK;
-        ok &= sqlite3_bind_double(statement, 5, static_cast<double>(row.fitness_median)) == SQLITE_OK;
+        ok &= sqlite3_bind_int64(statement, 2, static_cast<sqlite3_int64>(row.population_size)) == SQLITE_OK;
+        ok &= sqlite3_bind_int64(statement, 3, static_cast<sqlite3_int64>(row.training_word_count)) == SQLITE_OK;
+        ok &= sqlite3_bind_double(statement, 4, static_cast<double>(row.fitness_min)) == SQLITE_OK;
+        ok &= sqlite3_bind_double(statement, 5, static_cast<double>(row.fitness_mean)) == SQLITE_OK;
+        ok &= sqlite3_bind_double(statement, 6, static_cast<double>(row.fitness_median)) == SQLITE_OK;
+        ok &= sqlite3_bind_double(statement, 7, static_cast<double>(row.fitness_p90)) == SQLITE_OK;
+        ok &= sqlite3_bind_double(statement, 8, static_cast<double>(row.fitness_p99)) == SQLITE_OK;
+        ok &= sqlite3_bind_double(statement, 9, static_cast<double>(row.fitness_max)) == SQLITE_OK;
+        ok &= sqlite3_bind_double(statement, 10, static_cast<double>(row.fitness_stddev)) == SQLITE_OK;
+        ok &= sqlite3_bind_int64(statement, 11, static_cast<sqlite3_int64>(row.distinct_fitness_count)) == SQLITE_OK;
 
         if (!ok) {
             std::cerr << "Could not bind telemetry row for " << path_.string() << ": " << LastError() << '\n';
@@ -519,11 +544,46 @@ class TelemetryWriter {
         return true;
     }
 
+    bool TryColumnExists(const char *column_name, bool &exists_out) {
+        exists_out = false;
+        sqlite3_stmt *statement = nullptr;
+        if (sqlite3_prepare_v2(db_, "PRAGMA table_info(generation_fitness);", -1, &statement, nullptr) != SQLITE_OK) {
+            std::cerr << "Could not inspect telemetry schema for " << path_.string() << ": " << LastError() << '\n';
+            return false;
+        }
+
+        while (sqlite3_step(statement) == SQLITE_ROW) {
+            const unsigned char *name = sqlite3_column_text(statement, 1);
+            if ((name != nullptr) && (std::string_view(reinterpret_cast<const char *>(name)) == column_name)) {
+                exists_out = true;
+                break;
+            }
+        }
+
+        sqlite3_finalize(statement);
+        return true;
+    }
+
+    bool TryEnsureColumn(const char *column_name, const char *column_definition) {
+        bool column_exists = false;
+        if (!TryColumnExists(column_name, column_exists)) {
+            return false;
+        }
+        if (column_exists) {
+            return true;
+        }
+
+        const std::string sql =
+            std::string("ALTER TABLE generation_fitness ADD COLUMN ") + column_name + " " + column_definition + ";";
+        return TryExec(sql.c_str());
+    }
+
     sqlite3 *db_ = nullptr;
     std::filesystem::path path_{};
 };
 
 bool TryCollectGenerationFitnessTelemetry(const DeviceSlabGARuntimeBuffers &buffers,
+                                          const RuntimeWordCounts &runtime_word_counts,
                                           GenerationFitnessTelemetryRow &row_out) {
     row_out = {};
     const std::size_t population_size = buffers.genotype_slab.current_generation_size;
@@ -552,30 +612,58 @@ bool TryCollectGenerationFitnessTelemetry(const DeviceSlabGARuntimeBuffers &buff
 
     std::sort(fitness_values.begin(), fitness_values.end());
     double fitness_sum = 0.0;
+    double squared_delta_sum = 0.0;
     for (const float fitness : fitness_values) {
         fitness_sum += static_cast<double>(fitness);
+    }
+    const double fitness_mean = fitness_sum / static_cast<double>(population_size);
+    for (const float fitness : fitness_values) {
+        const double delta = static_cast<double>(fitness) - fitness_mean;
+        squared_delta_sum += delta * delta;
     }
 
     const std::size_t median_index = population_size / 2;
     const float median = (population_size % 2 == 0)
                              ? ((fitness_values[median_index - 1] + fitness_values[median_index]) * 0.5f)
                              : fitness_values[median_index];
+    const auto nearest_rank_percentile = [&](const double percentile) {
+        const std::size_t rank =
+            static_cast<std::size_t>(std::ceil((percentile / 100.0) * static_cast<double>(population_size)));
+        const std::size_t index = (rank == 0) ? 0 : (rank - 1);
+        return fitness_values[(index < population_size) ? index : (population_size - 1)];
+    };
+
+    std::size_t distinct_fitness_count = 1;
+    for (std::size_t index = 1; index < population_size; ++index) {
+        if (fitness_values[index] != fitness_values[index - 1]) {
+            ++distinct_fitness_count;
+        }
+    }
 
     row_out.generation = buffers.genotype_slab.current_generation_index;
+    row_out.population_size = population_size;
+    row_out.training_word_count = runtime_word_counts.training_word_count;
     row_out.fitness_min = fitness_values.front();
-    row_out.fitness_max = fitness_values.back();
-    row_out.fitness_mean = static_cast<float>(fitness_sum / static_cast<double>(population_size));
+    row_out.fitness_mean = static_cast<float>(fitness_mean);
     row_out.fitness_median = median;
+    row_out.fitness_p90 = nearest_rank_percentile(90.0);
+    row_out.fitness_p99 = nearest_rank_percentile(99.0);
+    row_out.fitness_max = fitness_values.back();
+    row_out.fitness_stddev = static_cast<float>(std::sqrt(squared_delta_sum / static_cast<double>(population_size)));
+    row_out.distinct_fitness_count = distinct_fitness_count;
     return true;
 }
 
-bool TryLogTelemetryForCurrentGeneration(const DeviceSlabGARuntimeBuffers &buffers, TelemetryWriter *telemetry_writer) {
+bool TryLogTelemetryForCurrentGeneration(const DeviceSlabGARuntimeBuffers &buffers,
+                                         const RuntimeWordCounts &runtime_word_counts,
+                                         TelemetryWriter *telemetry_writer) {
     if (telemetry_writer == nullptr) {
         return true;
     }
 
     GenerationFitnessTelemetryRow row{};
-    return TryCollectGenerationFitnessTelemetry(buffers, row) && telemetry_writer->TryLogGenerationFitness(row);
+    return TryCollectGenerationFitnessTelemetry(buffers, runtime_word_counts, row) &&
+           telemetry_writer->TryLogGenerationFitness(row);
 }
 
 GenerationAssemblyConfig MakeAssemblyConfig(const CliConfig &cli_config) {
@@ -1053,8 +1141,10 @@ int main(int argc, char **argv) {
             std::cout << "  telemetry_path=" << telemetry_writer.path().string() << '\n';
         }
 
-        const auto log_telemetry_after_fitness = [&](const DeviceSlabGARuntimeBuffers &telemetry_buffers) {
-            return TryLogTelemetryForCurrentGeneration(telemetry_buffers, active_telemetry_writer);
+        const auto log_telemetry_after_fitness = [&](const DeviceSlabGARuntimeBuffers &telemetry_buffers,
+                                                     const RuntimeWordCounts &telemetry_word_counts) {
+            return TryLogTelemetryForCurrentGeneration(telemetry_buffers, telemetry_word_counts,
+                                                       active_telemetry_writer);
         };
 
         std::cout << std::fixed << std::setprecision(4);
@@ -1187,7 +1277,7 @@ int main(int argc, char **argv) {
             DestroyDeviceSlabGARuntimeBuffers(buffers);
             return 1;
         }
-        if (!TryLogTelemetryForCurrentGeneration(buffers, active_telemetry_writer)) {
+        if (!TryLogTelemetryForCurrentGeneration(buffers, runtime_word_counts, active_telemetry_writer)) {
             DestroyDeviceSlabGARuntimeBuffers(buffers);
             return 1;
         }

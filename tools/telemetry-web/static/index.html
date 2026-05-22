@@ -18,9 +18,37 @@
       </header>
       <section id="status" class="status">Loading telemetry runs...</section>
       <section class="metric-section">
-        <h2>Fitness Scores Over Time</h2>
-        <div class="chart-shell">
-          <canvas id="fitness-chart"></canvas>
+        <h2>Fitness Scores</h2>
+        <div class="metric-subsection">
+          <h3>Fitness Scores Over Time</h3>
+          <div id="series-controls" class="series-controls" aria-label="Fitness series controls"></div>
+          <div class="chart-shell">
+            <canvas id="fitness-chart"></canvas>
+          </div>
+        </div>
+        <div class="metric-subsection">
+          <h3>Fitness Standard Deviation Over Time</h3>
+          <div class="chart-shell chart-shell-small">
+            <canvas id="stddev-chart"></canvas>
+          </div>
+        </div>
+        <div class="metric-subsection">
+          <h3>Distinct Fitness Values Over Time</h3>
+          <div class="chart-shell chart-shell-small">
+            <canvas id="distinct-values-chart"></canvas>
+          </div>
+        </div>
+      </section>
+      <section class="metric-section">
+        <h2>Population</h2>
+        <div class="chart-shell chart-shell-small">
+          <canvas id="population-chart"></canvas>
+        </div>
+      </section>
+      <section class="metric-section">
+        <h2>Training Data</h2>
+        <div class="chart-shell chart-shell-small">
+          <canvas id="training-data-chart"></canvas>
         </div>
       </section>
     </main>

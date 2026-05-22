@@ -79,7 +79,7 @@ struct DeviceSlabGARuntimeBuffers {
 
 using PendingOutputEmbeddingInjection = genotype_slab::device::PendingOutputEmbeddingInjection;
 using DeviceSlabBootstrapConfig = genotype_slab::device::DeviceSlabBootstrapConfig;
-using PostFitnessEvaluationCallback = std::function<bool(const DeviceSlabGARuntimeBuffers &)>;
+using PostFitnessEvaluationCallback = std::function<bool(const DeviceSlabGARuntimeBuffers &, const RuntimeWordCounts &)>;
 
 constexpr std::uint32_t kRuntimeCheckpointSchemaVersion = 2;
 constexpr std::uint32_t kRuntimeCheckpointGenomeLayoutVersion = 1;

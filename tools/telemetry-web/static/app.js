@@ -2,8 +2,26 @@ const runSelect = document.getElementById("run-select");
 const refreshButton = document.getElementById("refresh-button");
 const statusBox = document.getElementById("status");
 const chartCanvas = document.getElementById("fitness-chart");
+const stddevChartCanvas = document.getElementById("stddev-chart");
+const distinctValuesChartCanvas = document.getElementById("distinct-values-chart");
+const populationChartCanvas = document.getElementById("population-chart");
+const trainingDataChartCanvas = document.getElementById("training-data-chart");
+const seriesControls = document.getElementById("series-controls");
 
-let chart = null;
+let fitnessChart = null;
+let stddevChart = null;
+let distinctValuesChart = null;
+let populationChart = null;
+let trainingDataChart = null;
+const fitnessSeriesDefinitions = [
+  { key: "min", label: "min fitness", color: "#7aa2f7" },
+  { key: "mean", label: "mean fitness", color: "#9ece6a" },
+  { key: "median", label: "median fitness", color: "#bb9af7" },
+  { key: "p90", label: "p90 fitness", color: "#e0af68" },
+  { key: "p99", label: "p99 fitness", color: "#ff9e64" },
+  { key: "max", label: "max fitness", color: "#f7768e" },
+];
+const fitnessSeriesVisibility = new Map(fitnessSeriesDefinitions.map((definition) => [definition.key, true]));
 
 function setStatus(message) {
   statusBox.textContent = message;
@@ -30,7 +48,7 @@ async function loadRuns() {
 
   if (runs.length === 0) {
     setStatus("No telemetry SQLite files found.");
-    updateChart([]);
+    updateCharts([]);
     return;
   }
 
@@ -46,26 +64,104 @@ async function loadSelectedRun() {
 
   const rows = await fetchJson(`/api/runs/${encodeURIComponent(filename)}/fitness`);
   setStatus(`${filename}: ${rows.length} generation${rows.length === 1 ? "" : "s"}.`);
-  updateChart(rows);
+  updateCharts(rows);
 }
 
-function updateChart(rows) {
+function updateCharts(rows) {
   const labels = rows.map((row) => row.generation);
-  const datasets = [
-    dataset("min", rows.map((row) => row.min), "#7aa2f7"),
-    dataset("max", rows.map((row) => row.max), "#f7768e"),
-    dataset("mean", rows.map((row) => row.mean), "#9ece6a"),
-    dataset("median", rows.map((row) => row.median), "#bb9af7"),
-  ];
+  const fitnessDatasets = fitnessSeriesDefinitions.map((definition) =>
+    dataset(
+      definition.label,
+      rows.map((row) => row[definition.key]),
+      definition.color,
+      !fitnessSeriesVisibility.get(definition.key),
+    ),
+  );
 
-  if (chart) {
-    chart.data.labels = labels;
-    chart.data.datasets = datasets;
-    chart.update();
-    return;
+  fitnessChart = updateOrCreateChart(fitnessChart, chartCanvas, labels, fitnessDatasets, "Fitness");
+  stddevChart = updateOrCreateChart(
+    stddevChart,
+    stddevChartCanvas,
+    labels,
+    [dataset("stddev fitness", rows.map((row) => row.stddev), "#73daca")],
+    "Stddev Fitness",
+  );
+  distinctValuesChart = updateOrCreateChart(
+    distinctValuesChart,
+    distinctValuesChartCanvas,
+    labels,
+    [dataset("distinct fitness values", rows.map((row) => row.distinct_values), "#c0caf5")],
+    "Distinct Values",
+  );
+  populationChart = updateOrCreateChart(
+    populationChart,
+    populationChartCanvas,
+    labels,
+    [dataset("population size", rows.map((row) => row.population_size), "#7dcfff")],
+    "Population Size",
+  );
+  trainingDataChart = updateOrCreateChart(
+    trainingDataChart,
+    trainingDataChartCanvas,
+    labels,
+    [dataset("training words", rows.map((row) => row.training_word_count), "#a9b1d6")],
+    "Training Words",
+  );
+}
+
+function dataset(label, data, color, hidden = false) {
+  return {
+    label,
+    data,
+    hidden,
+    borderColor: color,
+    backgroundColor: color,
+    borderWidth: 2,
+    pointRadius: 0,
+    tension: 0.15,
+  };
+}
+
+function renderSeriesControls() {
+  seriesControls.innerHTML = "";
+  for (const definition of fitnessSeriesDefinitions) {
+    const label = document.createElement("label");
+    label.className = "series-toggle";
+
+    const checkbox = document.createElement("input");
+    checkbox.type = "checkbox";
+    checkbox.checked = fitnessSeriesVisibility.get(definition.key);
+    checkbox.addEventListener("change", () => {
+      fitnessSeriesVisibility.set(definition.key, checkbox.checked);
+      if (!fitnessChart) {
+        return;
+      }
+      const datasetIndex = fitnessSeriesDefinitions.findIndex((item) => item.key === definition.key);
+      fitnessChart.setDatasetVisibility(datasetIndex, checkbox.checked);
+      fitnessChart.update();
+    });
+
+    const swatch = document.createElement("span");
+    swatch.className = "series-swatch";
+    swatch.style.backgroundColor = definition.color;
+
+    const text = document.createElement("span");
+    text.textContent = definition.label;
+
+    label.append(checkbox, swatch, text);
+    seriesControls.appendChild(label);
+  }
+}
+
+function updateOrCreateChart(existingChart, canvas, labels, datasets, yAxisTitle) {
+  if (existingChart) {
+    existingChart.data.labels = labels;
+    existingChart.data.datasets = datasets;
+    existingChart.update();
+    return existingChart;
   }
 
-  chart = new Chart(chartCanvas, {
+  return new Chart(canvas, {
     type: "line",
     data: { labels, datasets },
     options: {
@@ -83,25 +179,13 @@ function updateChart(rows) {
           grid: { color: "#2a3340" },
         },
         y: {
-          title: { display: true, text: "Fitness", color: "#d7dde5" },
+          title: { display: true, text: yAxisTitle, color: "#d7dde5" },
           ticks: { color: "#9aa6b5" },
           grid: { color: "#2a3340" },
         },
       },
     },
   });
-}
-
-function dataset(label, data, color) {
-  return {
-    label,
-    data,
-    borderColor: color,
-    backgroundColor: color,
-    borderWidth: 2,
-    pointRadius: 0,
-    tension: 0.15,
-  };
 }
 
 refreshButton.addEventListener("click", () => {
@@ -112,4 +196,5 @@ runSelect.addEventListener("change", () => {
   loadSelectedRun().catch((error) => setStatus(error.message));
 });
 
+renderSeriesControls();
 loadRuns().catch((error) => setStatus(error.message));
