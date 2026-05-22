@@ -8,50 +8,73 @@
     <script src="/static/chart.umd.js"></script>
   </head>
   <body>
-    <main>
-      <header>
-        <h1>GA Telemetry</h1>
-        <div class="controls">
-          <select id="run-select" aria-label="Telemetry run"></select>
-          <button id="refresh-button" type="button">Refresh</button>
-        </div>
-      </header>
-      <section id="status" class="status">Loading telemetry runs...</section>
-      <section class="metric-section">
-        <h2>Fitness Scores</h2>
-        <div class="metric-subsection">
-          <h3>Fitness Scores Over Time</h3>
-          <div id="series-controls" class="series-controls" aria-label="Fitness series controls"></div>
-          <div class="chart-shell">
-            <canvas id="fitness-chart"></canvas>
+    <div class="page-shell">
+      <main>
+        <header id="top">
+          <h1>GA Telemetry</h1>
+          <div class="controls">
+            <select id="run-select" aria-label="Telemetry run"></select>
+            <button id="refresh-button" type="button">Refresh</button>
           </div>
-        </div>
-        <div class="metric-subsection">
-          <h3>Fitness Standard Deviation Over Time</h3>
+        </header>
+        <section id="status" class="status">Loading telemetry runs...</section>
+        <details id="fitness-scores" class="metric-section" open>
+          <summary>
+            <span>Fitness Scores</span>
+          </summary>
+          <details id="fitness-over-time" class="metric-subsection" open>
+            <summary>
+              <span>Fitness Scores Over Time</span>
+            </summary>
+            <div id="series-controls" class="series-controls" aria-label="Fitness series controls"></div>
+            <div class="chart-shell">
+              <canvas id="fitness-chart"></canvas>
+            </div>
+          </details>
+          <details id="fitness-stddev" class="metric-subsection" open>
+            <summary>
+              <span>Fitness Standard Deviation Over Time</span>
+            </summary>
+            <div class="chart-shell chart-shell-small">
+              <canvas id="stddev-chart"></canvas>
+            </div>
+          </details>
+          <details id="distinct-fitness-values" class="metric-subsection" open>
+            <summary>
+              <span>Distinct Fitness Values Over Time</span>
+            </summary>
+            <div class="chart-shell chart-shell-small">
+              <canvas id="distinct-values-chart"></canvas>
+            </div>
+          </details>
+        </details>
+        <details id="population" class="metric-section" open>
+          <summary>
+            <span>Population</span>
+          </summary>
           <div class="chart-shell chart-shell-small">
-            <canvas id="stddev-chart"></canvas>
+            <canvas id="population-chart"></canvas>
           </div>
-        </div>
-        <div class="metric-subsection">
-          <h3>Distinct Fitness Values Over Time</h3>
+        </details>
+        <details id="training-data" class="metric-section" open>
+          <summary>
+            <span>Training Data</span>
+          </summary>
           <div class="chart-shell chart-shell-small">
-            <canvas id="distinct-values-chart"></canvas>
+            <canvas id="training-data-chart"></canvas>
           </div>
-        </div>
-      </section>
-      <section class="metric-section">
-        <h2>Population</h2>
-        <div class="chart-shell chart-shell-small">
-          <canvas id="population-chart"></canvas>
-        </div>
-      </section>
-      <section class="metric-section">
-        <h2>Training Data</h2>
-        <div class="chart-shell chart-shell-small">
-          <canvas id="training-data-chart"></canvas>
-        </div>
-      </section>
-    </main>
+        </details>
+      </main>
+      <nav class="section-nav" aria-label="Telemetry sections">
+        <a href="#top">Top</a>
+        <a href="#fitness-scores">Fitness Scores</a>
+        <a href="#fitness-over-time">Fitness Lines</a>
+        <a href="#fitness-stddev">Fitness Stddev</a>
+        <a href="#distinct-fitness-values">Distinct Values</a>
+        <a href="#population">Population</a>
+        <a href="#training-data">Training Data</a>
+      </nav>
+    </div>
     <script src="/static/app.js"></script>
   </body>
 </html>

@@ -7,6 +7,7 @@ const distinctValuesChartCanvas = document.getElementById("distinct-values-chart
 const populationChartCanvas = document.getElementById("population-chart");
 const trainingDataChartCanvas = document.getElementById("training-data-chart");
 const seriesControls = document.getElementById("series-controls");
+const sectionNavLinks = document.querySelectorAll(".section-nav a");
 
 let fitnessChart = null;
 let stddevChart = null;
@@ -203,6 +204,24 @@ refreshButton.addEventListener("click", () => {
 
 runSelect.addEventListener("change", () => {
   loadSelectedRun().catch((error) => setStatus(error.message));
+});
+
+sectionNavLinks.forEach((link) => {
+  link.addEventListener("click", () => {
+    const id = link.getAttribute("href").slice(1);
+    const target = document.getElementById(id);
+    if (!target) {
+      return;
+    }
+
+    let current = target;
+    while (current) {
+      if (current.tagName === "DETAILS") {
+        current.open = true;
+      }
+      current = current.parentElement;
+    }
+  });
 });
 
 renderSeriesControls();
