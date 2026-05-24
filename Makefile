@@ -1,4 +1,4 @@
-.PHONY: configure build test test-cpu test-gpu test-gpu-sanitized smoke format clean rebuild agents-rebuild build-and-test run-ga-desktop run-ga-laptop run-ga-growth-smoke run-ga-benchmark-two-gen play-wordle
+.PHONY: configure build test test-cpu test-gpu test-gpu-sanitized smoke format clean rebuild agents-rebuild build-and-test run-ga-desktop run-ga-laptop run-ga-growth-smoke run-ga-benchmark-two-gen play-wordle telemetry-up telemetry-stop
 
 -include .env
 
@@ -94,6 +94,12 @@ run-ga-benchmark-two-gen: .env
 		--word-count-step-period 1 \
 		--shard-initial-radius-infinite \
 		--verbose
+
+telemetry-up:
+	docker compose up --build -d telemetry-web
+
+telemetry-stop:
+	docker compose stop telemetry-web
 
 play-wordle: .env
 	@if [ ! -f "models/winner-2026-05-21_01-56-52-g0-seed7.bin" ]; then \
