@@ -50,6 +50,7 @@ using neuroevolution::common::PrintTimestampedProgressDuration;
 using neuroevolution::common::PrintTimestampedProgressLine;
 using neuroevolution::common::ProgressClock;
 using neuroevolution::inference::dynamic_policy::kDynamicPolicyWarpSize;
+using output_embedding_injection::TrainableTailNorm;
 using spatial::CellularGridShape;
 using spatial::FloorRowPreservingPopulationSize;
 using spatial::TryMakeCellularGridShape;
@@ -87,6 +88,104 @@ inline bool WriteDeviceStatus(const DeviceSlabGARuntimeBuffers &buffers,
                               const DeviceSlabGARuntimeStatusCode status_code) {
     const int status_value = DeviceStatusValue(status_code);
     return CheckCuda(cudaMemcpy(buffers.status, &status_value, sizeof(int), cudaMemcpyHostToDevice));
+}
+
+float MedianValue(std::vector<float> values) {
+    if (values.empty()) {
+        return 0.0f;
+    }
+
+    const std::size_t upper_middle_index = values.size() / 2;
+    std::nth_element(values.begin(), values.begin() + static_cast<std::ptrdiff_t>(upper_middle_index), values.end());
+    const float upper_middle = values[upper_middle_index];
+    if ((values.size() % 2) != 0) {
+        return upper_middle;
+    }
+
+    std::nth_element(values.begin(), values.begin() + static_cast<std::ptrdiff_t>(upper_middle_index - 1),
+                     values.end());
+    return 0.5f * (values[upper_middle_index - 1] + upper_middle);
+}
+
+struct TailNormSummary {
+    float minimum = 0.0f;
+    float mean = 0.0f;
+    float median = 0.0f;
+    float maximum = 0.0f;
+};
+
+TailNormSummary SummarizeNorms(const std::vector<float> &norms) {
+    TailNormSummary summary{};
+    if (norms.empty()) {
+        return summary;
+    }
+
+    summary.minimum = norms[0];
+    summary.maximum = norms[0];
+    float sum = 0.0f;
+    for (const float norm : norms) {
+        summary.minimum = std::min(summary.minimum, norm);
+        summary.maximum = std::max(summary.maximum, norm);
+        sum += norm;
+    }
+    summary.mean = sum / static_cast<float>(norms.size());
+    summary.median = MedianValue(norms);
+    return summary;
+}
+
+bool TryLogOutputEmbeddingInjectionNormStats(
+    const DeviceSlabGARuntimeBuffers &buffers,
+    const genotype_slab::device::PendingOutputEmbeddingInjection &pending_output_embedding_injection,
+    const std::size_t parent_action_count, const std::size_t generation_index) {
+    if (!pending_output_embedding_injection.enabled || (parent_action_count == 0) ||
+        (pending_output_embedding_injection.injection_count == 0)) {
+        return true;
+    }
+
+    genotype_slab::HostGenotypeSlab host_slab{};
+    genotype_slab::SlabGeneration generation{};
+    if (!TryDownloadSlabFromDevice(buffers, host_slab) ||
+        !TryDownloadCurrentGenerationFromDevice(buffers, generation)) {
+        return false;
+    }
+
+    std::vector<float> target_median_norms{};
+    std::vector<float> injected_norms{};
+    target_median_norms.reserve(generation.active_individual_count);
+    injected_norms.reserve(generation.active_individual_count * pending_output_embedding_injection.injection_count);
+
+    for (std::size_t individual_index = 0; individual_index < generation.active_individual_count; ++individual_index) {
+        const std::uint32_t slot_index = generation.slot_indices[individual_index];
+        if (slot_index == genotype_slab::kInvalidSlabSlotIndex) {
+            return false;
+        }
+
+        const auto *tail_rows = genome::GenomeTailRows(genotype_slab::HostSlabSlotBytesAt(host_slab, slot_index));
+        std::vector<float> existing_norms{};
+        existing_norms.reserve(parent_action_count);
+        for (std::size_t action_index = 0; action_index < parent_action_count; ++action_index) {
+            existing_norms.push_back(TrainableTailNorm(tail_rows[action_index]));
+        }
+        target_median_norms.push_back(MedianValue(std::move(existing_norms)));
+
+        for (std::size_t injection_offset = 0; injection_offset < pending_output_embedding_injection.injection_count;
+             ++injection_offset) {
+            injected_norms.push_back(TrainableTailNorm(tail_rows[parent_action_count + injection_offset]));
+        }
+    }
+
+    const TailNormSummary target_summary = SummarizeNorms(target_median_norms);
+    const TailNormSummary injected_summary = SummarizeNorms(injected_norms);
+    std::ostringstream stream;
+    stream << "Generation " << generation_index << ": output-embedding injection norms"
+           << " (existing_median_tail_norm=" << target_summary.median
+           << ", existing_mean_tail_norm=" << target_summary.mean
+           << ", injected_mean_tail_norm=" << injected_summary.mean
+           << ", injected_median_tail_norm=" << injected_summary.median
+           << ", injected_min_tail_norm=" << injected_summary.minimum
+           << ", injected_max_tail_norm=" << injected_summary.maximum << ')';
+    PrintTimestampedProgressLine(std::cout, stream.str());
+    return true;
 }
 
 inline bool ResetDeviceStatus(const DeviceSlabGARuntimeBuffers &buffers) {
@@ -1331,8 +1430,7 @@ bool TryPreparePrebreedingBoundaryOnDevice(DeviceSlabGARuntimeBuffers &buffers, 
                                            const GenerationAssemblyConfig &config,
                                            const PendingOutputEmbeddingInjection &pending_output_embedding_injection,
                                            std::size_t &parent_action_count_out,
-                                           DeviceSlabGARuntimeConfig &checkpoint_runtime_config_out,
-                                           const bool verbose,
+                                           DeviceSlabGARuntimeConfig &checkpoint_runtime_config_out, const bool verbose,
                                            const PostFitnessEvaluationCallback &post_fitness_evaluation_callback) {
     parent_action_count_out = 0;
     checkpoint_runtime_config_out = {};
@@ -1615,6 +1713,12 @@ bool TryAssemblePreparedGenerationOnDevice(DeviceSlabGARuntimeBuffers &buffers, 
     }
 
     SwapDeviceSlabGenerationBuffers(buffers);
+    if (verbose && slab_assembly_config.pending_output_embedding_injection.enabled &&
+        !TryLogOutputEmbeddingInjectionNormStats(buffers, slab_assembly_config.pending_output_embedding_injection,
+                                                 slab_assembly_config.parent_action_count, next_generation_index)) {
+        log_verbose_line("Generation " + std::to_string(next_generation_index) +
+                         ": output-embedding injection norm stats unavailable");
+    }
     log_verbose_duration("Generation " + std::to_string(next_generation_index) + ": advancement finished",
                          overall_start_time);
     return true;
@@ -1633,8 +1737,7 @@ bool TryAdvanceGenerationOnDevice(DeviceSlabGARuntimeBuffers &buffers, const std
     DeviceSlabGARuntimeConfig checkpoint_runtime_config{};
     if (!TryPreparePrebreedingBoundaryOnDevice(buffers, generation_seed, runtime_word_counts, config,
                                                pending_output_embedding_injection, parent_action_count,
-                                               checkpoint_runtime_config, verbose,
-                                               post_fitness_evaluation_callback)) {
+                                               checkpoint_runtime_config, verbose, post_fitness_evaluation_callback)) {
         return false;
     }
 
@@ -1658,8 +1761,7 @@ bool TryCreatePrebreedingCheckpointOnDevice(DeviceSlabGARuntimeBuffers &buffers,
     DeviceSlabGARuntimeConfig checkpoint_runtime_config{};
     if (!TryPreparePrebreedingBoundaryOnDevice(buffers, generation_seed, runtime_word_counts, config,
                                                pending_output_embedding_injection, parent_action_count,
-                                               checkpoint_runtime_config, verbose,
-                                               post_fitness_evaluation_callback)) {
+                                               checkpoint_runtime_config, verbose, post_fitness_evaluation_callback)) {
         checkpoint_out = {};
         return false;
     }

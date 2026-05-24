@@ -34,11 +34,22 @@ TryInjectExpandedOutputEmbeddingTails(std::uint8_t *genome_bytes, const std::siz
     }
 
     genome::TrainableActionEmbeddingTail *tail_rows = genome::GenomeTailRows(genome_bytes);
+    common::FixedBuffer<float, training_folder::kTrainingWordCatalogCapacity> existing_tail_norms{};
+    float target_norm = 0.0f;
+    if (!output_embedding_injection::TryComputeMedianTailNorm(tail_rows, parent_action_count, existing_tail_norms,
+                                                              target_norm)) {
+        return DeviceOutputEmbeddingInjectionStatusCode::kInjectionFailed;
+    }
+
     for (std::size_t injection_offset = 0; injection_offset < injection_count; ++injection_offset) {
         if (!TrySeedOutputEmbeddingTailFromHintGrids(
                 genome::GenomePolicyModelParameters(genome_bytes),
                 training_word_catalog.words[first_catalog_word_index + injection_offset],
                 tail_rows[parent_action_count + injection_offset])) {
+            return DeviceOutputEmbeddingInjectionStatusCode::kInjectionFailed;
+        }
+        if (!output_embedding_injection::TryScaleTrainableTailToNorm(tail_rows[parent_action_count + injection_offset],
+                                                                     target_norm)) {
             return DeviceOutputEmbeddingInjectionStatusCode::kInjectionFailed;
         }
     }
@@ -63,11 +74,27 @@ __device__ inline DeviceOutputEmbeddingInjectionStatusCode TryInjectExpandedOutp
     }
 
     genome::TrainableActionEmbeddingTail *tail_rows = genome::GenomeTailRows(genome_bytes);
+    const std::size_t lane_index = static_cast<std::size_t>(threadIdx.x % WarpWidth);
+    if (lane_index == 0) {
+        common::FixedBuffer<float, training_folder::kTrainingWordCatalogCapacity> existing_tail_norms{};
+        scratch.status = output_embedding_injection::TryComputeMedianTailNorm(
+            tail_rows, parent_action_count, existing_tail_norms, scratch.target_norm);
+    }
+    __syncwarp();
+
+    if (scratch.status == 0) {
+        return DeviceOutputEmbeddingInjectionStatusCode::kInjectionFailed;
+    }
+
     for (std::size_t injection_offset = 0; injection_offset < injection_count; ++injection_offset) {
         if (!TrySeedOutputEmbeddingTailFromHintGridsConcurrently<WarpWidth>(
                 genome::GenomePolicyModelParameters(genome_bytes),
                 training_word_catalog.words[first_catalog_word_index + injection_offset],
                 tail_rows[parent_action_count + injection_offset], scratch)) {
+            return DeviceOutputEmbeddingInjectionStatusCode::kInjectionFailed;
+        }
+        if (!TryScaleTrainableTailToNormConcurrently<WarpWidth>(tail_rows[parent_action_count + injection_offset],
+                                                                scratch.target_norm, scratch)) {
             return DeviceOutputEmbeddingInjectionStatusCode::kInjectionFailed;
         }
     }

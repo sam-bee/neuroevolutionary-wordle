@@ -12,10 +12,15 @@
 
 namespace {
 
+using neuroevolution::common::FixedBuffer;
 using neuroevolution::common::ToFloat;
 using neuroevolution::common::ToFloat16;
+using neuroevolution::genetic_algorithm::ActiveOutputEmbeddingCount;
 using neuroevolution::genetic_algorithm::ModelGenome;
 using neuroevolution::genetic_algorithm::TryInjectNewOutputEmbedding;
+using neuroevolution::genetic_algorithm::output_embedding_injection::TrainableTailNorm;
+using neuroevolution::genetic_algorithm::output_embedding_injection::TryComputeMedianTailNorm;
+using neuroevolution::genetic_algorithm::output_embedding_injection::TryScaleTrainableTailToNorm;
 using neuroevolution::model::initialization::MakeRandomPolicyModelParameters;
 using neuroevolution::model::output_embedding::TrainableActionEmbeddingTail;
 using neuroevolution::model::policy_model::PolicyVector;
@@ -100,6 +105,16 @@ bool ExpectTailEquals(const TrainableActionEmbeddingTail &actual, const Trainabl
     return ok;
 }
 
+bool ExpectTailNormNear(const TrainableActionEmbeddingTail &tail, const float expected, const std::string_view label) {
+    const float actual = TrainableTailNorm(tail);
+    if (std::fabs(actual - expected) > 1.0e-2f) {
+        std::cerr << "FAIL: " << label << " expected " << expected << ", got " << actual << '\n';
+        return false;
+    }
+
+    return true;
+}
+
 template <std::size_t ActionCapacity>
 void PopulateSentinelGenome(ModelGenome<ActionCapacity> &genome, const std::size_t active_count) {
     genome = {};
@@ -148,6 +163,20 @@ bool ComputeExpectedInjectedTail(const ModelGenome<ActionCapacity> &genome, cons
     }
 
     return true;
+}
+
+template <std::size_t ActionCapacity>
+bool ComputeExpectedNormalizedInjectedTail(const ModelGenome<ActionCapacity> &genome, const Word &target_word,
+                                           TrainableActionEmbeddingTail &tail_out, float &target_norm_out) {
+    if (!ComputeExpectedInjectedTail(genome, target_word, tail_out)) {
+        return false;
+    }
+
+    FixedBuffer<float, ActionCapacity> existing_tail_norms{};
+    return TryComputeMedianTailNorm(genome.output_embedding.trainable_tails.values,
+                                    ActiveOutputEmbeddingCount(genome.output_embedding), existing_tail_norms,
+                                    target_norm_out) &&
+           TryScaleTrainableTailToNorm(tail_out, target_norm_out);
 }
 
 template <std::size_t ActionCapacity>
@@ -207,8 +236,9 @@ bool TestDeviceInjectionAppendsExpectedTail() {
     const Word injected_word = MakeWord("SPARE");
 
     TrainableActionEmbeddingTail expected_tail{};
-    bool ok = ComputeExpectedInjectedTail(input_genome, injected_word, expected_tail);
-    ok &= ExpectTrue(ok, "Expected host-side injected tail synthesis to succeed");
+    float expected_target_norm = 0.0f;
+    bool ok = ComputeExpectedNormalizedInjectedTail(input_genome, injected_word, expected_tail, expected_target_norm);
+    ok &= ExpectTrue(ok, "Expected host-side normalized injected tail synthesis to succeed");
 
     ModelGenome<kActionCapacity> output_genome{};
     int status = -1;
@@ -227,6 +257,8 @@ bool TestDeviceInjectionAppendsExpectedTail() {
     ok &= ExpectTailEquals(output_genome.output_embedding.trainable_tails[2], original_third_tail,
                            "preserved third tail");
     ok &= ExpectTailEquals(output_genome.output_embedding.trainable_tails[3], expected_tail, "injected tail");
+    ok &= ExpectTailNormNear(output_genome.output_embedding.trainable_tails[3], expected_target_norm,
+                             "normalized injected tail norm");
     return ok;
 }
 

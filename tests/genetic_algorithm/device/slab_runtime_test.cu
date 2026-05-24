@@ -17,6 +17,7 @@
 
 namespace {
 
+using neuroevolution::common::FixedBuffer;
 using neuroevolution::common::ToFloat;
 using neuroevolution::genetic_algorithm::GenerationAssemblyConfig;
 using neuroevolution::genetic_algorithm::TrySeedOutputEmbeddingTailFromHintGrids;
@@ -33,6 +34,9 @@ using neuroevolution::genetic_algorithm::genotype_slab::SlabGeneration;
 using neuroevolution::genetic_algorithm::genotype_slab::SlabParentPair;
 using neuroevolution::genetic_algorithm::genotype_slab::SlabSlotCountForByteBudget;
 using neuroevolution::genetic_algorithm::genotype_slab::TryCreateSlabAssemblyPlan;
+using neuroevolution::genetic_algorithm::output_embedding_injection::TrainableTailNorm;
+using neuroevolution::genetic_algorithm::output_embedding_injection::TryComputeMedianTailNorm;
+using neuroevolution::genetic_algorithm::output_embedding_injection::TryScaleTrainableTailToNorm;
 using neuroevolution::genetic_algorithm::slab_device::DeviceSlabGARuntimeBuffers;
 using neuroevolution::genetic_algorithm::slab_device::DeviceSlabGARuntimeConfig;
 using neuroevolution::genetic_algorithm::slab_device::DeviceSlabGARuntimeStatusCode;
@@ -133,6 +137,16 @@ bool ExpectTailEquals(const TrainableActionEmbeddingTail &actual, const Trainabl
     }
 
     return ok;
+}
+
+bool ExpectTailNormNear(const TrainableActionEmbeddingTail &tail, const float expected, const std::string_view label) {
+    const float actual = TrainableTailNorm(tail);
+    if (std::fabs(actual - expected) > 1.0e-2f) {
+        std::cerr << "FAIL: " << label << " expected " << expected << ", got " << actual << '\n';
+        return false;
+    }
+
+    return true;
 }
 
 RuntimeWordCounts MakeRuntimeWordCounts() {
@@ -578,6 +592,7 @@ bool TestSlabRuntimeEvaluatesSpatialTrainingShardExposurePerCell() {
 
 bool TestSlabRuntimeGrowsActionCountWithSlabRepacking() {
     constexpr std::size_t kInjectedWordCount = 3;
+    constexpr std::size_t kNextActionCapacity = kActionCount + kInjectedWordCount;
 
     TrainingWordCatalog training_word_catalog{};
     if (!InitializeTrainingCatalog(training_word_catalog)) {
@@ -666,6 +681,11 @@ bool TestSlabRuntimeGrowsActionCountWithSlabRepacking() {
         const SlabParentPair &parent_pair = downloaded_plan.parent_pairs[individual_index];
         ok &= ExpectTrue(parent_pair.first_parent_index != parent_pair.second_parent_index,
                          "Expected grown children to have two different parents");
+        const TrainableActionEmbeddingTail *downloaded_child_tail_rows =
+            GenomeTailRows(HostSlabSlotBytesAt(downloaded_buffer, slot_index));
+        FixedBuffer<float, kNextActionCapacity> existing_tail_norms{};
+        float target_tail_norm = 0.0f;
+        ok &= TryComputeMedianTailNorm(downloaded_child_tail_rows, kActionCount, existing_tail_norms, target_tail_norm);
         for (std::size_t injection_offset = 0; injection_offset < kInjectedWordCount; ++injection_offset) {
             TrainableActionEmbeddingTail expected_tail{};
             ok &= TrySeedOutputEmbeddingTailFromHintGrids(
@@ -674,11 +694,13 @@ bool TestSlabRuntimeGrowsActionCountWithSlabRepacking() {
                 training_word_catalog
                     .words[pending_output_embedding_injection.first_catalog_word_index + injection_offset],
                 expected_tail);
-            ok &= ExpectTailEquals(
-                GenomeTailRows(HostSlabSlotBytesAt(downloaded_buffer, slot_index))[kActionCount + injection_offset],
-                expected_tail,
-                std::string("grown child injected tail ") + std::to_string(individual_index) + ":" +
-                    std::to_string(injection_offset));
+            ok &= TryScaleTrainableTailToNorm(expected_tail, target_tail_norm);
+            ok &= ExpectTailEquals(downloaded_child_tail_rows[kActionCount + injection_offset], expected_tail,
+                                   std::string("grown child injected tail ") + std::to_string(individual_index) + ":" +
+                                       std::to_string(injection_offset));
+            ok &= ExpectTailNormNear(downloaded_child_tail_rows[kActionCount + injection_offset], target_tail_norm,
+                                     std::string("grown child injected tail norm ") + std::to_string(individual_index) +
+                                         ":" + std::to_string(injection_offset));
         }
     }
 
