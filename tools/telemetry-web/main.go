@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"log"
@@ -66,6 +67,7 @@ func (s *server) handleRuns(w http.ResponseWriter, r *http.Request) {
 
 	entries, err := os.ReadDir(s.telemetryDir)
 	if err != nil {
+		log.Printf("could not read telemetry directory dir=%q err=%v", s.telemetryDir, err)
 		http.Error(w, "could not read telemetry directory", http.StatusInternalServerError)
 		return
 	}
@@ -78,6 +80,7 @@ func (s *server) handleRuns(w http.ResponseWriter, r *http.Request) {
 
 		info, err := entry.Info()
 		if err != nil {
+			log.Printf("could not inspect telemetry run entry dir=%q name=%q err=%v", s.telemetryDir, entry.Name(), err)
 			continue
 		}
 		runs = append(runs, runFile{
@@ -124,28 +127,32 @@ func (s *server) handleRunFitness(w http.ResponseWriter, filename string) {
 	filename = strings.Trim(filename, "/")
 	dbPath, err := s.databasePath(filename)
 	if err != nil {
+		log.Printf("invalid fitness telemetry database filename=%q err=%v", filename, err)
 		http.Error(w, "invalid telemetry database", http.StatusBadRequest)
 		return
 	}
 
 	query, err := fitnessQuery(dbPath)
 	if err != nil {
+		log.Printf("could not build fitness telemetry query filename=%q db=%q err=%v", filename, dbPath, err)
 		http.Error(w, "could not inspect telemetry database", http.StatusInternalServerError)
 		return
 	}
-	writeSQLiteJSON(w, dbPath, query, "could not query telemetry database")
+	writeSQLiteJSON(w, dbPath, query, "fitness telemetry query", "could not query telemetry database")
 }
 
 func (s *server) handleRunGeneticConvergence(w http.ResponseWriter, filename string) {
 	filename = strings.Trim(filename, "/")
 	dbPath, err := s.databasePath(filename)
 	if err != nil {
+		log.Printf("invalid genetic convergence telemetry database filename=%q err=%v", filename, err)
 		http.Error(w, "invalid telemetry database", http.StatusBadRequest)
 		return
 	}
 
 	hasTable, err := tableExists(dbPath, "genetic_convergence_telemetry")
 	if err != nil {
+		log.Printf("could not inspect genetic convergence telemetry table filename=%q db=%q err=%v", filename, dbPath, err)
 		http.Error(w, "could not inspect telemetry database", http.StatusInternalServerError)
 		return
 	}
@@ -155,7 +162,7 @@ func (s *server) handleRunGeneticConvergence(w http.ResponseWriter, filename str
 		return
 	}
 
-	writeSQLiteJSON(w, dbPath, geneticConvergenceQuery(), "could not query genetic convergence telemetry")
+	writeSQLiteJSON(w, dbPath, geneticConvergenceQuery(), "genetic convergence telemetry query", "could not query genetic convergence telemetry")
 }
 
 func fitnessQuery(dbPath string) (string, error) {
@@ -207,8 +214,7 @@ ORDER BY generation;`
 
 func tableExists(dbPath string, tableName string) (bool, error) {
 	query := "SELECT name FROM sqlite_master WHERE type='table' AND name='" + tableName + "';"
-	command := exec.Command("sqlite3", "-readonly", "-json", dbPath, query)
-	output, err := command.Output()
+	output, err := runSQLiteJSON(dbPath, query, "table existence check for "+tableName)
 	if err != nil {
 		return false, err
 	}
@@ -217,14 +223,15 @@ func tableExists(dbPath string, tableName string) (bool, error) {
 		Name string `json:"name"`
 	}
 	if err := json.Unmarshal(output, &rows); err != nil {
+		log.Printf("could not decode sqlite3 table existence JSON db=%q table=%q err=%v output=%q", dbPath, tableName, err,
+			strings.TrimSpace(string(output)))
 		return false, err
 	}
 	return len(rows) > 0, nil
 }
 
-func writeSQLiteJSON(w http.ResponseWriter, dbPath string, query string, errorMessage string) {
-	command := exec.Command("sqlite3", "-readonly", "-json", dbPath, query)
-	output, err := command.Output()
+func writeSQLiteJSON(w http.ResponseWriter, dbPath string, query string, context string, errorMessage string) {
+	output, err := runSQLiteJSON(dbPath, query, context)
 	if err != nil {
 		http.Error(w, errorMessage, http.StatusInternalServerError)
 		return
@@ -238,8 +245,7 @@ func writeSQLiteJSON(w http.ResponseWriter, dbPath string, query string, errorMe
 }
 
 func generationFitnessColumns(dbPath string) (map[string]bool, error) {
-	command := exec.Command("sqlite3", "-readonly", "-json", dbPath, "PRAGMA table_info(generation_fitness);")
-	output, err := command.Output()
+	output, err := runSQLiteJSON(dbPath, "PRAGMA table_info(generation_fitness);", "generation_fitness column inspection")
 	if err != nil {
 		return nil, err
 	}
@@ -248,6 +254,8 @@ func generationFitnessColumns(dbPath string) (map[string]bool, error) {
 		Name string `json:"name"`
 	}
 	if err := json.Unmarshal(output, &rows); err != nil {
+		log.Printf("could not decode sqlite3 generation_fitness column JSON db=%q err=%v output=%q", dbPath, err,
+			strings.TrimSpace(string(output)))
 		return nil, err
 	}
 
@@ -256,6 +264,46 @@ func generationFitnessColumns(dbPath string) (map[string]bool, error) {
 		columns[row.Name] = true
 	}
 	return columns, nil
+}
+
+func runSQLiteJSON(dbPath string, query string, context string) ([]byte, error) {
+	const attempts = 3
+
+	var lastErr error
+	var lastStdout string
+	var lastStderr string
+	for attempt := 1; attempt <= attempts; attempt++ {
+		command := exec.Command("sqlite3", "-readonly", "-cmd", ".timeout 5000", "-json", dbPath, query)
+		var stdout bytes.Buffer
+		var stderr bytes.Buffer
+		command.Stdout = &stdout
+		command.Stderr = &stderr
+
+		err := command.Run()
+		if err == nil {
+			if attempt > 1 {
+				log.Printf("sqlite3 succeeded after retry context=%q db=%q attempt=%d", context, dbPath, attempt)
+			}
+			return stdout.Bytes(), nil
+		}
+
+		lastErr = err
+		lastStdout = strings.TrimSpace(stdout.String())
+		lastStderr = strings.TrimSpace(stderr.String())
+		log.Printf("sqlite3 failed context=%q db=%q attempt=%d/%d err=%v stderr=%q stdout=%q query=%q", context, dbPath,
+			attempt, attempts, err, lastStderr, lastStdout, compactQuery(query))
+
+		if !strings.Contains(strings.ToLower(lastStderr), "database is locked") {
+			break
+		}
+		time.Sleep(time.Duration(attempt) * 100 * time.Millisecond)
+	}
+
+	return nil, lastErr
+}
+
+func compactQuery(query string) string {
+	return strings.Join(strings.Fields(query), " ")
 }
 
 func (s *server) databasePath(filename string) (string, error) {

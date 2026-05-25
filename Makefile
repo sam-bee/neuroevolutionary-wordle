@@ -68,6 +68,7 @@ run-ga-prod: .env
 		--checkpoint-path checkpoints/ga-runtime.bin \
 		--checkpoint-every 10 \
 		--breeding-radius 3 \
+		--parent-selection-rank-exponent 0.5 \
 		--telemetry-dir telemetry/runs \
 		--telemetry-genetic-convergence \
 		--verbose
