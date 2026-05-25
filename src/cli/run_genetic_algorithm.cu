@@ -24,6 +24,7 @@
 #include "genetic_algorithm/device/slab_runtime.hpp"
 #include "genetic_algorithm/genetic_convergence.hpp"
 #include "genetic_algorithm/genotype_slab/slab_allocator.hpp"
+#include "genetic_algorithm/mutation.hpp"
 #include "genetic_algorithm/spatial/grid.hpp"
 #include "model_artifact/winner_artifact.hpp"
 #include "training_folder/training_data.hpp"
@@ -1085,8 +1086,10 @@ GenerationAssemblyConfig MakeAssemblyConfig(const CliConfig &cli_config) {
     config.parent_selection.cellular_breeding_radius = cli_config.breeding_radius;
     config.parent_selection.rank_exponent = cli_config.parent_selection_rank_exponent;
     config.breeding.first_parent_probability = 0.5f;
-    config.mutation.mutation_probability = 0.02f;
-    config.mutation.mutation_sigma = 0.05f;
+    config.mutation.mutation_probability = neuroevolution::genetic_algorithm::kDefaultMutationProbability;
+    config.mutation.mutation_sigma = neuroevolution::genetic_algorithm::kDefaultMutationSigma;
+    config.mutation.output_tail_row_scale_mutation_probability =
+        neuroevolution::genetic_algorithm::kDefaultOutputTailRowScaleMutationProbability;
     return config;
 }
 

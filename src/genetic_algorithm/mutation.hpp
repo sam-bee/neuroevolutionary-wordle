@@ -13,10 +13,14 @@ namespace neuroevolution::genetic_algorithm {
 
 using MutationRandomEngine = std::mt19937;
 
+constexpr float kDefaultMutationProbability = 0.0001f;
+constexpr float kDefaultMutationSigma = 0.02f;
+constexpr float kDefaultOutputTailRowScaleMutationProbability = 0.0f;
+
 struct MutationConfig {
-    float mutation_probability = 0.02f;
-    float mutation_sigma = 0.05f;
-    float output_tail_row_scale_mutation_probability = output_tail_ops::kDefaultRowScaleMutationProbability;
+    float mutation_probability = kDefaultMutationProbability;
+    float mutation_sigma = kDefaultMutationSigma;
+    float output_tail_row_scale_mutation_probability = kDefaultOutputTailRowScaleMutationProbability;
 };
 
 constexpr NEUROEVOLUTION_HOST_DEVICE bool IsValidMutationConfig(const MutationConfig &config) noexcept {
