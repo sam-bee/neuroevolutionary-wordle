@@ -132,10 +132,27 @@ func (s *server) handleRunFitness(w http.ResponseWriter, filename string) {
 		return
 	}
 
+	hasTable, err := tableExists(dbPath, "generation_fitness")
+	if err != nil {
+		log.Printf("could not inspect generation fitness telemetry table filename=%q db=%q err=%v", filename, dbPath, err)
+		http.Error(w, "could not inspect telemetry database", http.StatusInternalServerError)
+		return
+	}
+	if !hasTable {
+		log.Printf("legacy telemetry database lacks generation_fitness table filename=%q db=%q", filename, dbPath)
+		writeEmptyJSON(w)
+		return
+	}
+
 	query, err := fitnessQuery(dbPath)
 	if err != nil {
 		log.Printf("could not build fitness telemetry query filename=%q db=%q err=%v", filename, dbPath, err)
 		http.Error(w, "could not inspect telemetry database", http.StatusInternalServerError)
+		return
+	}
+	if query == "" {
+		log.Printf("legacy telemetry database lacks required generation_fitness columns filename=%q db=%q", filename, dbPath)
+		writeEmptyJSON(w)
 		return
 	}
 	writeSQLiteJSON(w, dbPath, query, "fitness telemetry query", "could not query telemetry database")
@@ -157,18 +174,35 @@ func (s *server) handleRunGeneticConvergence(w http.ResponseWriter, filename str
 		return
 	}
 	if !hasTable {
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte("[]\n"))
+		log.Printf("legacy telemetry database lacks genetic_convergence_telemetry table filename=%q db=%q", filename, dbPath)
+		writeEmptyJSON(w)
 		return
 	}
 
-	writeSQLiteJSON(w, dbPath, geneticConvergenceQuery(), "genetic convergence telemetry query", "could not query genetic convergence telemetry")
+	query, err := geneticConvergenceQuery(dbPath)
+	if err != nil {
+		log.Printf("could not build genetic convergence telemetry query filename=%q db=%q err=%v", filename, dbPath, err)
+		http.Error(w, "could not inspect telemetry database", http.StatusInternalServerError)
+		return
+	}
+	if query == "" {
+		log.Printf("legacy telemetry database lacks required genetic_convergence_telemetry columns filename=%q db=%q", filename, dbPath)
+		writeEmptyJSON(w)
+		return
+	}
+
+	writeSQLiteJSON(w, dbPath, query, "genetic convergence telemetry query", "could not query genetic convergence telemetry")
 }
 
 func fitnessQuery(dbPath string) (string, error) {
 	columns, err := generationFitnessColumns(dbPath)
 	if err != nil {
 		return "", err
+	}
+	for _, column := range []string{"generation", "fitness_min", "fitness_mean", "fitness_median", "fitness_max"} {
+		if !columns[column] {
+			return "", nil
+		}
 	}
 
 	expr := func(column string, fallback string) string {
@@ -196,7 +230,30 @@ FROM generation_fitness
 ORDER BY generation;`, nil
 }
 
-func geneticConvergenceQuery() string {
+func geneticConvergenceQuery(dbPath string) (string, error) {
+	columns, err := tableColumns(dbPath, "genetic_convergence_telemetry")
+	if err != nil {
+		return "", err
+	}
+	requiredColumns := []string{
+		"generation",
+		"sample_organisms",
+		"sample_weights",
+		"pair_count",
+		"centroid_distance_mean",
+		"centroid_distance_min",
+		"centroid_distance_max",
+		"pairwise_distance_mean",
+		"pairwise_distance_min",
+		"pairwise_distance_max",
+		"elapsed_ms",
+	}
+	for _, column := range requiredColumns {
+		if !columns[column] {
+			return "", nil
+		}
+	}
+
 	return `SELECT generation AS generation,
 sample_organisms AS sample_organisms,
 sample_weights AS sample_weights,
@@ -209,7 +266,7 @@ pairwise_distance_min AS pairwise_distance_min,
 pairwise_distance_max AS pairwise_distance_max,
 elapsed_ms AS elapsed_ms
 FROM genetic_convergence_telemetry
-ORDER BY generation;`
+ORDER BY generation;`, nil
 }
 
 func tableExists(dbPath string, tableName string) (bool, error) {
@@ -244,8 +301,17 @@ func writeSQLiteJSON(w http.ResponseWriter, dbPath string, query string, context
 	_, _ = w.Write(output)
 }
 
+func writeEmptyJSON(w http.ResponseWriter) {
+	w.Header().Set("Content-Type", "application/json")
+	_, _ = w.Write([]byte("[]\n"))
+}
+
 func generationFitnessColumns(dbPath string) (map[string]bool, error) {
-	output, err := runSQLiteJSON(dbPath, "PRAGMA table_info(generation_fitness);", "generation_fitness column inspection")
+	return tableColumns(dbPath, "generation_fitness")
+}
+
+func tableColumns(dbPath string, tableName string) (map[string]bool, error) {
+	output, err := runSQLiteJSON(dbPath, "PRAGMA table_info("+tableName+");", tableName+" column inspection")
 	if err != nil {
 		return nil, err
 	}
@@ -254,7 +320,7 @@ func generationFitnessColumns(dbPath string) (map[string]bool, error) {
 		Name string `json:"name"`
 	}
 	if err := json.Unmarshal(output, &rows); err != nil {
-		log.Printf("could not decode sqlite3 generation_fitness column JSON db=%q err=%v output=%q", dbPath, err,
+		log.Printf("could not decode sqlite3 table column JSON db=%q table=%q err=%v output=%q", dbPath, tableName, err,
 			strings.TrimSpace(string(output)))
 		return nil, err
 	}
@@ -283,6 +349,9 @@ func runSQLiteJSON(dbPath string, query string, context string) ([]byte, error) 
 		if err == nil {
 			if attempt > 1 {
 				log.Printf("sqlite3 succeeded after retry context=%q db=%q attempt=%d", context, dbPath, attempt)
+			}
+			if len(strings.TrimSpace(stdout.String())) == 0 {
+				return []byte("[]\n"), nil
 			}
 			return stdout.Bytes(), nil
 		}
