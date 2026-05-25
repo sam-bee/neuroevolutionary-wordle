@@ -69,6 +69,7 @@ run-ga-prod: .env
 		--checkpoint-every 10 \
 		--breeding-radius 3 \
 		--telemetry-dir telemetry/runs \
+		--telemetry-genetic-convergence \
 		--verbose
 
 run-ga-growth-smoke: .env

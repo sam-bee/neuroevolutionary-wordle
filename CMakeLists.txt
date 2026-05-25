@@ -414,6 +414,21 @@ set_tests_properties(genetic_algorithm_test PROPERTIES
     LABELS "cpu;unit"
 )
 
+add_executable(genetic_convergence_test
+    tests/genetic_algorithm/genetic_convergence_test.cpp
+)
+
+target_link_libraries(genetic_convergence_test PRIVATE
+    genetic_algorithm
+)
+
+enable_project_warnings(genetic_convergence_test)
+
+add_test(NAME genetic_convergence_test COMMAND genetic_convergence_test)
+set_tests_properties(genetic_convergence_test PROPERTIES
+    LABELS "cpu;unit"
+)
+
 add_executable(output_embedding_genome_runtime_test
     tests/genetic_algorithm/output_embedding_genome_runtime_test.cpp
 )

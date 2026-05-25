@@ -22,6 +22,7 @@
 
 #include "common/progress_log.hpp"
 #include "genetic_algorithm/device/slab_runtime.hpp"
+#include "genetic_algorithm/genetic_convergence.hpp"
 #include "genetic_algorithm/genotype_slab/slab_allocator.hpp"
 #include "genetic_algorithm/spatial/grid.hpp"
 #include "model_artifact/winner_artifact.hpp"
@@ -35,8 +36,8 @@ using neuroevolution::common::PrintTimestampedProgressLine;
 using neuroevolution::common::ProgressClock;
 using neuroevolution::genetic_algorithm::GenerationAssemblyConfig;
 using neuroevolution::genetic_algorithm::genotype_slab::ComputeSlabSlotStrideBytes;
-using neuroevolution::genetic_algorithm::genotype_slab::SlabSlotCountForByteBudget;
 using neuroevolution::genetic_algorithm::genotype_slab::SlabParentPair;
+using neuroevolution::genetic_algorithm::genotype_slab::SlabSlotCountForByteBudget;
 using neuroevolution::genetic_algorithm::slab_device::DestroyDeviceSlabGARuntimeBuffers;
 using neuroevolution::genetic_algorithm::slab_device::DeviceSlabBootstrapConfig;
 using neuroevolution::genetic_algorithm::slab_device::DeviceSlabGARuntimeBuffers;
@@ -86,6 +87,7 @@ struct CliConfig {
     std::size_t word_count_step = 0;
     std::size_t word_count_step_period_generations = 1;
     std::size_t breeding_radius = neuroevolution::genetic_algorithm::spatial::kCellularBreedingRadius;
+    float parent_selection_rank_exponent = neuroevolution::genetic_algorithm::kDefaultParentSelectionRankExponent;
     std::size_t shard_initial_radius = neuroevolution::training_folder::kDefaultTrainingShardInitialRadius;
     std::size_t shard_radius_growth_period_generations =
         neuroevolution::training_folder::kDefaultShardRadiusGrowthPeriodGenerations;
@@ -106,6 +108,10 @@ struct CliConfig {
     bool telemetry_path_was_provided = false;
     std::filesystem::path telemetry_dir{};
     bool telemetry_dir_was_provided = false;
+    bool telemetry_genetic_convergence = false;
+    std::size_t telemetry_genetic_convergence_interval =
+        neuroevolution::genetic_algorithm::genetic_convergence::kDefaultIntervalGenerations;
+    bool telemetry_genetic_convergence_interval_was_provided = false;
 };
 
 enum class ArgumentParseResult {
@@ -117,10 +123,11 @@ enum class ArgumentParseResult {
 void PrintUsage() {
     std::cout << "Usage: run_genetic_algorithm [--verbose] [--seed N] [--generations N] [--population-size N] "
                  "[--genotype-vram-gb F] [--generation-vram-gb F] [--initial-word-count N] [--word-count-step N] "
-                 "[--word-count-step-period N] [--breeding-radius N] [--shard-initial-radius N] "
-                 "[--shard-initial-radius-infinite] [--shard-radius-growth-period N] "
+                 "[--word-count-step-period N] [--breeding-radius N] [--parent-selection-rank-exponent F] "
+                 "[--shard-initial-radius N] [--shard-initial-radius-infinite] [--shard-radius-growth-period N] "
                  "[--checkpoint-path PATH] [--checkpoint-every N] [--resume-from-checkpoint PATH] "
-                 "[--telemetry-path PATH] [--telemetry-dir DIR]\n"
+                 "[--telemetry-path PATH] [--telemetry-dir DIR] [--telemetry-genetic-convergence] "
+                 "[--telemetry-genetic-convergence-interval N]\n"
               << "If --population-size is omitted, the program does not apply an extra population ceiling.\n"
               << "The shared training/action schedule defaults to initial_word_count="
               << neuroevolution::training_folder::kDefaultInitialActiveWordCount
@@ -130,6 +137,8 @@ void PrintUsage() {
               << " generations by default.\n"
               << "--breeding-radius controls the toroidal Moore/Chebyshev parent-selection radius and defaults to "
               << neuroevolution::genetic_algorithm::spatial::kCellularBreedingRadius << ".\n"
+              << "--parent-selection-rank-exponent controls rank-weighted local parent selection and defaults to "
+              << neuroevolution::genetic_algorithm::kDefaultParentSelectionRankExponent << ".\n"
               << "--shard-initial-radius-infinite starts every newly introduced non-foundation shard at a radius "
                  "large enough to cover the whole current population grid.\n"
               << "Positive word-count growth is handled by slab compaction/repacking, so later generations may "
@@ -154,7 +163,9 @@ void PrintUsage() {
               << "--resume-from-checkpoint loads a pre-recombination checkpoint, restores the saved assembly plan, "
                  "and resumes without rerunning the completed generation's fitness evaluation or selection.\n"
               << "--telemetry-path writes per-generation fitness summaries to the given SQLite database. "
-                 "--telemetry-dir creates a datetime-named SQLite database in the given directory.\n";
+                 "--telemetry-dir creates a datetime-named SQLite database in the given directory. "
+                 "--telemetry-genetic-convergence adds sampled genetic convergence telemetry at the configured "
+                 "interval, defaulting to every 10 generations.\n";
 }
 
 bool CheckCuda(const cudaError_t error, const std::string_view action) {
@@ -207,6 +218,16 @@ bool TryParsePositiveReal(const char *text, double &value) {
     return (end != nullptr) && (*end == '\0') && std::isfinite(value) && (value > 0.0);
 }
 
+bool TryParseNonNegativeReal(const char *text, double &value) {
+    if ((text == nullptr) || (*text == '\0')) {
+        return false;
+    }
+
+    char *end = nullptr;
+    value = std::strtod(text, &end);
+    return (end != nullptr) && (*end == '\0') && std::isfinite(value) && (value >= 0.0);
+}
+
 std::uint32_t MakeSeedFromCurrentTimeMicroseconds() {
     const auto now = std::chrono::system_clock::now().time_since_epoch();
     const auto microseconds = std::chrono::duration_cast<std::chrono::microseconds>(now).count();
@@ -244,8 +265,32 @@ ArgumentParseResult TryParseArguments(const int argc, char **argv, CliConfig &co
             continue;
         }
 
+        if (argument == "--telemetry-genetic-convergence") {
+            config.telemetry_genetic_convergence = true;
+            continue;
+        }
+
         if (argument == "--shard-initial-radius-infinite") {
             config.shard_initial_radius = neuroevolution::training_folder::kEffectivelyInfiniteTrainingShardRadius;
+            continue;
+        }
+
+        if (argument == "--parent-selection-rank-exponent") {
+            if ((arg_index + 1) >= argc) {
+                std::cerr << "Missing value for " << argument << '\n';
+                return ArgumentParseResult::kFailure;
+            }
+
+            double parsed_value = 0.0;
+            if (!TryParseNonNegativeReal(argv[arg_index + 1], parsed_value) ||
+                (parsed_value > neuroevolution::genetic_algorithm::kMaximumParentSelectionRankExponent)) {
+                std::cerr << "Parent-selection rank exponent must be between 0 and "
+                          << neuroevolution::genetic_algorithm::kMaximumParentSelectionRankExponent << ".\n";
+                return ArgumentParseResult::kFailure;
+            }
+
+            config.parent_selection_rank_exponent = static_cast<float>(parsed_value);
+            ++arg_index;
             continue;
         }
 
@@ -283,8 +328,8 @@ ArgumentParseResult TryParseArguments(const int argc, char **argv, CliConfig &co
             (argument == "--genotype-vram-gb") || (argument == "--generation-vram-gb") ||
             (argument == "--initial-word-count") || (argument == "--word-count-step") ||
             (argument == "--word-count-step-period") || (argument == "--breeding-radius") ||
-            (argument == "--shard-initial-radius") ||
-            (argument == "--shard-radius-growth-period") || (argument == "--checkpoint-every")) {
+            (argument == "--shard-initial-radius") || (argument == "--shard-radius-growth-period") ||
+            (argument == "--checkpoint-every") || (argument == "--telemetry-genetic-convergence-interval")) {
             if ((arg_index + 1) >= argc) {
                 std::cerr << "Missing value for " << argument << '\n';
                 return ArgumentParseResult::kFailure;
@@ -360,6 +405,14 @@ ArgumentParseResult TryParseArguments(const int argc, char **argv, CliConfig &co
 
                     config.checkpoint_every_generations = static_cast<std::size_t>(parsed_value);
                     config.checkpoint_every_was_provided = true;
+                } else if (argument == "--telemetry-genetic-convergence-interval") {
+                    if (parsed_value == 0) {
+                        std::cerr << "Genetic convergence telemetry interval must be at least 1.\n";
+                        return ArgumentParseResult::kFailure;
+                    }
+
+                    config.telemetry_genetic_convergence_interval = static_cast<std::size_t>(parsed_value);
+                    config.telemetry_genetic_convergence_interval_was_provided = true;
                 } else {
                     if (parsed_value == 0) {
                         std::cerr << ((argument == "--word-count-step-period")
@@ -395,6 +448,15 @@ ArgumentParseResult TryParseArguments(const int argc, char **argv, CliConfig &co
         std::cerr << "Use either --telemetry-path or --telemetry-dir, not both.\n";
         return ArgumentParseResult::kFailure;
     }
+    if (config.telemetry_genetic_convergence && !config.telemetry_path_was_provided &&
+        !config.telemetry_dir_was_provided) {
+        std::cerr << "--telemetry-genetic-convergence requires --telemetry-path or --telemetry-dir.\n";
+        return ArgumentParseResult::kFailure;
+    }
+    if (config.telemetry_genetic_convergence_interval_was_provided && !config.telemetry_genetic_convergence) {
+        std::cerr << "--telemetry-genetic-convergence-interval requires --telemetry-genetic-convergence.\n";
+        return ArgumentParseResult::kFailure;
+    }
 
     return ArgumentParseResult::kSuccess;
 }
@@ -428,6 +490,20 @@ struct GenerationFitnessTelemetryRow {
     std::size_t parent_multiple_children_count = 0;
 };
 
+struct GeneticConvergenceTelemetryRow {
+    std::size_t generation = 0;
+    std::size_t sample_organisms = 0;
+    std::size_t sample_weights = 0;
+    std::size_t pair_count = 0;
+    float centroid_distance_mean = 0.0f;
+    float centroid_distance_min = 0.0f;
+    float centroid_distance_max = 0.0f;
+    float pairwise_distance_mean = 0.0f;
+    float pairwise_distance_min = 0.0f;
+    float pairwise_distance_max = 0.0f;
+    float elapsed_ms = 0.0f;
+};
+
 class TelemetryWriter {
   public:
     TelemetryWriter() = default;
@@ -455,8 +531,8 @@ class TelemetryWriter {
         }
 
         if (sqlite3_open(telemetry_path.string().c_str(), &db_) != SQLITE_OK) {
-            std::cerr << "Could not open telemetry SQLite database " << telemetry_path.string() << ": "
-                      << LastError() << '\n';
+            std::cerr << "Could not open telemetry SQLite database " << telemetry_path.string() << ": " << LastError()
+                      << '\n';
             return false;
         }
 
@@ -490,6 +566,22 @@ class TelemetryWriter {
                TryEnsureColumn("parent_multiple_children_count", "INTEGER");
     }
 
+    bool TryEnsureGeneticConvergenceTable() {
+        return TryExec("CREATE TABLE IF NOT EXISTS genetic_convergence_telemetry ("
+                       "generation INTEGER NOT NULL PRIMARY KEY,"
+                       "sample_organisms INTEGER NOT NULL,"
+                       "sample_weights INTEGER NOT NULL,"
+                       "pair_count INTEGER NOT NULL,"
+                       "centroid_distance_mean REAL NOT NULL,"
+                       "centroid_distance_min REAL NOT NULL,"
+                       "centroid_distance_max REAL NOT NULL,"
+                       "pairwise_distance_mean REAL NOT NULL,"
+                       "pairwise_distance_min REAL NOT NULL,"
+                       "pairwise_distance_max REAL NOT NULL,"
+                       "elapsed_ms REAL NOT NULL"
+                       ");");
+    }
+
     bool TryLogGenerationFitness(const GenerationFitnessTelemetryRow &row) {
         static constexpr const char *kInsertSql =
             "INSERT OR REPLACE INTO generation_fitness "
@@ -517,10 +609,10 @@ class TelemetryWriter {
         ok &= sqlite3_bind_double(statement, 10, static_cast<double>(row.fitness_stddev)) == SQLITE_OK;
         ok &= sqlite3_bind_int64(statement, 11, static_cast<sqlite3_int64>(row.distinct_fitness_count)) == SQLITE_OK;
         if (row.has_breeding_metrics) {
-            ok &= sqlite3_bind_int64(statement, 12, static_cast<sqlite3_int64>(row.parent_childless_count)) ==
-                  SQLITE_OK;
-            ok &= sqlite3_bind_int64(statement, 13, static_cast<sqlite3_int64>(row.parent_one_child_count)) ==
-                  SQLITE_OK;
+            ok &=
+                sqlite3_bind_int64(statement, 12, static_cast<sqlite3_int64>(row.parent_childless_count)) == SQLITE_OK;
+            ok &=
+                sqlite3_bind_int64(statement, 13, static_cast<sqlite3_int64>(row.parent_one_child_count)) == SQLITE_OK;
             ok &= sqlite3_bind_int64(statement, 14, static_cast<sqlite3_int64>(row.parent_multiple_children_count)) ==
                   SQLITE_OK;
         } else {
@@ -547,14 +639,56 @@ class TelemetryWriter {
         return true;
     }
 
-    const std::filesystem::path &path() const noexcept {
-        return path_;
+    bool TryLogGeneticConvergence(const GeneticConvergenceTelemetryRow &row) {
+        static constexpr const char *kInsertSql =
+            "INSERT OR REPLACE INTO genetic_convergence_telemetry "
+            "(generation, sample_organisms, sample_weights, pair_count, centroid_distance_mean, "
+            "centroid_distance_min, centroid_distance_max, pairwise_distance_mean, pairwise_distance_min, "
+            "pairwise_distance_max, elapsed_ms) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);";
+
+        sqlite3_stmt *statement = nullptr;
+        if (sqlite3_prepare_v2(db_, kInsertSql, -1, &statement, nullptr) != SQLITE_OK) {
+            std::cerr << "Could not prepare genetic convergence telemetry insert for " << path_.string() << ": "
+                      << LastError() << '\n';
+            return false;
+        }
+
+        bool ok = true;
+        ok &= sqlite3_bind_int64(statement, 1, static_cast<sqlite3_int64>(row.generation)) == SQLITE_OK;
+        ok &= sqlite3_bind_int64(statement, 2, static_cast<sqlite3_int64>(row.sample_organisms)) == SQLITE_OK;
+        ok &= sqlite3_bind_int64(statement, 3, static_cast<sqlite3_int64>(row.sample_weights)) == SQLITE_OK;
+        ok &= sqlite3_bind_int64(statement, 4, static_cast<sqlite3_int64>(row.pair_count)) == SQLITE_OK;
+        ok &= sqlite3_bind_double(statement, 5, static_cast<double>(row.centroid_distance_mean)) == SQLITE_OK;
+        ok &= sqlite3_bind_double(statement, 6, static_cast<double>(row.centroid_distance_min)) == SQLITE_OK;
+        ok &= sqlite3_bind_double(statement, 7, static_cast<double>(row.centroid_distance_max)) == SQLITE_OK;
+        ok &= sqlite3_bind_double(statement, 8, static_cast<double>(row.pairwise_distance_mean)) == SQLITE_OK;
+        ok &= sqlite3_bind_double(statement, 9, static_cast<double>(row.pairwise_distance_min)) == SQLITE_OK;
+        ok &= sqlite3_bind_double(statement, 10, static_cast<double>(row.pairwise_distance_max)) == SQLITE_OK;
+        ok &= sqlite3_bind_double(statement, 11, static_cast<double>(row.elapsed_ms)) == SQLITE_OK;
+        if (!ok) {
+            std::cerr << "Could not bind genetic convergence telemetry row for " << path_.string() << ": "
+                      << LastError() << '\n';
+            sqlite3_finalize(statement);
+            return false;
+        }
+
+        const int step_result = sqlite3_step(statement);
+        if (step_result != SQLITE_DONE) {
+            std::cerr << "Could not write genetic convergence telemetry row for generation " << row.generation << " to "
+                      << path_.string() << ": " << LastError() << '\n';
+            sqlite3_finalize(statement);
+            return false;
+        }
+
+        sqlite3_finalize(statement);
+        return true;
     }
 
+    const std::filesystem::path &path() const noexcept { return path_; }
+
   private:
-    const char *LastError() const noexcept {
-        return (db_ == nullptr) ? "unknown SQLite error" : sqlite3_errmsg(db_);
-    }
+    const char *LastError() const noexcept { return (db_ == nullptr) ? "unknown SQLite error" : sqlite3_errmsg(db_); }
 
     bool TryExec(const char *sql) {
         char *error_message = nullptr;
@@ -606,10 +740,227 @@ class TelemetryWriter {
     std::filesystem::path path_{};
 };
 
+template <typename Value> class DeviceTelemetryBuffer {
+  public:
+    DeviceTelemetryBuffer() = default;
+    ~DeviceTelemetryBuffer() { cudaFree(data_); }
+
+    DeviceTelemetryBuffer(const DeviceTelemetryBuffer &) = delete;
+    DeviceTelemetryBuffer &operator=(const DeviceTelemetryBuffer &) = delete;
+
+    bool TryAllocate(const std::size_t count, const std::string_view label) {
+        count_ = count;
+        if (count == 0) {
+            return true;
+        }
+        return CheckCuda(cudaMalloc(reinterpret_cast<void **>(&data_), count * sizeof(Value)), label);
+    }
+
+    Value *data() noexcept { return data_; }
+    const Value *data() const noexcept { return data_; }
+    std::size_t count() const noexcept { return count_; }
+
+  private:
+    Value *data_ = nullptr;
+    std::size_t count_ = 0;
+};
+
+__device__ float GeneticConvergenceTrainableValueAt(const std::uint8_t *genome_bytes, const std::size_t weight_index,
+                                                    const std::size_t action_count) {
+    namespace common = neuroevolution::common;
+    namespace genome = neuroevolution::genetic_algorithm::genome;
+    namespace output_embedding = neuroevolution::model::output_embedding;
+
+    constexpr std::size_t kPolicyScalarCount = sizeof(genome::PolicyModelParameters) / sizeof(common::Float16);
+    if (weight_index < kPolicyScalarCount) {
+        const auto *policy_values = reinterpret_cast<const common::Float16 *>(genome_bytes);
+        return common::ToFloat(policy_values[weight_index]);
+    }
+
+    const std::size_t tail_index = weight_index - kPolicyScalarCount;
+    const std::size_t tail_value_count = action_count * output_embedding::kTrainableFeatureDimension;
+    if (tail_index >= tail_value_count) {
+        return 0.0f;
+    }
+
+    const auto *tail_rows = genome::GenomeTailRows(genome_bytes);
+    const std::size_t action_index = tail_index / output_embedding::kTrainableFeatureDimension;
+    const std::size_t feature_index = tail_index % output_embedding::kTrainableFeatureDimension;
+    return common::ToFloat(tail_rows[action_index][feature_index]);
+}
+
+__global__ void GatherGeneticConvergenceSamplesKernel(
+    const std::uint8_t *slab_storage, const neuroevolution::genetic_algorithm::genotype_slab::GenotypeSlabLayout layout,
+    const std::uint32_t *sampled_slot_indices, const std::size_t sample_organism_count,
+    const std::uint32_t *sampled_weight_indices, const std::size_t sample_weight_count, float *sampled_values) {
+    namespace genotype_slab = neuroevolution::genetic_algorithm::genotype_slab;
+
+    const std::size_t flat_index =
+        (static_cast<std::size_t>(blockIdx.x) * static_cast<std::size_t>(blockDim.x)) + threadIdx.x;
+    const std::size_t total_value_count = sample_organism_count * sample_weight_count;
+    if (flat_index >= total_value_count) {
+        return;
+    }
+
+    const std::size_t organism_sample_index = flat_index / sample_weight_count;
+    const std::size_t weight_sample_index = flat_index % sample_weight_count;
+    const std::uint32_t slot_index = sampled_slot_indices[organism_sample_index];
+    if (slot_index >= layout.slot_count) {
+        sampled_values[flat_index] = 0.0f;
+        return;
+    }
+
+    const std::uint8_t *genome_bytes = genotype_slab::SlabSlotBytesAt(slab_storage, layout, slot_index);
+    sampled_values[flat_index] = GeneticConvergenceTrainableValueAt(
+        genome_bytes, sampled_weight_indices[weight_sample_index], layout.action_count);
+}
+
+bool ShouldLogGeneticConvergenceTelemetry(const CliConfig &config, const std::size_t generation) noexcept {
+    return config.telemetry_genetic_convergence && ((generation % config.telemetry_genetic_convergence_interval) == 0);
+}
+
+bool TryCollectGeneticConvergenceTelemetry(const DeviceSlabGARuntimeBuffers &buffers, const std::uint32_t run_seed,
+                                           GeneticConvergenceTelemetryRow &row_out) {
+    namespace convergence = neuroevolution::genetic_algorithm::genetic_convergence;
+    namespace genotype_slab = neuroevolution::genetic_algorithm::genotype_slab;
+
+    row_out = {};
+    const std::size_t population_size = buffers.genotype_slab.current_generation_size;
+    if (population_size == 0) {
+        std::cerr << "Cannot collect genetic convergence telemetry for an empty generation.\n";
+        return false;
+    }
+
+    const std::size_t trainable_weight_count =
+        convergence::TrainableScalarCountForActionCount(buffers.genotype_slab.slab_layout.action_count);
+    const convergence::GeneticConvergenceSamplePlan sample_plan = convergence::MakeSamplePlan(
+        population_size, trainable_weight_count, run_seed, buffers.genotype_slab.current_generation_index);
+    if (sample_plan.organism_indices.empty() || sample_plan.weight_indices.empty()) {
+        std::cerr << "Cannot collect genetic convergence telemetry without sampled organisms and weights.\n";
+        return false;
+    }
+
+    std::vector<std::uint32_t> current_slot_indices(population_size);
+    if (!CheckCuda(cudaMemcpy(current_slot_indices.data(), buffers.genotype_slab.current_slot_indices,
+                              population_size * sizeof(std::uint32_t), cudaMemcpyDeviceToHost),
+                   "copying current generation slot indices for genetic convergence telemetry")) {
+        return false;
+    }
+
+    std::vector<std::uint32_t> sampled_slot_indices{};
+    sampled_slot_indices.reserve(sample_plan.organism_indices.size());
+    for (const std::size_t organism_index : sample_plan.organism_indices) {
+        if (organism_index >= current_slot_indices.size()) {
+            std::cerr << "Genetic convergence telemetry sampled an invalid organism index.\n";
+            return false;
+        }
+
+        const std::uint32_t slot_index = current_slot_indices[organism_index];
+        if (slot_index == genotype_slab::kInvalidSlabSlotIndex) {
+            std::cerr << "Genetic convergence telemetry sampled an organism without a live slab slot.\n";
+            return false;
+        }
+        sampled_slot_indices.push_back(slot_index);
+    }
+
+    std::vector<std::uint32_t> sampled_weight_indices{};
+    sampled_weight_indices.reserve(sample_plan.weight_indices.size());
+    for (const std::size_t weight_index : sample_plan.weight_indices) {
+        if (weight_index > static_cast<std::size_t>(std::numeric_limits<std::uint32_t>::max())) {
+            std::cerr << "Genetic convergence telemetry sampled a weight index outside uint32 range.\n";
+            return false;
+        }
+        sampled_weight_indices.push_back(static_cast<std::uint32_t>(weight_index));
+    }
+
+    DeviceTelemetryBuffer<std::uint32_t> device_slot_indices{};
+    DeviceTelemetryBuffer<std::uint32_t> device_weight_indices{};
+    DeviceTelemetryBuffer<float> device_sampled_values{};
+    const std::size_t sample_value_count = sampled_slot_indices.size() * sampled_weight_indices.size();
+    if (!device_slot_indices.TryAllocate(sampled_slot_indices.size(),
+                                         "allocating genetic convergence sampled slot indices") ||
+        !device_weight_indices.TryAllocate(sampled_weight_indices.size(),
+                                           "allocating genetic convergence sampled weight indices") ||
+        !device_sampled_values.TryAllocate(sample_value_count, "allocating genetic convergence sampled values")) {
+        return false;
+    }
+
+    if (!CheckCuda(cudaMemcpy(device_slot_indices.data(), sampled_slot_indices.data(),
+                              sampled_slot_indices.size() * sizeof(std::uint32_t), cudaMemcpyHostToDevice),
+                   "uploading genetic convergence sampled slot indices") ||
+        !CheckCuda(cudaMemcpy(device_weight_indices.data(), sampled_weight_indices.data(),
+                              sampled_weight_indices.size() * sizeof(std::uint32_t), cudaMemcpyHostToDevice),
+                   "uploading genetic convergence sampled weight indices")) {
+        return false;
+    }
+
+    constexpr int kThreadBlockSize = 256;
+    const int block_count = static_cast<int>((sample_value_count + static_cast<std::size_t>(kThreadBlockSize) - 1U) /
+                                             static_cast<std::size_t>(kThreadBlockSize));
+    GatherGeneticConvergenceSamplesKernel<<<block_count, kThreadBlockSize>>>(
+        buffers.genotype_slab.slab_storage, buffers.genotype_slab.slab_layout, device_slot_indices.data(),
+        sampled_slot_indices.size(), device_weight_indices.data(), sampled_weight_indices.size(),
+        device_sampled_values.data());
+    if (!CheckCuda(cudaGetLastError(), "launching genetic convergence sample gather kernel") ||
+        !CheckCuda(cudaDeviceSynchronize(), "gathering genetic convergence samples")) {
+        return false;
+    }
+
+    std::vector<float> sampled_values(sample_value_count);
+    if (!CheckCuda(cudaMemcpy(sampled_values.data(), device_sampled_values.data(), sample_value_count * sizeof(float),
+                              cudaMemcpyDeviceToHost),
+                   "copying genetic convergence sampled values")) {
+        return false;
+    }
+
+    convergence::GeneticConvergenceMetrics metrics{};
+    if (!convergence::TryComputeMetrics(sampled_values, sampled_slot_indices.size(), sampled_weight_indices.size(),
+                                        sample_plan.pairs, metrics)) {
+        std::cerr << "Could not compute genetic convergence telemetry metrics.\n";
+        return false;
+    }
+
+    row_out.generation = buffers.genotype_slab.current_generation_index;
+    row_out.sample_organisms = sampled_slot_indices.size();
+    row_out.sample_weights = sampled_weight_indices.size();
+    row_out.pair_count = sample_plan.pairs.size();
+    row_out.centroid_distance_mean = metrics.centroid_distance_mean;
+    row_out.centroid_distance_min = metrics.centroid_distance_min;
+    row_out.centroid_distance_max = metrics.centroid_distance_max;
+    row_out.pairwise_distance_mean = metrics.pairwise_distance_mean;
+    row_out.pairwise_distance_min = metrics.pairwise_distance_min;
+    row_out.pairwise_distance_max = metrics.pairwise_distance_max;
+    return true;
+}
+
+bool TryLogGeneticConvergenceForCurrentGeneration(const DeviceSlabGARuntimeBuffers &buffers,
+                                                  const CliConfig &cli_config, TelemetryWriter *telemetry_writer) {
+    if ((telemetry_writer == nullptr) ||
+        !ShouldLogGeneticConvergenceTelemetry(cli_config, buffers.genotype_slab.current_generation_index)) {
+        return true;
+    }
+
+    GeneticConvergenceTelemetryRow row{};
+    const auto start_time = ProgressClock::now();
+    if (!TryCollectGeneticConvergenceTelemetry(buffers, cli_config.seed, row)) {
+        return false;
+    }
+    row.elapsed_ms = std::chrono::duration<float, std::milli>(ProgressClock::now() - start_time).count();
+    if (!telemetry_writer->TryLogGeneticConvergence(row)) {
+        return false;
+    }
+
+    std::ostringstream stream;
+    stream << std::fixed << std::setprecision(1) << "[telemetry] genetic convergence generation=" << row.generation
+           << " sample_organisms=" << row.sample_organisms << " sample_weights=" << row.sample_weights
+           << " pair_count=" << row.pair_count << " elapsed_ms=" << row.elapsed_ms;
+    std::cout << stream.str() << '\n';
+    return true;
+}
+
 bool TryCollectGenerationFitnessTelemetry(const DeviceSlabGARuntimeBuffers &buffers,
                                           const RuntimeWordCounts &runtime_word_counts,
-                                          const bool collect_breeding_metrics,
-                                          GenerationFitnessTelemetryRow &row_out) {
+                                          const bool collect_breeding_metrics, GenerationFitnessTelemetryRow &row_out) {
     row_out = {};
     const std::size_t population_size = buffers.genotype_slab.current_generation_size;
     if (population_size == 0) {
@@ -717,8 +1068,7 @@ bool TryCollectGenerationFitnessTelemetry(const DeviceSlabGARuntimeBuffers &buff
 
 bool TryLogTelemetryForCurrentGeneration(const DeviceSlabGARuntimeBuffers &buffers,
                                          const RuntimeWordCounts &runtime_word_counts,
-                                         const bool collect_breeding_metrics,
-                                         TelemetryWriter *telemetry_writer) {
+                                         const bool collect_breeding_metrics, TelemetryWriter *telemetry_writer) {
     if (telemetry_writer == nullptr) {
         return true;
     }
@@ -733,6 +1083,7 @@ GenerationAssemblyConfig MakeAssemblyConfig(const CliConfig &cli_config) {
     config.parent_selection.tournament_size = 3;
     config.parent_selection.allow_self_parenting = false;
     config.parent_selection.cellular_breeding_radius = cli_config.breeding_radius;
+    config.parent_selection.rank_exponent = cli_config.parent_selection_rank_exponent;
     config.breeding.first_parent_probability = 0.5f;
     config.mutation.mutation_probability = 0.02f;
     config.mutation.mutation_sigma = 0.05f;
@@ -1176,6 +1527,7 @@ int main(int argc, char **argv) {
                       << "  schedule_word_count_step_period_generations="
                       << word_count_schedule.word_count_step_period_generations << '\n'
                       << "  breeding_radius=" << assembly_config.parent_selection.cellular_breeding_radius << '\n'
+                      << "  parent_selection_rank_exponent=" << assembly_config.parent_selection.rank_exponent << '\n'
                       << "  shard_initial_radius=" << TrainingShardRadiusLabel(runtime_word_counts.shard_initial_radius)
                       << '\n'
                       << "  shard_radius_growth_period_generations="
@@ -1191,22 +1543,31 @@ int main(int argc, char **argv) {
         TelemetryWriter telemetry_writer{};
         TelemetryWriter *active_telemetry_writer = nullptr;
         if (cli_config.telemetry_path_was_provided || cli_config.telemetry_dir_was_provided) {
-            const std::filesystem::path telemetry_path =
-                cli_config.telemetry_path_was_provided ? cli_config.telemetry_path
-                                                       : MakeTelemetryPathFromDirectory(cli_config.telemetry_dir);
+            const std::filesystem::path telemetry_path = cli_config.telemetry_path_was_provided
+                                                             ? cli_config.telemetry_path
+                                                             : MakeTelemetryPathFromDirectory(cli_config.telemetry_dir);
             if (!telemetry_writer.TryOpen(telemetry_path)) {
+                DestroyDeviceSlabGARuntimeBuffers(buffers);
+                return 1;
+            }
+            if (cli_config.telemetry_genetic_convergence && !telemetry_writer.TryEnsureGeneticConvergenceTable()) {
                 DestroyDeviceSlabGARuntimeBuffers(buffers);
                 return 1;
             }
 
             active_telemetry_writer = &telemetry_writer;
             std::cout << "  telemetry_path=" << telemetry_writer.path().string() << '\n';
+            if (cli_config.telemetry_genetic_convergence) {
+                std::cout << "  telemetry_genetic_convergence_interval="
+                          << cli_config.telemetry_genetic_convergence_interval << '\n';
+            }
         }
 
         const auto log_telemetry_after_fitness = [&](const DeviceSlabGARuntimeBuffers &telemetry_buffers,
                                                      const RuntimeWordCounts &telemetry_word_counts) {
             return TryLogTelemetryForCurrentGeneration(telemetry_buffers, telemetry_word_counts, true,
-                                                       active_telemetry_writer);
+                                                       active_telemetry_writer) &&
+                   TryLogGeneticConvergenceForCurrentGeneration(telemetry_buffers, cli_config, active_telemetry_writer);
         };
 
         std::cout << std::fixed << std::setprecision(4);
@@ -1257,8 +1618,8 @@ int main(int argc, char **argv) {
                     RuntimeCheckpoint checkpoint{};
                     if (!TryCreatePrebreedingCheckpointOnDevice(buffers, generation_seed, runtime_word_counts,
                                                                 assembly_config, pending_output_embedding_injection,
-                                                                checkpoint, &training_word_catalog,
-                                                                cli_config.verbose, log_telemetry_after_fitness)) {
+                                                                checkpoint, &training_word_catalog, cli_config.verbose,
+                                                                log_telemetry_after_fitness)) {
                         (void)ReportDeviceSlabRuntimeFailure(buffers, "Checkpoint creation");
                         DestroyDeviceSlabGARuntimeBuffers(buffers);
                         return 1;
@@ -1339,7 +1700,8 @@ int main(int argc, char **argv) {
             DestroyDeviceSlabGARuntimeBuffers(buffers);
             return 1;
         }
-        if (!TryLogTelemetryForCurrentGeneration(buffers, runtime_word_counts, false, active_telemetry_writer)) {
+        if (!TryLogTelemetryForCurrentGeneration(buffers, runtime_word_counts, false, active_telemetry_writer) ||
+            !TryLogGeneticConvergenceForCurrentGeneration(buffers, cli_config, active_telemetry_writer)) {
             DestroyDeviceSlabGARuntimeBuffers(buffers);
             return 1;
         }

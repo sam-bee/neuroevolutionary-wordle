@@ -13,11 +13,14 @@ namespace neuroevolution::genetic_algorithm {
 using SelectionRandomEngine = std::mt19937;
 
 constexpr std::size_t kNoIndividualIndex = std::numeric_limits<std::size_t>::max();
+constexpr float kDefaultParentSelectionRankExponent = 0.5f;
+constexpr float kMaximumParentSelectionRankExponent = 4.0f;
 
 struct ParentSelectionConfig {
     std::size_t tournament_size = 3;
     bool allow_self_parenting = false;
     std::size_t cellular_breeding_radius = spatial::kCellularBreedingRadius;
+    float rank_exponent = kDefaultParentSelectionRankExponent;
 };
 
 struct ParentPair {
@@ -26,7 +29,8 @@ struct ParentPair {
 };
 
 constexpr NEUROEVOLUTION_HOST_DEVICE bool IsValidParentSelectionConfig(const ParentSelectionConfig &config) noexcept {
-    return (config.tournament_size > 0) && (config.cellular_breeding_radius > 0);
+    return (config.tournament_size > 0) && (config.cellular_breeding_radius > 0) && (config.rank_exponent >= 0.0f) &&
+           (config.rank_exponent <= kMaximumParentSelectionRankExponent);
 }
 
 namespace detail {

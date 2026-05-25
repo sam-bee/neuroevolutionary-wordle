@@ -28,6 +28,10 @@ __device__ inline float NextUniform01(DeviceRandomState &state) {
     return curand_uniform(&state.philox);
 }
 
+__device__ inline std::uint32_t NextRandomUInt32(DeviceRandomState &state) {
+    return curand(&state.philox);
+}
+
 __device__ inline bool SampleBernoulli(DeviceRandomState &state, const float probability) {
     return NextUniform01(state) < probability;
 }

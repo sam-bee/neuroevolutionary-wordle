@@ -4,7 +4,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>GA Telemetry</title>
-    <link rel="stylesheet" href="/static/styles.css?v=nav-tree-1">
+    <link rel="stylesheet" href="/static/styles.css?v=genetic-convergence-1">
     <script src="/static/chart.umd.js"></script>
   </head>
   <body>
@@ -36,6 +36,12 @@
             <a class="nav-section-link" href="#breeding">Breeding</a>
             <ol>
               <li><a href="#breeding-parent-usage">Parent Usage</a></li>
+            </ol>
+          </li>
+          <li id="genetic-convergence-nav">
+            <a class="nav-section-link" href="#genetic-convergence">Genetic Convergence</a>
+            <ol>
+              <li><a href="#genetic-convergence-distances">Distance Means</a></li>
             </ol>
           </li>
         </ol>
@@ -118,6 +124,19 @@
             </div>
           </details>
         </details>
+        <details id="genetic-convergence" class="metric-section" open>
+          <summary>
+            <span>Genetic convergence</span>
+          </summary>
+          <details id="genetic-convergence-distances" class="metric-subsection" open>
+            <summary>
+              <span>Genetic convergence over time</span>
+            </summary>
+            <div class="chart-shell chart-shell-small">
+              <canvas id="genetic-convergence-chart"></canvas>
+            </div>
+          </details>
+        </details>
       </main>
     </div>
     <div id="chart-modal" class="chart-modal" aria-hidden="true">
@@ -132,6 +151,6 @@
         </div>
       </section>
     </div>
-    <script src="/static/app.js?v=nav-tree-1"></script>
+    <script src="/static/app.js?v=genetic-convergence-1"></script>
   </body>
 </html>

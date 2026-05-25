@@ -9,8 +9,8 @@
 namespace neuroevolution::spatial {
 
 constexpr std::size_t kCellularBreedingRadius = 2;
-constexpr std::size_t kMaxCellularSecondParentCandidateCount =
-    ((2 * kCellularBreedingRadius) + 1) * ((2 * kCellularBreedingRadius) + 1) - 1;
+constexpr std::size_t kMaxCellularParentCandidateCount =
+    ((2 * kCellularBreedingRadius) + 1) * ((2 * kCellularBreedingRadius) + 1);
 constexpr float kPositiveSelectionFitnessFloor = 1.40129846e-45f;
 constexpr std::size_t kMaxSizeT = static_cast<std::size_t>(-1);
 
@@ -21,7 +21,7 @@ struct CellularGridShape {
 };
 
 struct CellularNeighborList {
-    common::FixedBuffer<std::size_t, kMaxCellularSecondParentCandidateCount> indices{};
+    common::FixedBuffer<std::size_t, kMaxCellularParentCandidateCount> indices{};
     std::size_t count = 0;
 };
 
@@ -198,21 +198,17 @@ constexpr NEUROEVOLUTION_HOST_DEVICE bool TryCollectMooreRadiusNeighbors(const C
          row_offset <= static_cast<std::ptrdiff_t>(radius); ++row_offset) {
         for (std::ptrdiff_t column_offset = -static_cast<std::ptrdiff_t>(radius);
              column_offset <= static_cast<std::ptrdiff_t>(radius); ++column_offset) {
-            if ((row_offset == 0) && (column_offset == 0)) {
-                continue;
-            }
-
             const std::size_t neighbor_row =
                 WrapToroidalCoordinate(static_cast<std::ptrdiff_t>(focal_row) + row_offset, shape.row_count);
             const std::size_t neighbor_column =
                 WrapToroidalCoordinate(static_cast<std::ptrdiff_t>(focal_column) + column_offset, shape.column_count);
             const std::size_t neighbor_index = GridIndexFromRowColumn(shape, neighbor_row, neighbor_column);
 
-            if ((neighbor_index == focal_cell_index) || ContainsNeighborIndex(neighbors_out, neighbor_index)) {
+            if (ContainsNeighborIndex(neighbors_out, neighbor_index)) {
                 continue;
             }
 
-            if (neighbors_out.count >= kMaxCellularSecondParentCandidateCount) {
+            if (neighbors_out.count >= kMaxCellularParentCandidateCount) {
                 return false;
             }
 

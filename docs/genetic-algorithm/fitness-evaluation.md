@@ -104,15 +104,14 @@ stored range is:
 
 where `epsilon` is the project's current positive selection-fitness floor.
 
-So even a genome with raw score `0` does not remain at exact zero after normalization. The small positive floor exists
-to keep roulette selection well-defined.
+So even a genome with raw score `0` does not remain at exact zero after normalization.
 
 ## What Gets Stored and Reported
 
 The normalized fitness value is what gets:
 
 - stored on the current generation
-- used for parent selection
+- used to rank local parent candidates
 - aggregated into generation summaries such as best and average fitness
 
 So the fitness values printed by `run_genetic_algorithm` are already normalized, not raw episode-score sums.

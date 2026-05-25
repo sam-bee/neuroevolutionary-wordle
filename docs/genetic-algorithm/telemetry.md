@@ -53,6 +53,35 @@ The parent count columns are collected from the next-generation assembly plan af
 recombination/mutation. They are nullable because the terminal generation can be evaluated without a next-generation
 assembly plan.
 
+## Genetic convergence telemetry
+
+Genetic convergence telemetry is separately opt-in:
+
+```sh
+./build/run_genetic_algorithm --generations 100 --telemetry-dir telemetry/runs --telemetry-genetic-convergence
+```
+
+It samples up to 256 live organisms and up to 8192 shared trainable weight positions every 10 generations by default.
+Use `--telemetry-genetic-convergence-interval N` to change the interval. Each sample writes one row to:
+
+```sql
+CREATE TABLE IF NOT EXISTS genetic_convergence_telemetry (
+    generation INTEGER NOT NULL PRIMARY KEY,
+    sample_organisms INTEGER NOT NULL,
+    sample_weights INTEGER NOT NULL,
+    pair_count INTEGER NOT NULL,
+    centroid_distance_mean REAL NOT NULL,
+    centroid_distance_min REAL NOT NULL,
+    centroid_distance_max REAL NOT NULL,
+    pairwise_distance_mean REAL NOT NULL,
+    pairwise_distance_min REAL NOT NULL,
+    pairwise_distance_max REAL NOT NULL,
+    elapsed_ms REAL NOT NULL
+);
+```
+
+The CLI prints a `[telemetry] genetic convergence ... elapsed_ms=...` line whenever the calculation runs.
+
 ## Run the visualiser
 
 Build and start the web service with Docker Compose:

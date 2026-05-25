@@ -237,6 +237,8 @@ bool TestParentSelectionUsesTournamentLogicAndSupportsParentPairs() {
 
     ParentSelectionConfig invalid_config = valid_config;
     invalid_config.tournament_size = 0;
+    ParentSelectionConfig invalid_rank_config = valid_config;
+    invalid_rank_config.rank_exponent = -0.1f;
 
     SelectionRandomEngine random_engine_a(7);
     SelectionRandomEngine random_engine_b(7);
@@ -265,6 +267,8 @@ bool TestParentSelectionUsesTournamentLogicAndSupportsParentPairs() {
     bool ok = true;
     ok &= ExpectTrue(IsValidParentSelectionConfig(valid_config), "Expected valid parent-selection config");
     ok &= ExpectTrue(!IsValidParentSelectionConfig(invalid_config), "Expected zero tournament size to be rejected");
+    ok &= ExpectTrue(!IsValidParentSelectionConfig(invalid_rank_config),
+                     "Expected negative parent-selection rank exponent to be rejected");
     ok &= ExpectTrue(select_ok, "Expected parent selection to succeed for a fitted population");
     ok &= ExpectTrue(selected_parent_index == 3,
                      "Expected full-population tournament selection to choose the fittest parent");

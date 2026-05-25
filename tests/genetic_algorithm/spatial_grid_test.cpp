@@ -76,22 +76,18 @@ bool TestToroidalWrappingWrapsBothDirections() {
     return ok;
 }
 
-bool TestRadiusTwoMooreNeighborhoodHasTwentyFourDistinctCandidatesOnFiveByFiveGrid() {
+bool TestRadiusTwoMooreNeighborhoodHasTwentyFiveDistinctCandidatesOnFiveByFiveGrid() {
     CellularGridShape shape{};
     CellularNeighborList neighbors{};
     bool ok = true;
     ok &= TryMakeCellularGridShape(25, shape);
     ok &= TryCollectCellularSecondParentCandidates(shape, 12, neighbors);
-    ok &= ExpectTrue(neighbors.count == 24, "Expected 5x5 radius-two Moore neighborhood to have 24 candidates");
-    ok &= ExpectTrue(!ContainsNeighborIndex(neighbors, 12), "Expected focal cell to be excluded from candidates");
+    ok &= ExpectTrue(neighbors.count == 25, "Expected 5x5 radius-two Moore neighborhood to have 25 candidates");
+    ok &= ExpectTrue(ContainsNeighborIndex(neighbors, 12), "Expected focal cell to be included in candidates");
 
     for (std::size_t cell_index = 0; cell_index < shape.cell_count; ++cell_index) {
-        if (cell_index == 12) {
-            continue;
-        }
-
         ok &= ExpectTrue(ContainsNeighborIndex(neighbors, cell_index),
-                         "Expected every other 5x5 cell to appear in the radius-two neighborhood");
+                         "Expected every 5x5 cell to appear in the radius-two neighborhood");
     }
 
     return ok;
@@ -114,9 +110,9 @@ bool TestRadiusTwoMooreNeighborhoodDeduplicatesOnSmallToroidalGrids() {
     bool ok = true;
     ok &= TryMakeCellularGridShape(9, shape);
     ok &= TryCollectCellularSecondParentCandidates(shape, 4, neighbors);
-    ok &= ExpectTrue(neighbors.count == 8,
-                     "Expected a 3x3 toroidal grid to deduplicate radius-two neighbors down to the other 8 cells");
-    ok &= ExpectTrue(!ContainsNeighborIndex(neighbors, 4), "Expected focal cell exclusion to survive deduplication");
+    ok &= ExpectTrue(neighbors.count == 9,
+                     "Expected a 3x3 toroidal grid to deduplicate radius-two candidates down to all 9 cells");
+    ok &= ExpectTrue(ContainsNeighborIndex(neighbors, 4), "Expected focal cell inclusion to survive deduplication");
     return ok;
 }
 
@@ -139,7 +135,7 @@ int main() {
         return 1;
     }
 
-    if (!TestRadiusTwoMooreNeighborhoodHasTwentyFourDistinctCandidatesOnFiveByFiveGrid()) {
+    if (!TestRadiusTwoMooreNeighborhoodHasTwentyFiveDistinctCandidatesOnFiveByFiveGrid()) {
         return 1;
     }
 

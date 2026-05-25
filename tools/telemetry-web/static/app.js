@@ -7,6 +7,7 @@ const distinctValuesChartCanvas = document.getElementById("distinct-values-chart
 const populationChartCanvas = document.getElementById("population-chart");
 const trainingDataChartCanvas = document.getElementById("training-data-chart");
 const breedingParentUsageChartCanvas = document.getElementById("breeding-parent-usage-chart");
+const geneticConvergenceChartCanvas = document.getElementById("genetic-convergence-chart");
 const seriesControls = document.getElementById("series-controls");
 const sectionNavLinks = document.querySelectorAll(".section-nav a");
 const chartModal = document.getElementById("chart-modal");
@@ -20,6 +21,7 @@ let distinctValuesChart = null;
 let populationChart = null;
 let trainingDataChart = null;
 let breedingParentUsageChart = null;
+let geneticConvergenceChart = null;
 let modalChart = null;
 const fitnessSeriesDefinitions = [
   { key: "min", label: "min fitness", color: "#7aa2f7" },
@@ -79,12 +81,21 @@ async function loadSelectedRun() {
     return;
   }
 
-  const rows = await fetchJson(`/api/runs/${encodeURIComponent(filename)}/fitness`);
-  setStatus(`${filename}: ${rows.length} generation${rows.length === 1 ? "" : "s"}.`);
-  updateCharts(rows);
+  const [rows, geneticConvergenceRows] = await Promise.all([
+    fetchJson(`/api/runs/${encodeURIComponent(filename)}/fitness`),
+    fetchJson(`/api/runs/${encodeURIComponent(filename)}/genetic-convergence`),
+  ]);
+  const convergenceText =
+    geneticConvergenceRows.length > 0
+      ? `, ${geneticConvergenceRows.length} genetic convergence sample${
+          geneticConvergenceRows.length === 1 ? "" : "s"
+        }`
+      : "";
+  setStatus(`${filename}: ${rows.length} generation${rows.length === 1 ? "" : "s"}${convergenceText}.`);
+  updateCharts(rows, geneticConvergenceRows);
 }
 
-function updateCharts(rows) {
+function updateCharts(rows, geneticConvergenceRows = []) {
   const labels = rows.map((row) => row.generation);
   const fitnessDatasets = fitnessSeriesDefinitions.map((definition) =>
     dataset(
@@ -134,6 +145,26 @@ function updateCharts(rows) {
       dataset("multiple-child parents", rows.map((row) => row.parent_multiple_children_count), "#e0af68"),
     ],
     "Parent Count",
+  );
+
+  const geneticConvergenceLabels = geneticConvergenceRows.map((row) => row.generation);
+  geneticConvergenceChart = updateOrCreateChart(
+    geneticConvergenceChart,
+    geneticConvergenceChartCanvas,
+    geneticConvergenceLabels,
+    [
+      dataset(
+        "centroid_distance_mean",
+        geneticConvergenceRows.map((row) => row.centroid_distance_mean),
+        "#73daca",
+      ),
+      dataset(
+        "pairwise_distance_mean",
+        geneticConvergenceRows.map((row) => row.pairwise_distance_mean),
+        "#e0af68",
+      ),
+    ],
+    "Genetic Distance",
   );
 }
 
@@ -318,6 +349,7 @@ attachChartModal(distinctValuesChartCanvas, () => distinctValuesChart, "Distinct
 attachChartModal(populationChartCanvas, () => populationChart, "Population Size");
 attachChartModal(trainingDataChartCanvas, () => trainingDataChart, "Training Words");
 attachChartModal(breedingParentUsageChartCanvas, () => breedingParentUsageChart, "Parent Count");
+attachChartModal(geneticConvergenceChartCanvas, () => geneticConvergenceChart, "Genetic Distance");
 
 renderSeriesControls();
 loadRuns().catch((error) => setStatus(error.message));
