@@ -151,8 +151,8 @@ void PrintUsage() {
               << ", shard_release_centroid_distance_threshold="
               << neuroevolution::training_folder::kDefaultTrainingShardReleaseCentroidDistanceThreshold << ".\n"
               << "After the foundation shard, a new shard is released only when the minimum gap has elapsed and "
-                 "either centroid distance is at or below the threshold or p99 fitness beats the previous release "
-                 "baseline.\n"
+                 "either centroid distance is at or below the threshold or p99 fitness beats the p99 baseline "
+                 "recorded immediately before the previous release.\n"
               << "Spatial training-data shards grow their evaluation radius every "
               << neuroevolution::training_folder::kDefaultShardRadiusGrowthPeriodGenerations
               << " generations by default.\n"
