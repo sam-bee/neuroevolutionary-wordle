@@ -184,8 +184,9 @@ GenerationAssemblyConfig MakeAssemblyConfig() {
     GenerationAssemblyConfig config{};
     config.parent_selection.tournament_size = 3;
     config.parent_selection.allow_self_parenting = false;
-    config.breeding.first_parent_probability = 1.0f;
-    config.breeding.output_tail_row_arithmetic_recombination_probability = 0.0f;
+    config.breeding.crossover_temperature_level1 = 0.0f;
+    config.breeding.crossover_temperature_level2 = 0.0f;
+    config.breeding.crossover_temperature_level3 = 0.0f;
     config.mutation.mutation_probability = 0.0f;
     config.mutation.mutation_sigma = 0.0f;
     config.mutation.output_tail_row_scale_mutation_probability = 0.0f;

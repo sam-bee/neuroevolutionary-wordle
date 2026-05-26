@@ -33,6 +33,13 @@ __device__ inline std::uint32_t NextRandomUInt32(DeviceRandomState &state) {
 }
 
 __device__ inline bool SampleBernoulli(DeviceRandomState &state, const float probability) {
+    if (probability <= 0.0f) {
+        return false;
+    }
+    if (probability >= 1.0f) {
+        return true;
+    }
+
     return NextUniform01(state) < probability;
 }
 
@@ -145,27 +152,6 @@ __device__ inline void InitializeRandomGenome(std::uint8_t *genome_bytes, const 
 }
 
 template <std::size_t Size>
-__device__ inline void BreedAndMutateFixedBuffer(const common::FixedBuffer<common::Float16, Size> &first_parent,
-                                                 const common::FixedBuffer<common::Float16, Size> &second_parent,
-                                                 common::FixedBuffer<common::Float16, Size> &child,
-                                                 DeviceRandomState &random_state, const BreedingConfig &breeding_config,
-                                                 const MutationConfig &mutation_config) {
-    for (std::size_t index = 0; index < Size; ++index) {
-        float value = SampleBernoulli(random_state, breeding_config.first_parent_probability)
-                          ? common::ToFloat(first_parent[index])
-                          : common::ToFloat(second_parent[index]);
-
-        if ((mutation_config.mutation_probability > 0.0f) &&
-            SampleBernoulli(random_state, mutation_config.mutation_probability) &&
-            (mutation_config.mutation_sigma > 0.0f)) {
-            value += mutation_config.mutation_sigma * SampleStandardNormal(random_state);
-        }
-
-        child[index] = common::ToFloat16(value);
-    }
-}
-
-template <std::size_t Size>
 __device__ inline void CopyFixedBuffer(const common::FixedBuffer<common::Float16, Size> &source,
                                        common::FixedBuffer<common::Float16, Size> &target) {
     for (std::size_t index = 0; index < Size; ++index) {
@@ -173,8 +159,88 @@ __device__ inline void CopyFixedBuffer(const common::FixedBuffer<common::Float16
     }
 }
 
-__device__ inline float SampleOutputTailRowBlendLambda(DeviceRandomState &random_state) {
-    return output_tail_ops::MapArcsineUnitSampleToBlendLambda(NextUniform01(random_state));
+template <std::size_t Size>
+__device__ inline void MutateFixedBuffer(common::FixedBuffer<common::Float16, Size> &buffer,
+                                         DeviceRandomState &random_state, const MutationConfig &mutation_config) {
+    if ((mutation_config.mutation_probability <= 0.0f) || (mutation_config.mutation_sigma <= 0.0f)) {
+        return;
+    }
+
+    for (std::size_t index = 0; index < Size; ++index) {
+        if (SampleBernoulli(random_state, mutation_config.mutation_probability)) {
+            const float value =
+                common::ToFloat(buffer[index]) + (mutation_config.mutation_sigma * SampleStandardNormal(random_state));
+            buffer[index] = common::ToFloat16(value);
+        }
+    }
+}
+
+template <std::size_t InputSize, std::size_t OutputSize, typename DenseLayerParameters>
+__device__ inline void CopyDenseLayerNeuron(const DenseLayerParameters &source, DenseLayerParameters &target,
+                                            const std::size_t output_index) {
+    for (std::size_t input_index = 0; input_index < InputSize; ++input_index) {
+        const std::size_t weight_index = (output_index * InputSize) + input_index;
+        target.weights[weight_index] = source.weights[weight_index];
+    }
+    target.biases[output_index] = source.biases[output_index];
+}
+
+template <typename DenseLayerParameters>
+__device__ inline void CopyDenseLayer(const DenseLayerParameters &source, DenseLayerParameters &target) {
+    CopyFixedBuffer(source.weights, target.weights);
+    CopyFixedBuffer(source.biases, target.biases);
+}
+
+template <std::size_t InputSize, std::size_t OutputSize, typename DenseLayerParameters>
+__device__ inline void CopyDenseLayerFromParent(const DenseLayerParameters &first_parent,
+                                                const DenseLayerParameters &second_parent,
+                                                DenseLayerParameters &child,
+                                                const bool source_is_first_parent) {
+    if (source_is_first_parent) {
+        CopyDenseLayer(first_parent, child);
+    } else {
+        CopyDenseLayer(second_parent, child);
+    }
+}
+
+template <std::size_t InputSize, std::size_t OutputSize, typename DenseLayerParameters>
+__device__ inline void CopyDenseLayerNeuronFromParent(const DenseLayerParameters &first_parent,
+                                                      const DenseLayerParameters &second_parent,
+                                                      DenseLayerParameters &child,
+                                                      const bool source_is_first_parent,
+                                                      const std::size_t output_index) {
+    if (source_is_first_parent) {
+        CopyDenseLayerNeuron<InputSize, OutputSize>(first_parent, child, output_index);
+    } else {
+        CopyDenseLayerNeuron<InputSize, OutputSize>(second_parent, child, output_index);
+    }
+}
+
+template <std::size_t InputSize, std::size_t OutputSize, typename DenseLayerParameters>
+__device__ inline void RecombineDenseLayer(const DenseLayerParameters &first_parent,
+                                           const DenseLayerParameters &second_parent, DenseLayerParameters &child,
+                                           DeviceRandomState &random_state, const BreedingConfig &breeding_config,
+                                           const bool layer_source_is_first_parent) {
+    CopyDenseLayerFromParent<InputSize, OutputSize>(first_parent, second_parent, child, layer_source_is_first_parent);
+    if (SampleBernoulli(random_state, breeding_config.crossover_temperature_level3)) {
+        const std::size_t neuron_index = SampleIndex(random_state, OutputSize);
+        CopyDenseLayerNeuronFromParent<InputSize, OutputSize>(first_parent, second_parent, child,
+                                                              !layer_source_is_first_parent, neuron_index);
+    }
+}
+
+template <std::size_t InputSize, std::size_t OutputSize>
+__device__ inline void MutateDenseLayer(model::input_encoder::DenseLayerParameters<InputSize, OutputSize> &layer,
+                                        DeviceRandomState &random_state, const MutationConfig &mutation_config) {
+    MutateFixedBuffer(layer.weights, random_state, mutation_config);
+    MutateFixedBuffer(layer.biases, random_state, mutation_config);
+}
+
+template <std::size_t InputSize, std::size_t OutputSize>
+__device__ inline void MutateDenseLayer(model::dense_trunk::DenseLayerParameters<InputSize, OutputSize> &layer,
+                                        DeviceRandomState &random_state, const MutationConfig &mutation_config) {
+    MutateFixedBuffer(layer.weights, random_state, mutation_config);
+    MutateFixedBuffer(layer.biases, random_state, mutation_config);
 }
 
 template <std::size_t Size>
@@ -199,55 +265,131 @@ __device__ inline void MutateOutputTailRow(common::FixedBuffer<common::Float16, 
     }
 }
 
-template <std::size_t Size>
-__device__ inline void BreedAndMutateOutputTailRow(const common::FixedBuffer<common::Float16, Size> &first_parent,
-                                                   const common::FixedBuffer<common::Float16, Size> &second_parent,
-                                                   common::FixedBuffer<common::Float16, Size> &child,
+__device__ inline bool MaybeUseAlternateParent(DeviceRandomState &random_state, const float probability,
+                                               const bool base_source_is_first_parent) {
+    return SampleBernoulli(random_state, probability) ? !base_source_is_first_parent : base_source_is_first_parent;
+}
+
+__device__ inline void RecombinePolicyModelParameters(const genome::PolicyModelParameters &first_parent,
+                                                      const genome::PolicyModelParameters &second_parent,
+                                                      genome::PolicyModelParameters &child,
+                                                      DeviceRandomState &random_state,
+                                                      const BreedingConfig &breeding_config) {
+    const bool input_encoder_source_is_first_parent =
+        !SampleBernoulli(random_state, breeding_config.crossover_temperature_level1);
+    RecombineDenseLayer<model::input_encoder::kTurnFeatureCount, model::input_encoder::kEncoderHiddenSize>(
+        first_parent.input_encoder.input_to_hidden, second_parent.input_encoder.input_to_hidden,
+        child.input_encoder.input_to_hidden, random_state, breeding_config,
+        MaybeUseAlternateParent(random_state, breeding_config.crossover_temperature_level2,
+                                input_encoder_source_is_first_parent));
+    RecombineDenseLayer<model::input_encoder::kEncoderHiddenSize, model::input_encoder::kEncoderOutputSize>(
+        first_parent.input_encoder.hidden_to_output, second_parent.input_encoder.hidden_to_output,
+        child.input_encoder.hidden_to_output, random_state, breeding_config,
+        MaybeUseAlternateParent(random_state, breeding_config.crossover_temperature_level2,
+                                input_encoder_source_is_first_parent));
+
+    const bool dense_trunk_source_is_first_parent =
+        !SampleBernoulli(random_state, breeding_config.crossover_temperature_level1);
+    RecombineDenseLayer<model::dense_trunk::kDenseTrunkInputSize, model::dense_trunk::kDenseTrunkHiddenSize0>(
+        first_parent.dense_trunk.input_to_hidden0, second_parent.dense_trunk.input_to_hidden0,
+        child.dense_trunk.input_to_hidden0, random_state, breeding_config,
+        MaybeUseAlternateParent(random_state, breeding_config.crossover_temperature_level2,
+                                dense_trunk_source_is_first_parent));
+    RecombineDenseLayer<model::dense_trunk::kDenseTrunkHiddenSize0, model::dense_trunk::kDenseTrunkHiddenSize1>(
+        first_parent.dense_trunk.hidden0_to_hidden1, second_parent.dense_trunk.hidden0_to_hidden1,
+        child.dense_trunk.hidden0_to_hidden1, random_state, breeding_config,
+        MaybeUseAlternateParent(random_state, breeding_config.crossover_temperature_level2,
+                                dense_trunk_source_is_first_parent));
+    RecombineDenseLayer<model::dense_trunk::kDenseTrunkHiddenSize1, model::dense_trunk::kDenseTrunkOutputSize>(
+        first_parent.dense_trunk.hidden1_to_output, second_parent.dense_trunk.hidden1_to_output,
+        child.dense_trunk.hidden1_to_output, random_state, breeding_config,
+        MaybeUseAlternateParent(random_state, breeding_config.crossover_temperature_level2,
+                                dense_trunk_source_is_first_parent));
+}
+
+__device__ inline void MutatePolicyModelParameters(genome::PolicyModelParameters &parameters,
                                                    DeviceRandomState &random_state,
-                                                   const BreedingConfig &breeding_config,
                                                    const MutationConfig &mutation_config) {
-    if ((breeding_config.output_tail_row_arithmetic_recombination_probability > 0.0f) &&
-        SampleBernoulli(random_state, breeding_config.output_tail_row_arithmetic_recombination_probability)) {
-        const float lambda = SampleOutputTailRowBlendLambda(random_state);
-        const float other_lambda = 1.0f - lambda;
-        for (std::size_t index = 0; index < Size; ++index) {
-            const float blended_value = (lambda * common::ToFloat(first_parent[index])) +
-                                        (other_lambda * common::ToFloat(second_parent[index]));
-            child[index] = common::ToFloat16(blended_value);
-        }
-    } else if (SampleBernoulli(random_state, breeding_config.first_parent_probability)) {
+    MutateDenseLayer(parameters.input_encoder.input_to_hidden, random_state, mutation_config);
+    MutateDenseLayer(parameters.input_encoder.hidden_to_output, random_state, mutation_config);
+    MutateDenseLayer(parameters.dense_trunk.input_to_hidden0, random_state, mutation_config);
+    MutateDenseLayer(parameters.dense_trunk.hidden0_to_hidden1, random_state, mutation_config);
+    MutateDenseLayer(parameters.dense_trunk.hidden1_to_output, random_state, mutation_config);
+}
+
+__device__ inline void CopyOutputTailRowFromParent(const genome::TrainableActionEmbeddingTail &first_parent,
+                                                   const genome::TrainableActionEmbeddingTail &second_parent,
+                                                   genome::TrainableActionEmbeddingTail &child,
+                                                   const bool source_is_first_parent) {
+    if (source_is_first_parent) {
         CopyFixedBuffer(first_parent, child);
     } else {
         CopyFixedBuffer(second_parent, child);
     }
-
-    MutateOutputTailRow(child, random_state, mutation_config);
 }
 
-template <std::size_t InputSize, std::size_t OutputSize>
-__device__ inline void
-BreedAndMutateDenseLayer(const model::input_encoder::DenseLayerParameters<InputSize, OutputSize> &first_parent,
-                         const model::input_encoder::DenseLayerParameters<InputSize, OutputSize> &second_parent,
-                         model::input_encoder::DenseLayerParameters<InputSize, OutputSize> &child,
-                         DeviceRandomState &random_state, const BreedingConfig &breeding_config,
-                         const MutationConfig &mutation_config) {
-    BreedAndMutateFixedBuffer(first_parent.weights, second_parent.weights, child.weights, random_state, breeding_config,
-                              mutation_config);
-    BreedAndMutateFixedBuffer(first_parent.biases, second_parent.biases, child.biases, random_state, breeding_config,
-                              mutation_config);
+__device__ inline void SpliceOutputTailRow(const genome::TrainableActionEmbeddingTail &first_parent,
+                                           const genome::TrainableActionEmbeddingTail &second_parent,
+                                           genome::TrainableActionEmbeddingTail &child,
+                                           const bool prefix_source_is_first_parent,
+                                           const std::size_t crossover_point) {
+    constexpr std::size_t kTailFeatureCount = model::output_embedding::kTrainableFeatureDimension;
+    for (std::size_t feature_index = 0; feature_index < kTailFeatureCount; ++feature_index) {
+        const bool source_is_first_parent =
+            (feature_index < crossover_point) ? prefix_source_is_first_parent : !prefix_source_is_first_parent;
+        child[feature_index] = source_is_first_parent ? first_parent[feature_index] : second_parent[feature_index];
+    }
 }
 
-template <std::size_t InputSize, std::size_t OutputSize>
-__device__ inline void
-BreedAndMutateDenseLayer(const model::dense_trunk::DenseLayerParameters<InputSize, OutputSize> &first_parent,
-                         const model::dense_trunk::DenseLayerParameters<InputSize, OutputSize> &second_parent,
-                         model::dense_trunk::DenseLayerParameters<InputSize, OutputSize> &child,
-                         DeviceRandomState &random_state, const BreedingConfig &breeding_config,
-                         const MutationConfig &mutation_config) {
-    BreedAndMutateFixedBuffer(first_parent.weights, second_parent.weights, child.weights, random_state, breeding_config,
-                              mutation_config);
-    BreedAndMutateFixedBuffer(first_parent.biases, second_parent.biases, child.biases, random_state, breeding_config,
-                              mutation_config);
+__device__ inline std::size_t SampleOutputTailCrossoverPoint(DeviceRandomState &random_state) {
+    constexpr std::size_t kTailFeatureCount = model::output_embedding::kTrainableFeatureDimension;
+    if (kTailFeatureCount <= 1) {
+        return 0;
+    }
+
+    return 1 + SampleIndex(random_state, kTailFeatureCount - 1);
+}
+
+__device__ inline void RecombineOutputTailRows(const genome::TrainableActionEmbeddingTail *first_parent_tail_rows,
+                                               const genome::TrainableActionEmbeddingTail *second_parent_tail_rows,
+                                               const std::size_t action_count,
+                                               genome::TrainableActionEmbeddingTail *child_tail_rows,
+                                               DeviceRandomState &random_state,
+                                               const BreedingConfig &breeding_config) {
+    const bool output_rows_source_is_first_parent =
+        !SampleBernoulli(random_state, breeding_config.crossover_temperature_level1);
+    for (std::size_t action_index = 0; action_index < action_count; ++action_index) {
+        CopyOutputTailRowFromParent(first_parent_tail_rows[action_index], second_parent_tail_rows[action_index],
+                                    child_tail_rows[action_index], output_rows_source_is_first_parent);
+    }
+
+    bool has_level2_row_swap = false;
+    std::size_t level2_row_swap_index = 0;
+    if ((action_count > 0) && SampleBernoulli(random_state, breeding_config.crossover_temperature_level2)) {
+        has_level2_row_swap = true;
+        level2_row_swap_index = SampleIndex(random_state, action_count);
+        CopyOutputTailRowFromParent(first_parent_tail_rows[level2_row_swap_index],
+                                    second_parent_tail_rows[level2_row_swap_index],
+                                    child_tail_rows[level2_row_swap_index], !output_rows_source_is_first_parent);
+    }
+
+    if ((action_count > 0) && SampleBernoulli(random_state, breeding_config.crossover_temperature_level3)) {
+        const std::size_t splice_index = SampleIndex(random_state, action_count);
+        const bool row_source_is_first_parent =
+            (has_level2_row_swap && (splice_index == level2_row_swap_index)) ? !output_rows_source_is_first_parent
+                                                                             : output_rows_source_is_first_parent;
+        SpliceOutputTailRow(first_parent_tail_rows[splice_index], second_parent_tail_rows[splice_index],
+                            child_tail_rows[splice_index], row_source_is_first_parent,
+                            SampleOutputTailCrossoverPoint(random_state));
+    }
+}
+
+__device__ inline void MutateOutputTailRows(genome::TrainableActionEmbeddingTail *tail_rows,
+                                            const std::size_t action_count, DeviceRandomState &random_state,
+                                            const MutationConfig &mutation_config) {
+    for (std::size_t action_index = 0; action_index < action_count; ++action_index) {
+        MutateOutputTailRow(tail_rows[action_index], random_state, mutation_config);
+    }
 }
 
 __device__ inline void CopyGenome(const std::uint8_t *source_genome_bytes, const std::size_t source_action_count,
@@ -269,31 +411,12 @@ __device__ inline void BreedAndMutateGenome(const std::uint8_t *first_parent_gen
                                             const std::size_t action_count, std::uint8_t *child_genome_bytes,
                                             DeviceRandomState &random_state, const BreedingConfig &breeding_config,
                                             const MutationConfig &mutation_config) {
-    BreedAndMutateDenseLayer(
-        genome::GenomePolicyModelParameters(first_parent_genome_bytes).input_encoder.input_to_hidden,
-        genome::GenomePolicyModelParameters(second_parent_genome_bytes).input_encoder.input_to_hidden,
-        genome::GenomePolicyModelParameters(child_genome_bytes).input_encoder.input_to_hidden, random_state,
-        breeding_config, mutation_config);
-    BreedAndMutateDenseLayer(
-        genome::GenomePolicyModelParameters(first_parent_genome_bytes).input_encoder.hidden_to_output,
-        genome::GenomePolicyModelParameters(second_parent_genome_bytes).input_encoder.hidden_to_output,
-        genome::GenomePolicyModelParameters(child_genome_bytes).input_encoder.hidden_to_output, random_state,
-        breeding_config, mutation_config);
-    BreedAndMutateDenseLayer(
-        genome::GenomePolicyModelParameters(first_parent_genome_bytes).dense_trunk.input_to_hidden0,
-        genome::GenomePolicyModelParameters(second_parent_genome_bytes).dense_trunk.input_to_hidden0,
-        genome::GenomePolicyModelParameters(child_genome_bytes).dense_trunk.input_to_hidden0, random_state,
-        breeding_config, mutation_config);
-    BreedAndMutateDenseLayer(
-        genome::GenomePolicyModelParameters(first_parent_genome_bytes).dense_trunk.hidden0_to_hidden1,
-        genome::GenomePolicyModelParameters(second_parent_genome_bytes).dense_trunk.hidden0_to_hidden1,
-        genome::GenomePolicyModelParameters(child_genome_bytes).dense_trunk.hidden0_to_hidden1, random_state,
-        breeding_config, mutation_config);
-    BreedAndMutateDenseLayer(
-        genome::GenomePolicyModelParameters(first_parent_genome_bytes).dense_trunk.hidden1_to_output,
-        genome::GenomePolicyModelParameters(second_parent_genome_bytes).dense_trunk.hidden1_to_output,
-        genome::GenomePolicyModelParameters(child_genome_bytes).dense_trunk.hidden1_to_output, random_state,
-        breeding_config, mutation_config);
+    RecombinePolicyModelParameters(genome::GenomePolicyModelParameters(first_parent_genome_bytes),
+                                   genome::GenomePolicyModelParameters(second_parent_genome_bytes),
+                                   genome::GenomePolicyModelParameters(child_genome_bytes), random_state,
+                                   breeding_config);
+    MutatePolicyModelParameters(genome::GenomePolicyModelParameters(child_genome_bytes), random_state,
+                                mutation_config);
 
     const genome::TrainableActionEmbeddingTail *first_parent_tail_rows =
         genome::GenomeTailRows(first_parent_genome_bytes);
@@ -301,10 +424,9 @@ __device__ inline void BreedAndMutateGenome(const std::uint8_t *first_parent_gen
         genome::GenomeTailRows(second_parent_genome_bytes);
     genome::TrainableActionEmbeddingTail *child_tail_rows = genome::GenomeTailRows(child_genome_bytes);
 
-    for (std::size_t action_index = 0; action_index < action_count; ++action_index) {
-        BreedAndMutateOutputTailRow(first_parent_tail_rows[action_index], second_parent_tail_rows[action_index],
-                                    child_tail_rows[action_index], random_state, breeding_config, mutation_config);
-    }
+    RecombineOutputTailRows(first_parent_tail_rows, second_parent_tail_rows, action_count, child_tail_rows, random_state,
+                            breeding_config);
+    MutateOutputTailRows(child_tail_rows, action_count, random_state, mutation_config);
 }
 
 } // namespace neuroevolution::genetic_algorithm::device_genome_ops

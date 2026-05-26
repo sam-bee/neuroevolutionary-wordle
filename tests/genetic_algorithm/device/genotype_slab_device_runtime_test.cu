@@ -49,8 +49,7 @@ using neuroevolution::genetic_algorithm::genotype_slab::device::TryReadDeviceSla
 using neuroevolution::genetic_algorithm::genotype_slab::device::TryUploadAssemblyPlanToDevice;
 using neuroevolution::genetic_algorithm::genotype_slab::device::TryUploadCurrentGenerationToDevice;
 using neuroevolution::genetic_algorithm::genotype_slab::device::TryUploadSlabToDevice;
-using neuroevolution::genetic_algorithm::output_tail_ops::kRowBlendMaximumLambda;
-using neuroevolution::genetic_algorithm::output_tail_ops::kRowBlendMinimumLambda;
+using neuroevolution::model::output_embedding::kTrainableFeatureDimension;
 
 constexpr int kSelectedVisibleDeviceIndex = 0;
 constexpr float kTolerance = 1.0e-3f;
@@ -99,8 +98,9 @@ bool ExpectNear(const float actual, const float expected, const std::string_view
 
 SlabDeviceAssemblyConfig MakeDeterministicAssemblyConfig() {
     SlabDeviceAssemblyConfig config{};
-    config.breeding.first_parent_probability = 1.0f;
-    config.breeding.output_tail_row_arithmetic_recombination_probability = 0.0f;
+    config.breeding.crossover_temperature_level1 = 0.0f;
+    config.breeding.crossover_temperature_level2 = 0.0f;
+    config.breeding.crossover_temperature_level3 = 0.0f;
     config.mutation.mutation_probability = 0.0f;
     config.mutation.mutation_sigma = 0.0f;
     config.mutation.output_tail_row_scale_mutation_probability = 0.0f;
@@ -537,13 +537,13 @@ bool TestDeviceSlabRuntimeReusesSweptAndReleasedSlotsDuringAssembly() {
     return ok;
 }
 
-bool TestDeviceSlabRuntimeArithmeticRecombinesOutputTailRows() {
+bool TestDeviceSlabRuntimeSplicesOutputTailRows() {
     HostGenotypeSlab host_buffer{};
     SlabGeneration current_generation{};
-    bool ok = TryCreateHostGenotypeSlab(host_buffer, 3, 4);
+    bool ok = TryCreateHostGenotypeSlab(host_buffer, 3, 1);
     ok &= TryCreateSlabGeneration(current_generation, 2, 7);
     if (!ok) {
-        std::cerr << "FAIL: could not allocate arithmetic row-recombination fixtures\n";
+        std::cerr << "FAIL: could not allocate output-tail splicing fixtures\n";
         return false;
     }
 
@@ -560,12 +560,12 @@ bool TestDeviceSlabRuntimeArithmeticRecombinesOutputTailRows() {
         .dense_trunk.hidden1_to_output.biases[0] = ToFloat16(11.0f);
     GenomePolicyModelParameters(HostSlabSlotBytesAt(host_buffer, parent_slots[1]))
         .dense_trunk.hidden1_to_output.biases[0] = ToFloat16(22.0f);
-    GenomeTailRows(HostSlabSlotBytesAt(host_buffer, parent_slots[0]))[0][0] = ToFloat16(10.0f);
-    GenomeTailRows(HostSlabSlotBytesAt(host_buffer, parent_slots[0]))[0][1] = ToFloat16(-6.0f);
-    GenomeTailRows(HostSlabSlotBytesAt(host_buffer, parent_slots[0]))[0][2] = ToFloat16(4.0f);
-    GenomeTailRows(HostSlabSlotBytesAt(host_buffer, parent_slots[1]))[0][0] = ToFloat16(30.0f);
-    GenomeTailRows(HostSlabSlotBytesAt(host_buffer, parent_slots[1]))[0][1] = ToFloat16(14.0f);
-    GenomeTailRows(HostSlabSlotBytesAt(host_buffer, parent_slots[1]))[0][2] = ToFloat16(24.0f);
+    for (std::size_t feature_index = 0; feature_index < kTrainableFeatureDimension; ++feature_index) {
+        GenomeTailRows(HostSlabSlotBytesAt(host_buffer, parent_slots[0]))[0][feature_index] =
+            ToFloat16(100.0f + static_cast<float>(feature_index));
+        GenomeTailRows(HostSlabSlotBytesAt(host_buffer, parent_slots[1]))[0][feature_index] =
+            ToFloat16(200.0f + static_cast<float>(feature_index));
+    }
 
     SlabAssemblyPlan plan{};
     ok &= TryCreateSlabAssemblyPlan(plan, 1);
@@ -573,7 +573,7 @@ bool TestDeviceSlabRuntimeArithmeticRecombinesOutputTailRows() {
 
     DeviceSlabRuntimeConfig runtime_config{};
     runtime_config.slot_count = 3;
-    runtime_config.action_count = 4;
+    runtime_config.action_count = 1;
     runtime_config.max_generation_size = 2;
 
     DeviceSlabRuntimeBuffers buffers{};
@@ -583,13 +583,12 @@ bool TestDeviceSlabRuntimeArithmeticRecombinesOutputTailRows() {
     ok &= TryUploadAssemblyPlanToDevice(plan, buffers);
 
     SlabDeviceAssemblyConfig assembly_config = MakeDeterministicAssemblyConfig();
-    assembly_config.breeding.output_tail_row_arithmetic_recombination_probability = 1.0f;
+    assembly_config.breeding.crossover_temperature_level3 = 1.0f;
     ok &= TryAssembleNextGenerationOnDevice(buffers, 151U, assembly_config);
     if (!ok) {
         DeviceSlabRuntimeStatusCode status_code = DeviceSlabRuntimeStatusCode::kOk;
         (void)TryReadDeviceSlabRuntimeStatus(buffers, status_code);
-        std::cerr << "FAIL: arithmetic row-recombination assembly failed with status " << static_cast<int>(status_code)
-                  << '\n';
+        std::cerr << "FAIL: output-tail splicing assembly failed with status " << static_cast<int>(status_code) << '\n';
         DestroyDeviceSlabRuntimeBuffers(buffers);
         return false;
     }
@@ -604,24 +603,26 @@ bool TestDeviceSlabRuntimeArithmeticRecombinesOutputTailRows() {
     }
 
     const std::uint32_t child_slot = downloaded_next_generation.slot_indices[0];
-    const float blended0 = ToFloat(GenomeTailRows(HostSlabSlotBytesAt(downloaded_buffer, child_slot))[0][0]);
-    const float blended1 = ToFloat(GenomeTailRows(HostSlabSlotBytesAt(downloaded_buffer, child_slot))[0][1]);
-    const float blended2 = ToFloat(GenomeTailRows(HostSlabSlotBytesAt(downloaded_buffer, child_slot))[0][2]);
-    const float lambda = (blended0 - 30.0f) / (10.0f - 30.0f);
-    const float lambda1 = (blended1 - 14.0f) / (-6.0f - 14.0f);
-    const float lambda2 = (blended2 - 24.0f) / (4.0f - 24.0f);
+    bool saw_first_parent_prefix = false;
+    bool saw_second_parent_suffix = false;
+    bool crossed_to_second_parent = false;
+    for (std::size_t feature_index = 0; feature_index < kTrainableFeatureDimension; ++feature_index) {
+        const float value = ToFloat(GenomeTailRows(HostSlabSlotBytesAt(downloaded_buffer, child_slot))[0][feature_index]);
+        const float first_parent_value = 100.0f + static_cast<float>(feature_index);
+        const float second_parent_value = 200.0f + static_cast<float>(feature_index);
+        if (std::fabs(value - first_parent_value) <= kTolerance) {
+            ok &= ExpectTrue(!crossed_to_second_parent, "Expected output-tail splice to have one crossover point");
+            saw_first_parent_prefix = true;
+        } else if (std::fabs(value - second_parent_value) <= kTolerance) {
+            crossed_to_second_parent = true;
+            saw_second_parent_suffix = true;
+        } else {
+            ok &= ExpectTrue(false, "Expected spliced output-tail feature to come exactly from one parent");
+        }
+    }
 
-    ok &= ExpectNear(ToFloat(GenomePolicyModelParameters(HostSlabSlotBytesAt(downloaded_buffer, child_slot))
-                                 .dense_trunk.hidden1_to_output.biases[0]),
-                     11.0f, "arithmetic row recombination keeps non-tail inheritance on the first parent");
-    ok &= ExpectTrue(lambda >= kRowBlendMinimumLambda,
-                     "Expected device arithmetic row recombination lambda to stay above the configured minimum");
-    ok &= ExpectTrue(lambda <= kRowBlendMaximumLambda,
-                     "Expected device arithmetic row recombination lambda to stay below the configured maximum");
-    ok &= ExpectTrue(std::fabs(lambda1 - lambda) <= 1.0e-3f,
-                     "Expected device arithmetic row recombination to reuse one lambda across the row");
-    ok &= ExpectTrue(std::fabs(lambda2 - lambda) <= 1.0e-3f,
-                     "Expected device arithmetic row recombination to reuse the same lambda for later row features");
+    ok &= ExpectTrue(saw_first_parent_prefix, "Expected output-tail splice to keep a prefix from the first parent");
+    ok &= ExpectTrue(saw_second_parent_suffix, "Expected output-tail splice to take a suffix from the second parent");
     return ok;
 }
 
@@ -1155,7 +1156,7 @@ int main() {
         !TestDeviceSlabFreeListIsThreadSafeUnderWarpContention() ||
         !TestDeviceSlabRuntimeUploadsAndDownloadsBufferAndGenerationState() ||
         !TestDeviceSlabRuntimeReusesSweptAndReleasedSlotsDuringAssembly() ||
-        !TestDeviceSlabRuntimeArithmeticRecombinesOutputTailRows() ||
+        !TestDeviceSlabRuntimeSplicesOutputTailRows() ||
         !TestDeviceSlabRuntimeCanScaleOutputTailRows() ||
         !TestDeviceAssemblyPlanAppliesFinalChildPriority() ||
         !TestDeviceSlabRuntimeRepacksAndAssemblesAfterActionCountGrowth() ||

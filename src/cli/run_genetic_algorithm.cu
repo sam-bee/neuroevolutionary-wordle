@@ -21,6 +21,7 @@
 #include <vector>
 
 #include "common/progress_log.hpp"
+#include "genetic_algorithm/breeding.hpp"
 #include "genetic_algorithm/device/slab_runtime.hpp"
 #include "genetic_algorithm/genetic_convergence.hpp"
 #include "genetic_algorithm/genotype_slab/slab_allocator.hpp"
@@ -89,6 +90,9 @@ struct CliConfig {
     std::size_t word_count_step_period_generations = 1;
     std::size_t breeding_radius = neuroevolution::genetic_algorithm::spatial::kCellularBreedingRadius;
     float parent_selection_rank_exponent = neuroevolution::genetic_algorithm::kDefaultParentSelectionRankExponent;
+    float crossover_temperature_level1 = neuroevolution::genetic_algorithm::kDefaultCrossoverTemperatureLevel1;
+    float crossover_temperature_level2 = neuroevolution::genetic_algorithm::kDefaultCrossoverTemperatureLevel2;
+    float crossover_temperature_level3 = neuroevolution::genetic_algorithm::kDefaultCrossoverTemperatureLevel3;
     std::size_t shard_initial_radius = neuroevolution::training_folder::kDefaultTrainingShardInitialRadius;
     std::size_t shard_radius_growth_period_generations =
         neuroevolution::training_folder::kDefaultShardRadiusGrowthPeriodGenerations;
@@ -125,6 +129,8 @@ void PrintUsage() {
     std::cout << "Usage: run_genetic_algorithm [--verbose] [--seed N] [--generations N] [--population-size N] "
                  "[--genotype-vram-gb F] [--generation-vram-gb F] [--initial-word-count N] [--word-count-step N] "
                  "[--word-count-step-period N] [--breeding-radius N] [--parent-selection-rank-exponent F] "
+                 "[--crossover-temperature-level1 F] [--crossover-temperature-level2 F] "
+                 "[--crossover-temperature-level3 F] "
                  "[--shard-initial-radius N] [--shard-initial-radius-infinite] [--shard-radius-growth-period N] "
                  "[--checkpoint-path PATH] [--checkpoint-every N] [--resume-from-checkpoint PATH] "
                  "[--telemetry-path PATH] [--telemetry-dir DIR] [--telemetry-genetic-convergence] "
@@ -140,6 +146,12 @@ void PrintUsage() {
               << neuroevolution::genetic_algorithm::spatial::kCellularBreedingRadius << ".\n"
               << "--parent-selection-rank-exponent controls rank-weighted local parent selection and defaults to "
               << neuroevolution::genetic_algorithm::kDefaultParentSelectionRankExponent << ".\n"
+              << "--crossover-temperature-level1 controls whole-subsystem donor flips and defaults to "
+              << neuroevolution::genetic_algorithm::kDefaultCrossoverTemperatureLevel1 << ".\n"
+              << "--crossover-temperature-level2 controls per-layer and single-output-row donor flips and defaults to "
+              << neuroevolution::genetic_algorithm::kDefaultCrossoverTemperatureLevel2 << ".\n"
+              << "--crossover-temperature-level3 controls single-neuron flips and output-row splicing and defaults to "
+              << neuroevolution::genetic_algorithm::kDefaultCrossoverTemperatureLevel3 << ".\n"
               << "--shard-initial-radius-infinite starts every newly introduced non-foundation shard at a radius "
                  "large enough to cover the whole current population grid.\n"
               << "Positive word-count growth is handled by slab compaction/repacking, so later generations may "
@@ -291,6 +303,31 @@ ArgumentParseResult TryParseArguments(const int argc, char **argv, CliConfig &co
             }
 
             config.parent_selection_rank_exponent = static_cast<float>(parsed_value);
+            ++arg_index;
+            continue;
+        }
+
+        if ((argument == "--crossover-temperature-level1") || (argument == "--crossover-temperature-level2") ||
+            (argument == "--crossover-temperature-level3")) {
+            if ((arg_index + 1) >= argc) {
+                std::cerr << "Missing value for " << argument << '\n';
+                return ArgumentParseResult::kFailure;
+            }
+
+            double parsed_value = 0.0;
+            if (!TryParseNonNegativeReal(argv[arg_index + 1], parsed_value) || (parsed_value > 1.0)) {
+                std::cerr << "Crossover temperatures must be between 0 and 1.\n";
+                return ArgumentParseResult::kFailure;
+            }
+
+            if (argument == "--crossover-temperature-level1") {
+                config.crossover_temperature_level1 = static_cast<float>(parsed_value);
+            } else if (argument == "--crossover-temperature-level2") {
+                config.crossover_temperature_level2 = static_cast<float>(parsed_value);
+            } else {
+                config.crossover_temperature_level3 = static_cast<float>(parsed_value);
+            }
+
             ++arg_index;
             continue;
         }
@@ -1085,7 +1122,9 @@ GenerationAssemblyConfig MakeAssemblyConfig(const CliConfig &cli_config) {
     config.parent_selection.allow_self_parenting = false;
     config.parent_selection.cellular_breeding_radius = cli_config.breeding_radius;
     config.parent_selection.rank_exponent = cli_config.parent_selection_rank_exponent;
-    config.breeding.first_parent_probability = 0.5f;
+    config.breeding.crossover_temperature_level1 = cli_config.crossover_temperature_level1;
+    config.breeding.crossover_temperature_level2 = cli_config.crossover_temperature_level2;
+    config.breeding.crossover_temperature_level3 = cli_config.crossover_temperature_level3;
     config.mutation.mutation_probability = neuroevolution::genetic_algorithm::kDefaultMutationProbability;
     config.mutation.mutation_sigma = neuroevolution::genetic_algorithm::kDefaultMutationSigma;
     config.mutation.output_tail_row_scale_mutation_probability =

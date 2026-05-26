@@ -69,6 +69,9 @@ run-ga-prod: .env
 		--checkpoint-every 10 \
 		--breeding-radius 3 \
 		--parent-selection-rank-exponent 0.5 \
+		--crossover-temperature-level1 0.02 \
+		--crossover-temperature-level2 0.01 \
+		--crossover-temperature-level3 0.005 \
 		--telemetry-dir telemetry/runs \
 		--telemetry-genetic-convergence \
 		--verbose
