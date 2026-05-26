@@ -41,6 +41,7 @@ run-ga-desktop: .env
 		--initial-word-count 20 \
 		--word-count-step 20 \
 		--shard-release-min-gap 3 \
+		--first-new-shard-release-generation 10 \
 		--shard-radius-growth-period 2 \
 		--verbose
 
@@ -52,6 +53,7 @@ run-ga-laptop: .env
 		--initial-word-count 20 \
 		--word-count-step 20 \
 		--shard-release-min-gap 3 \
+		--first-new-shard-release-generation 10 \
 		--shard-radius-growth-period 2 \
 		--verbose
 
@@ -64,6 +66,7 @@ run-ga-prod: .env
 		--initial-word-count 50 \
 		--word-count-step 50 \
 		--shard-release-min-gap 3 \
+		--first-new-shard-release-generation 10 \
 		--shard-release-centroid-threshold 6 \
 		--shard-radius-growth-period 2 \
 		--checkpoint-path checkpoints/ga-runtime.bin \
@@ -80,11 +83,12 @@ run-ga-prod: .env
 run-ga-growth-smoke: .env
 	cmake --build build --target run_genetic_algorithm
 	stdbuf -oL -eL ./build/run_genetic_algorithm \
-		--generations 4 \
+		--generations 11 \
 		--genotype-vram-gb 1 \
 		--initial-word-count 20 \
 		--word-count-step 20 \
 		--shard-release-min-gap 3 \
+		--first-new-shard-release-generation 10 \
 		--shard-release-centroid-threshold 1000000 \
 		--shard-radius-growth-period 2 \
 		--verbose
@@ -94,13 +98,14 @@ run-ga-benchmark-two-gen: run-ga-benchmark-growth
 run-ga-benchmark-growth: .env
 	cmake --build build --target run_genetic_algorithm
 	stdbuf -oL -eL ./build/run_genetic_algorithm \
-		--generations 4 \
+		--generations 11 \
 		--population-size 1024 \
 		--genotype-vram-gb 1 \
 		--generation-vram-gb 0.5 \
 		--initial-word-count 20 \
 		--word-count-step 1980 \
 		--shard-release-min-gap 3 \
+		--first-new-shard-release-generation 10 \
 		--shard-release-centroid-threshold 1000000 \
 		--shard-initial-radius-infinite \
 		--verbose

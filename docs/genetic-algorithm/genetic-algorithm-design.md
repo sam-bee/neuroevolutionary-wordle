@@ -140,9 +140,10 @@ The important current distinction is:
 The initial foundation words are global from generation 0. Later introduced words become local training-data shards
 that diffuse outward across the grid over time.
 
-A later shard is eligible only after at least 3 generations since the previous release, and then releases when either
-centroid distance mean has fallen to the configured threshold, default 6, or p99 fitness beats the p99 value recorded
-immediately before the previous shard was released.
+The first later shard is eligible no earlier than generation 10. After that, a later shard is eligible only after at
+least 3 generations since the previous release, and then releases when either centroid distance mean has fallen to the
+configured threshold, default 6, or p99 fitness beats the p99 value recorded immediately before the previous shard was
+released.
 
 ## Genotype Growth and Population Size
 

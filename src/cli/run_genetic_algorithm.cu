@@ -93,6 +93,8 @@ struct CliConfig {
     std::size_t word_count_step_period_generations = 1;
     std::size_t shard_release_min_gap_generations =
         neuroevolution::training_folder::kDefaultTrainingShardReleaseMinimumGapGenerations;
+    std::size_t first_new_shard_release_generation =
+        neuroevolution::training_folder::kDefaultFirstNewTrainingShardReleaseGeneration;
     float shard_release_centroid_distance_threshold =
         neuroevolution::training_folder::kDefaultTrainingShardReleaseCentroidDistanceThreshold;
     std::size_t breeding_radius = neuroevolution::genetic_algorithm::spatial::kCellularBreedingRadius;
@@ -135,7 +137,8 @@ enum class ArgumentParseResult {
 void PrintUsage() {
     std::cout << "Usage: run_genetic_algorithm [--verbose] [--seed N] [--generations N] [--population-size N] "
                  "[--genotype-vram-gb F] [--generation-vram-gb F] [--initial-word-count N] [--word-count-step N] "
-                 "[--shard-release-min-gap N] [--shard-release-centroid-threshold F] "
+                 "[--shard-release-min-gap N] [--first-new-shard-release-generation N] "
+                 "[--shard-release-centroid-threshold F] "
                  "[--breeding-radius N] [--parent-selection-rank-exponent F] "
                  "[--crossover-temperature-level1 F] [--crossover-temperature-level2 F] "
                  "[--crossover-temperature-level3 F] "
@@ -148,11 +151,13 @@ void PrintUsage() {
               << neuroevolution::training_folder::kDefaultInitialActiveWordCount
               << ", word_count_step=0, shard_release_min_gap_generations="
               << neuroevolution::training_folder::kDefaultTrainingShardReleaseMinimumGapGenerations
+              << ", first_new_shard_release_generation="
+              << neuroevolution::training_folder::kDefaultFirstNewTrainingShardReleaseGeneration
               << ", shard_release_centroid_distance_threshold="
               << neuroevolution::training_folder::kDefaultTrainingShardReleaseCentroidDistanceThreshold << ".\n"
-              << "After the foundation shard, a new shard is released only when the minimum gap has elapsed and "
-                 "either centroid distance is at or below the threshold or p99 fitness beats the p99 baseline "
-                 "recorded immediately before the previous release.\n"
+              << "After the foundation shard, the first new shard may not release before generation 10. Later shard "
+                 "releases require the minimum gap and either centroid distance at or below the threshold or p99 "
+                 "fitness beating the p99 baseline recorded immediately before the previous release.\n"
               << "Spatial training-data shards grow their evaluation radius every "
               << neuroevolution::training_folder::kDefaultShardRadiusGrowthPeriodGenerations
               << " generations by default.\n"
@@ -398,8 +403,9 @@ ArgumentParseResult TryParseArguments(const int argc, char **argv, CliConfig &co
             (argument == "--genotype-vram-gb") || (argument == "--generation-vram-gb") ||
             (argument == "--initial-word-count") || (argument == "--word-count-step") ||
             (argument == "--word-count-step-period") || (argument == "--shard-release-min-gap") ||
-            (argument == "--breeding-radius") || (argument == "--shard-initial-radius") ||
-            (argument == "--shard-radius-growth-period") || (argument == "--checkpoint-every") ||
+            (argument == "--first-new-shard-release-generation") || (argument == "--breeding-radius") ||
+            (argument == "--shard-initial-radius") || (argument == "--shard-radius-growth-period") ||
+            (argument == "--checkpoint-every") ||
             (argument == "--telemetry-genetic-convergence-interval")) {
             if ((arg_index + 1) >= argc) {
                 std::cerr << "Missing value for " << argument << '\n';
@@ -469,6 +475,16 @@ ArgumentParseResult TryParseArguments(const int argc, char **argv, CliConfig &co
                     }
 
                     config.shard_release_min_gap_generations = static_cast<std::size_t>(parsed_value);
+                } else if (argument == "--first-new-shard-release-generation") {
+                    if (parsed_value <
+                        neuroevolution::training_folder::kDefaultFirstNewTrainingShardReleaseGeneration) {
+                        std::cerr << "First new training-shard release generation must be at least "
+                                  << neuroevolution::training_folder::kDefaultFirstNewTrainingShardReleaseGeneration
+                                  << ".\n";
+                        return ArgumentParseResult::kFailure;
+                    }
+
+                    config.first_new_shard_release_generation = static_cast<std::size_t>(parsed_value);
                 } else if (argument == "--breeding-radius") {
                     if (parsed_value == 0) {
                         std::cerr << "Breeding radius must be at least 1.\n";
@@ -1190,6 +1206,10 @@ bool TryMaybeReleaseTrainingDataShard(const DeviceSlabGARuntimeBuffers &buffers,
         training_shard_release_history.release_generations[latest_release_index];
     const std::size_t generations_since_release =
         (release_generation >= previous_release_generation) ? (release_generation - previous_release_generation) : 0;
+    if ((training_shard_release_history.release_count == 1) &&
+        (release_generation < cli_config.first_new_shard_release_generation)) {
+        return true;
+    }
     if (generations_since_release < cli_config.shard_release_min_gap_generations) {
         return true;
     }
@@ -1586,6 +1606,8 @@ int main(int argc, char **argv) {
                       << "  action_count=" << runtime_word_counts.action_space_word_count << '\n'
                       << "  training_shard_release_count=" << training_shard_release_history.release_count << '\n'
                       << "  shard_release_min_gap_generations=" << cli_config.shard_release_min_gap_generations << '\n'
+                      << "  first_new_shard_release_generation="
+                      << cli_config.first_new_shard_release_generation << '\n'
                       << "  shard_release_centroid_distance_threshold="
                       << cli_config.shard_release_centroid_distance_threshold << '\n'
                       << "  genome_stride_bytes=" << buffers.genotype_slab.slab_layout.slot_stride_bytes << '\n'
@@ -1712,6 +1734,8 @@ int main(int argc, char **argv) {
                       << "  schedule_initial_word_count=" << word_count_schedule.initial_word_count << '\n'
                       << "  schedule_word_count_step=" << word_count_schedule.word_count_step << '\n'
                       << "  shard_release_min_gap_generations=" << cli_config.shard_release_min_gap_generations << '\n'
+                      << "  first_new_shard_release_generation="
+                      << cli_config.first_new_shard_release_generation << '\n'
                       << "  shard_release_centroid_distance_threshold="
                       << cli_config.shard_release_centroid_distance_threshold << '\n'
                       << "  training_shard_release_count=" << training_shard_release_history.release_count << '\n'

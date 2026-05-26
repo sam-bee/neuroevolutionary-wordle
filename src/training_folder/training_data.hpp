@@ -15,6 +15,7 @@ constexpr std::size_t kDefaultInitialActiveWordCount = 20;
 constexpr std::size_t kDefaultTrainingShardInitialRadius = 0;
 constexpr std::size_t kDefaultShardRadiusGrowthPeriodGenerations = 2;
 constexpr std::size_t kDefaultTrainingShardReleaseMinimumGapGenerations = 3;
+constexpr std::size_t kDefaultFirstNewTrainingShardReleaseGeneration = 10;
 constexpr float kDefaultTrainingShardReleaseCentroidDistanceThreshold = 6.0f;
 constexpr std::size_t kEffectivelyInfiniteTrainingShardRadius = static_cast<std::size_t>(-1);
 constexpr std::size_t kTrainingWordCatalogCapacity = 4739;
