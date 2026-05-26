@@ -3,8 +3,8 @@
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
-#include <future>
 #include <functional>
+#include <future>
 #include <memory>
 #include <vector>
 
@@ -79,9 +79,12 @@ struct DeviceSlabGARuntimeBuffers {
 
 using PendingOutputEmbeddingInjection = genotype_slab::device::PendingOutputEmbeddingInjection;
 using DeviceSlabBootstrapConfig = genotype_slab::device::DeviceSlabBootstrapConfig;
-using PostFitnessEvaluationCallback = std::function<bool(const DeviceSlabGARuntimeBuffers &, const RuntimeWordCounts &)>;
+using PostFitnessEvaluationCallback =
+    std::function<bool(const DeviceSlabGARuntimeBuffers &, const RuntimeWordCounts &)>;
+using TrainingShardReleaseCallback = std::function<bool(const DeviceSlabGARuntimeBuffers &, const RuntimeWordCounts &,
+                                                        PendingOutputEmbeddingInjection &)>;
 
-constexpr std::uint32_t kRuntimeCheckpointSchemaVersion = 2;
+constexpr std::uint32_t kRuntimeCheckpointSchemaVersion = 3;
 constexpr std::uint32_t kRuntimeCheckpointGenomeLayoutVersion = 1;
 
 enum class RuntimeCheckpointResumePhase : std::uint32_t {
@@ -101,6 +104,7 @@ struct RuntimeCheckpoint {
     std::uint64_t training_data_identity_hash = 0;
     std::uint32_t generation_seed = 0;
     RuntimeWordCounts runtime_word_counts{};
+    training_folder::TrainingDataShardReleaseHistory training_shard_release_history{};
     GenerationAssemblyConfig assembly_config{};
     PendingOutputEmbeddingInjection pending_output_embedding_injection{};
     DeviceSlabGARuntimeConfig runtime_config{};
@@ -132,25 +136,29 @@ bool TryDownloadCurrentGenerationFromDevice(const DeviceSlabGARuntimeBuffers &bu
 bool TryDownloadNextGenerationFromDevice(const DeviceSlabGARuntimeBuffers &buffers,
                                          genotype_slab::SlabGeneration &generation);
 
-bool TryEvaluateCurrentGenerationFitnessOnDevice(DeviceSlabGARuntimeBuffers &buffers,
-                                                 const RuntimeWordCounts &runtime_word_counts);
+bool TryEvaluateCurrentGenerationFitnessOnDevice(
+    DeviceSlabGARuntimeBuffers &buffers, const RuntimeWordCounts &runtime_word_counts,
+    const training_folder::TrainingDataShardReleaseHistory *training_shard_release_history = nullptr);
 
 bool TryReadPopulationFitnessSummaryFromDevice(const DeviceSlabGARuntimeBuffers &buffers,
                                                PopulationFitnessSummary &summary);
 
-bool TryAdvanceGenerationOnDevice(DeviceSlabGARuntimeBuffers &buffers, std::uint32_t generation_seed,
-                                  const RuntimeWordCounts &runtime_word_counts,
-                                  const GenerationAssemblyConfig &config = {},
-                                  const PendingOutputEmbeddingInjection &pending_output_embedding_injection = {},
-                                  const training_folder::TrainingWordCatalog *host_training_word_catalog = nullptr,
-                                  bool verbose = false,
-                                  const PostFitnessEvaluationCallback &post_fitness_evaluation_callback = {});
+bool TryAdvanceGenerationOnDevice(
+    DeviceSlabGARuntimeBuffers &buffers, std::uint32_t generation_seed, const RuntimeWordCounts &runtime_word_counts,
+    const GenerationAssemblyConfig &config = {},
+    const PendingOutputEmbeddingInjection &pending_output_embedding_injection = {},
+    const training_folder::TrainingWordCatalog *host_training_word_catalog = nullptr, bool verbose = false,
+    const PostFitnessEvaluationCallback &post_fitness_evaluation_callback = {},
+    const TrainingShardReleaseCallback &training_shard_release_callback = {},
+    const training_folder::TrainingDataShardReleaseHistory *training_shard_release_history = nullptr);
 
 bool TryCreatePrebreedingCheckpointOnDevice(
     DeviceSlabGARuntimeBuffers &buffers, std::uint32_t generation_seed, const RuntimeWordCounts &runtime_word_counts,
     const GenerationAssemblyConfig &config, const PendingOutputEmbeddingInjection &pending_output_embedding_injection,
     RuntimeCheckpoint &checkpoint_out, const training_folder::TrainingWordCatalog *host_training_word_catalog = nullptr,
-    bool verbose = false, const PostFitnessEvaluationCallback &post_fitness_evaluation_callback = {});
+    bool verbose = false, const PostFitnessEvaluationCallback &post_fitness_evaluation_callback = {},
+    const TrainingShardReleaseCallback &training_shard_release_callback = {},
+    const training_folder::TrainingDataShardReleaseHistory *training_shard_release_history = nullptr);
 
 bool TryRestorePrebreedingCheckpointToDevice(const RuntimeCheckpoint &checkpoint, DeviceSlabGARuntimeBuffers &buffers);
 

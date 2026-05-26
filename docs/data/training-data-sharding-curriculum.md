@@ -1,21 +1,31 @@
 # Training Data Shard Curriculum
 
-The runtime keeps the old phased word-count schedule, but no longer treats training exposure as one global active
+The runtime grows the training/action catalog adaptively. Training exposure is spatial rather than one global active
 prefix.
 
-## What Still Works the Old Way
+## What Still Works By Count
 
-The following are still driven by the same phased schedule:
+The following still define the size of the curriculum:
 
 - `initial_word_count`
 - `word_count_step`
-- `word_count_step_period_generations`
 
 New words still come from the top of `action-space-randomised.txt`, in order, and once introduced they stay
 introduced.
 
 Those introduced words are added to the action space of every organism immediately, so genotype growth is still
 global.
+
+## Shard Release Criteria
+
+The initial foundation shard is global from generation 0. Later shards are released only when both of these are true:
+
+- no shard has been released in the last 3 generations
+- either centroid distance mean is at or below 6, or p99 fitness is higher than the p99 baseline recorded immediately
+  before the previous shard was released
+
+The CLI exposes `--shard-release-min-gap N` and `--shard-release-centroid-threshold F`; the minimum gap may not be set
+below 3. Each release writes a console line with the inserted catalog range and the metric condition that triggered it.
 
 ## What Is Now Spatial
 
@@ -33,7 +43,7 @@ Each shard has:
 - a radius
 - a radius-growth cadence
 
-The initial foundation shard is global from generation 0. Later shards default to radius 0 and expand outward.
+Later shards default to radius 0 when they are actually released and expand outward from that release generation.
 
 Shard centers are assigned against the original startup grid. If later row deletion removes a shard center, its row is
 clamped to the last surviving row and its column is preserved.

@@ -5,12 +5,12 @@ This note records the benchmark evidence behind the current CUDA fitness-evaluat
 ## Benchmark Setup
 
 - Command:
-  `./build/run_genetic_algorithm --generations 2 --population-size 1024 --genotype-vram-gb 1 --generation-vram-gb 0.5 --initial-word-count 20 --word-count-step 1980 --word-count-step-period 1 --shard-initial-radius-infinite --seed 7 --verbose`
+  `./build/run_genetic_algorithm --generations 4 --population-size 1024 --genotype-vram-gb 1 --generation-vram-gb 0.5 --initial-word-count 20 --word-count-step 1980 --shard-release-min-gap 3 --shard-release-centroid-threshold 1000000 --shard-initial-radius-infinite --seed 7 --verbose`
 - GPU: `NVIDIA GeForce RTX 5050 Laptop GPU`
 - Driver: `580.142`
 - CUDA toolkit: `13.2.78`
 
-Generation 0 keeps `action_count=20`. Generation 1 expands to `action_count=2000`.
+Generations 0 through 2 keep `action_count=20`. Generation 3 expands to `action_count=2000`.
 
 ## Selected Architecture
 
@@ -24,9 +24,9 @@ WMMA scorer.
 
 ## Results
 
-| Candidate | Source | Generation 0 fitness | Generation 1 fitness | Outcome |
+| Candidate | Source | Generation 0 fitness | Large-generation fitness | Outcome |
 | --- | --- | ---: | ---: | --- |
-| Thread baseline | `3bd4a8c` + benchmark harness patch + local serial-selector fix | `4004.1 ms` | not completed | Capped after more than 11 minutes total wall time without finishing generation-1 fitness. |
+| Thread baseline | `3bd4a8c` + benchmark harness patch + local serial-selector fix | `4004.1 ms` | not completed | Capped after more than 11 minutes total wall time without finishing large-generation fitness. |
 | Block-owned cooperative inference | `5d9efc0` + benchmark harness patch | `14266.9 ms` | not completed | Rejected immediately on the small benchmark. |
 | Shared-action scoring without tensor cores | `c2be2d3` + benchmark harness patch | not completed | not completed | Did not finish generation-0 fitness within 3 minutes. |
 | Pure WMMA scorer | instrumented `dbd0372` | `678.7 ms` | `270001.6 ms` | Good tiny-action performance, unusable on the 2000-word action space. |
@@ -36,10 +36,10 @@ WMMA scorer.
 
 ## Interpretation
 
-- Against the pure WMMA scorer, the selected hybrid improves generation-1 fitness-evaluation time from
+- Against the pure WMMA scorer, the selected hybrid improves large-generation fitness-evaluation time from
   `270001.6 ms` to `98116.9 ms`, a reduction of about `63.7%`.
 - The same hybrid keeps generation-0 fitness essentially flat: `676.9 ms` versus `678.7 ms`.
-- The pure warp-tiled scorer is faster again on generation 1, but it materially slows generation 0 and produces a
+- The pure warp-tiled scorer is faster again on the large generation, but it materially slows generation 0 and produces a
   different final fitness summary. It was therefore treated as a useful architecture probe rather than the final
   answer.
 

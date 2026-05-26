@@ -14,6 +14,8 @@ namespace neuroevolution::training_folder {
 constexpr std::size_t kDefaultInitialActiveWordCount = 20;
 constexpr std::size_t kDefaultTrainingShardInitialRadius = 0;
 constexpr std::size_t kDefaultShardRadiusGrowthPeriodGenerations = 2;
+constexpr std::size_t kDefaultTrainingShardReleaseMinimumGapGenerations = 3;
+constexpr float kDefaultTrainingShardReleaseCentroidDistanceThreshold = 6.0f;
 constexpr std::size_t kEffectivelyInfiniteTrainingShardRadius = static_cast<std::size_t>(-1);
 constexpr std::size_t kTrainingWordCatalogCapacity = 4739;
 
@@ -42,6 +44,12 @@ struct TrainingDataShardRuntimeSet {
     std::size_t shard_count = 0;
 };
 
+struct TrainingDataShardReleaseHistory {
+    common::FixedBuffer<std::size_t, kTrainingWordCatalogCapacity> release_generations{};
+    common::FixedBuffer<float, kTrainingWordCatalogCapacity> release_fitness_p99{};
+    std::size_t release_count = 0;
+};
+
 constexpr NEUROEVOLUTION_HOST_DEVICE bool IsValidTrainingWordCatalog(const TrainingWordCatalog &catalog) noexcept {
     if (catalog.word_count > kTrainingWordCatalogCapacity) {
         return false;
@@ -60,6 +68,72 @@ constexpr NEUROEVOLUTION_HOST_DEVICE bool IsValidWordCountSchedule(const WordCou
     return (schedule.initial_word_count > 0) && (schedule.word_count_step_period_generations > 0);
 }
 
+constexpr NEUROEVOLUTION_HOST_DEVICE std::size_t
+TrainingDataShardCountForIntroducedWordCount(const WordCountSchedule &schedule,
+                                             const std::size_t introduced_word_count) noexcept {
+    if (!IsValidWordCountSchedule(schedule) || (introduced_word_count == 0)) {
+        return 0;
+    }
+
+    const std::size_t foundation_word_count =
+        (schedule.initial_word_count < introduced_word_count) ? schedule.initial_word_count : introduced_word_count;
+    if (foundation_word_count == 0) {
+        return 0;
+    }
+
+    if (introduced_word_count == foundation_word_count) {
+        return 1;
+    }
+
+    if (schedule.word_count_step == 0) {
+        return 0;
+    }
+
+    const std::size_t remaining_word_count = introduced_word_count - foundation_word_count;
+    return 1 + ((remaining_word_count + schedule.word_count_step - 1) / schedule.word_count_step);
+}
+
+constexpr NEUROEVOLUTION_HOST_DEVICE bool
+IsValidTrainingDataShardReleaseHistory(const TrainingDataShardReleaseHistory &history) noexcept {
+    if ((history.release_count == 0) || (history.release_count > kTrainingWordCatalogCapacity)) {
+        return false;
+    }
+
+    for (std::size_t release_index = 1; release_index < history.release_count; ++release_index) {
+        if (history.release_generations[release_index] <= history.release_generations[release_index - 1]) {
+            return false;
+        }
+    }
+
+    return true;
+}
+
+constexpr NEUROEVOLUTION_HOST_DEVICE bool
+IsValidTrainingDataShardReleaseHistoryForIntroducedWordCount(const WordCountSchedule &schedule,
+                                                             const std::size_t introduced_word_count,
+                                                             const TrainingDataShardReleaseHistory &history) noexcept {
+    const std::size_t required_shard_count =
+        TrainingDataShardCountForIntroducedWordCount(schedule, introduced_word_count);
+    return (required_shard_count > 0) && IsValidTrainingDataShardReleaseHistory(history) &&
+           (history.release_count >= required_shard_count);
+}
+
+constexpr NEUROEVOLUTION_HOST_DEVICE bool TryRecordTrainingDataShardRelease(TrainingDataShardReleaseHistory &history,
+                                                                            const std::size_t release_generation,
+                                                                            const float release_fitness_p99) noexcept {
+    if (history.release_count >= kTrainingWordCatalogCapacity) {
+        return false;
+    }
+    if ((history.release_count > 0) && (release_generation <= history.release_generations[history.release_count - 1])) {
+        return false;
+    }
+
+    history.release_generations[history.release_count] = release_generation;
+    history.release_fitness_p99[history.release_count] = release_fitness_p99;
+    ++history.release_count;
+    return true;
+}
+
 constexpr NEUROEVOLUTION_HOST_DEVICE bool
 IsValidTrainingDataShardRuntime(const TrainingDataShardRuntime &shard, const std::size_t catalog_word_count,
                                 const spatial::CellularGridShape &grid_shape) noexcept {
@@ -75,18 +149,16 @@ struct TrainingShardCenterCoordinate {
     std::size_t column = 0;
 };
 
-constexpr NEUROEVOLUTION_HOST_DEVICE TrainingShardCenterCoordinate
-DeterministicTrainingShardCenterCoordinate(const std::size_t shard_ordinal,
-                                           const spatial::CellularGridShape &grid_shape) noexcept {
+constexpr NEUROEVOLUTION_HOST_DEVICE TrainingShardCenterCoordinate DeterministicTrainingShardCenterCoordinate(
+    const std::size_t shard_ordinal, const spatial::CellularGridShape &grid_shape) noexcept {
     TrainingShardCenterCoordinate coordinate{};
     if (!spatial::IsValidCellularGridShape(grid_shape)) {
         return coordinate;
     }
 
     constexpr std::uint64_t kGoldenRatioStride = 11400714819323198485ull;
-    const std::size_t cell_index =
-        static_cast<std::size_t>((static_cast<std::uint64_t>(shard_ordinal + 1) * kGoldenRatioStride) %
-                                 grid_shape.cell_count);
+    const std::size_t cell_index = static_cast<std::size_t>(
+        (static_cast<std::uint64_t>(shard_ordinal + 1) * kGoldenRatioStride) % grid_shape.cell_count);
     coordinate.row = spatial::GridRowFromIndex(grid_shape, cell_index);
     coordinate.column = spatial::GridColumnFromIndex(grid_shape, cell_index);
     return coordinate;
@@ -101,7 +173,8 @@ DeterministicTrainingShardCenterCellIndex(const std::size_t shard_ordinal,
 }
 
 constexpr NEUROEVOLUTION_HOST_DEVICE std::size_t
-DeterministicTrainingShardCenterCellIndex(const std::size_t shard_ordinal, const std::size_t square_cell_count) noexcept {
+DeterministicTrainingShardCenterCellIndex(const std::size_t shard_ordinal,
+                                          const std::size_t square_cell_count) noexcept {
     spatial::CellularGridShape grid_shape{};
     if (!spatial::TryMakeCellularGridShape(square_cell_count, grid_shape)) {
         return 0;
@@ -134,9 +207,9 @@ TrainingShardRadiusAtGeneration(const std::size_t introduction_generation, const
                                            kDefaultTrainingShardInitialRadius, radius_growth_period_generations);
 }
 
-constexpr NEUROEVOLUTION_HOST_DEVICE bool
-DoesTrainingDataShardCoverCell(const TrainingDataShardRuntime &shard, const spatial::CellularGridShape &grid_shape,
-                               const std::size_t cell_index) noexcept {
+constexpr NEUROEVOLUTION_HOST_DEVICE bool DoesTrainingDataShardCoverCell(const TrainingDataShardRuntime &shard,
+                                                                         const spatial::CellularGridShape &grid_shape,
+                                                                         const std::size_t cell_index) noexcept {
     if (!IsValidTrainingDataShardRuntime(shard, kTrainingWordCatalogCapacity, grid_shape) ||
         (cell_index >= grid_shape.cell_count)) {
         return false;
@@ -177,19 +250,20 @@ ScheduledWordCountForGeneration(const WordCountSchedule &schedule, const std::si
     return (scheduled_word_count < catalog_word_count) ? scheduled_word_count : catalog_word_count;
 }
 
-constexpr bool TryBuildTrainingDataShardRuntimeSet(const WordCountSchedule &schedule,
-                                                   const std::size_t introduced_word_count,
-                                                   const std::size_t generation_index,
-                                                   const spatial::CellularGridShape &grid_shape,
-                                                   const spatial::CellularGridShape &epicenter_grid_shape,
-                                                   const std::size_t shard_initial_radius,
-                                                   const std::size_t radius_growth_period_generations,
-                                                   TrainingDataShardRuntimeSet &runtime_set_out) noexcept {
+constexpr bool TryBuildTrainingDataShardRuntimeSet(
+    const WordCountSchedule &schedule, const std::size_t introduced_word_count, const std::size_t generation_index,
+    const spatial::CellularGridShape &grid_shape, const spatial::CellularGridShape &epicenter_grid_shape,
+    const std::size_t shard_initial_radius, const std::size_t radius_growth_period_generations,
+    const TrainingDataShardReleaseHistory *release_history, TrainingDataShardRuntimeSet &runtime_set_out) noexcept {
     runtime_set_out = {};
     if (!IsValidWordCountSchedule(schedule) || (introduced_word_count == 0) ||
         (introduced_word_count > kTrainingWordCatalogCapacity) || !spatial::IsValidCellularGridShape(grid_shape) ||
         !spatial::IsValidCellularGridShape(epicenter_grid_shape) ||
         (epicenter_grid_shape.column_count != grid_shape.column_count) || (radius_growth_period_generations == 0)) {
+        return false;
+    }
+    if ((release_history != nullptr) && !IsValidTrainingDataShardReleaseHistoryForIntroducedWordCount(
+                                            schedule, introduced_word_count, *release_history)) {
         return false;
     }
 
@@ -220,14 +294,15 @@ constexpr bool TryBuildTrainingDataShardRuntimeSet(const WordCountSchedule &sche
             ((introduced_word_count - next_catalog_word_index) < schedule.word_count_step)
                 ? (introduced_word_count - next_catalog_word_index)
                 : schedule.word_count_step;
+        const std::size_t release_history_index = runtime_set_out.shard_count;
         const std::size_t introduction_generation =
-            (local_shard_index + 1) * schedule.word_count_step_period_generations;
+            (release_history == nullptr) ? ((local_shard_index + 1) * schedule.word_count_step_period_generations)
+                                         : release_history->release_generations[release_history_index];
 
         const TrainingShardCenterCoordinate unclamped_center =
             DeterministicTrainingShardCenterCoordinate(local_shard_index, epicenter_grid_shape);
-        const std::size_t center_row = (unclamped_center.row < grid_shape.row_count)
-                                           ? unclamped_center.row
-                                           : (grid_shape.row_count - 1);
+        const std::size_t center_row =
+            (unclamped_center.row < grid_shape.row_count) ? unclamped_center.row : (grid_shape.row_count - 1);
 
         runtime_set_out.shards[runtime_set_out.shard_count] = {
             .first_catalog_word_index = next_catalog_word_index,
@@ -246,15 +321,41 @@ constexpr bool TryBuildTrainingDataShardRuntimeSet(const WordCountSchedule &sche
     return true;
 }
 
-constexpr bool TryBuildTrainingDataShardRuntimeSet(const WordCountSchedule &schedule,
-                                                   const std::size_t introduced_word_count,
-                                                   const std::size_t generation_index,
-                                                   const spatial::CellularGridShape &grid_shape,
-                                                   const std::size_t shard_initial_radius,
-                                                   const std::size_t radius_growth_period_generations,
-                                                   TrainingDataShardRuntimeSet &runtime_set_out) noexcept {
+constexpr bool TryBuildTrainingDataShardRuntimeSet(
+    const WordCountSchedule &schedule, const std::size_t introduced_word_count, const std::size_t generation_index,
+    const spatial::CellularGridShape &grid_shape, const std::size_t shard_initial_radius,
+    const std::size_t radius_growth_period_generations, const TrainingDataShardReleaseHistory *release_history,
+    TrainingDataShardRuntimeSet &runtime_set_out) noexcept {
     return TryBuildTrainingDataShardRuntimeSet(schedule, introduced_word_count, generation_index, grid_shape,
                                                grid_shape, shard_initial_radius, radius_growth_period_generations,
+                                               release_history, runtime_set_out);
+}
+
+constexpr bool TryBuildTrainingDataShardRuntimeSet(
+    const WordCountSchedule &schedule, const std::size_t introduced_word_count, const std::size_t generation_index,
+    const spatial::CellularGridShape &grid_shape, const TrainingDataShardReleaseHistory *release_history,
+    const std::size_t radius_growth_period_generations, TrainingDataShardRuntimeSet &runtime_set_out) noexcept {
+    return TryBuildTrainingDataShardRuntimeSet(schedule, introduced_word_count, generation_index, grid_shape,
+                                               kDefaultTrainingShardInitialRadius, radius_growth_period_generations,
+                                               release_history, runtime_set_out);
+}
+
+constexpr bool TryBuildTrainingDataShardRuntimeSet(
+    const WordCountSchedule &schedule, const std::size_t introduced_word_count, const std::size_t generation_index,
+    const spatial::CellularGridShape &grid_shape, const spatial::CellularGridShape &epicenter_grid_shape,
+    const std::size_t shard_initial_radius, const std::size_t radius_growth_period_generations,
+    TrainingDataShardRuntimeSet &runtime_set_out) noexcept {
+    return TryBuildTrainingDataShardRuntimeSet(schedule, introduced_word_count, generation_index, grid_shape,
+                                               epicenter_grid_shape, shard_initial_radius,
+                                               radius_growth_period_generations, nullptr, runtime_set_out);
+}
+
+constexpr bool TryBuildTrainingDataShardRuntimeSet(
+    const WordCountSchedule &schedule, const std::size_t introduced_word_count, const std::size_t generation_index,
+    const spatial::CellularGridShape &grid_shape, const std::size_t shard_initial_radius,
+    const std::size_t radius_growth_period_generations, TrainingDataShardRuntimeSet &runtime_set_out) noexcept {
+    return TryBuildTrainingDataShardRuntimeSet(schedule, introduced_word_count, generation_index, grid_shape,
+                                               shard_initial_radius, radius_growth_period_generations, nullptr,
                                                runtime_set_out);
 }
 
@@ -264,9 +365,8 @@ constexpr bool TryBuildTrainingDataShardRuntimeSet(const WordCountSchedule &sche
                                                    const spatial::CellularGridShape &grid_shape,
                                                    const std::size_t radius_growth_period_generations,
                                                    TrainingDataShardRuntimeSet &runtime_set_out) noexcept {
-    return TryBuildTrainingDataShardRuntimeSet(schedule, introduced_word_count, generation_index, grid_shape,
-                                               kDefaultTrainingShardInitialRadius, radius_growth_period_generations,
-                                               runtime_set_out);
+    return TryBuildTrainingDataShardRuntimeSet(schedule, introduced_word_count, generation_index, grid_shape, nullptr,
+                                               radius_growth_period_generations, runtime_set_out);
 }
 
 std::filesystem::path DefaultActionSpacePath();

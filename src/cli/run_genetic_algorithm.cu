@@ -72,6 +72,9 @@ using neuroevolution::training_folder::DefaultActionSpacePath;
 using neuroevolution::training_folder::IsValidWordCountSchedule;
 using neuroevolution::training_folder::LoadTrainingWordCatalogFromActionSpace;
 using neuroevolution::training_folder::ScheduledWordCountForGeneration;
+using neuroevolution::training_folder::TrainingDataShardCountForIntroducedWordCount;
+using neuroevolution::training_folder::TrainingDataShardReleaseHistory;
+using neuroevolution::training_folder::TryRecordTrainingDataShardRelease;
 using neuroevolution::training_folder::UploadTrainingWordCatalogToDeviceConstantMemory;
 using neuroevolution::training_folder::WordCountSchedule;
 
@@ -88,6 +91,10 @@ struct CliConfig {
     std::size_t initial_word_count = neuroevolution::training_folder::kDefaultInitialActiveWordCount;
     std::size_t word_count_step = 0;
     std::size_t word_count_step_period_generations = 1;
+    std::size_t shard_release_min_gap_generations =
+        neuroevolution::training_folder::kDefaultTrainingShardReleaseMinimumGapGenerations;
+    float shard_release_centroid_distance_threshold =
+        neuroevolution::training_folder::kDefaultTrainingShardReleaseCentroidDistanceThreshold;
     std::size_t breeding_radius = neuroevolution::genetic_algorithm::spatial::kCellularBreedingRadius;
     float parent_selection_rank_exponent = neuroevolution::genetic_algorithm::kDefaultParentSelectionRankExponent;
     float crossover_temperature_level1 = neuroevolution::genetic_algorithm::kDefaultCrossoverTemperatureLevel1;
@@ -128,7 +135,8 @@ enum class ArgumentParseResult {
 void PrintUsage() {
     std::cout << "Usage: run_genetic_algorithm [--verbose] [--seed N] [--generations N] [--population-size N] "
                  "[--genotype-vram-gb F] [--generation-vram-gb F] [--initial-word-count N] [--word-count-step N] "
-                 "[--word-count-step-period N] [--breeding-radius N] [--parent-selection-rank-exponent F] "
+                 "[--shard-release-min-gap N] [--shard-release-centroid-threshold F] "
+                 "[--breeding-radius N] [--parent-selection-rank-exponent F] "
                  "[--crossover-temperature-level1 F] [--crossover-temperature-level2 F] "
                  "[--crossover-temperature-level3 F] "
                  "[--shard-initial-radius N] [--shard-initial-radius-infinite] [--shard-radius-growth-period N] "
@@ -136,9 +144,15 @@ void PrintUsage() {
                  "[--telemetry-path PATH] [--telemetry-dir DIR] [--telemetry-genetic-convergence] "
                  "[--telemetry-genetic-convergence-interval N]\n"
               << "If --population-size is omitted, the program does not apply an extra population ceiling.\n"
-              << "The shared training/action schedule defaults to initial_word_count="
+              << "The shared training/action curriculum defaults to initial_word_count="
               << neuroevolution::training_folder::kDefaultInitialActiveWordCount
-              << ", word_count_step=0, word_count_step_period_generations=1.\n"
+              << ", word_count_step=0, shard_release_min_gap_generations="
+              << neuroevolution::training_folder::kDefaultTrainingShardReleaseMinimumGapGenerations
+              << ", shard_release_centroid_distance_threshold="
+              << neuroevolution::training_folder::kDefaultTrainingShardReleaseCentroidDistanceThreshold << ".\n"
+              << "After the foundation shard, a new shard is released only when the minimum gap has elapsed and "
+                 "either centroid distance is at or below the threshold or p99 fitness beats the previous release "
+                 "baseline.\n"
               << "Spatial training-data shards grow their evaluation radius every "
               << neuroevolution::training_folder::kDefaultShardRadiusGrowthPeriodGenerations
               << " generations by default.\n"
@@ -288,6 +302,24 @@ ArgumentParseResult TryParseArguments(const int argc, char **argv, CliConfig &co
             continue;
         }
 
+        if (argument == "--shard-release-centroid-threshold") {
+            if ((arg_index + 1) >= argc) {
+                std::cerr << "Missing value for " << argument << '\n';
+                return ArgumentParseResult::kFailure;
+            }
+
+            double parsed_value = 0.0;
+            if (!TryParsePositiveReal(argv[arg_index + 1], parsed_value) ||
+                (parsed_value > static_cast<double>(std::numeric_limits<float>::max()))) {
+                std::cerr << "Shard release centroid-distance threshold must be a positive finite number.\n";
+                return ArgumentParseResult::kFailure;
+            }
+
+            config.shard_release_centroid_distance_threshold = static_cast<float>(parsed_value);
+            ++arg_index;
+            continue;
+        }
+
         if (argument == "--parent-selection-rank-exponent") {
             if ((arg_index + 1) >= argc) {
                 std::cerr << "Missing value for " << argument << '\n';
@@ -365,9 +397,10 @@ ArgumentParseResult TryParseArguments(const int argc, char **argv, CliConfig &co
         if ((argument == "--seed") || (argument == "--generations") || (argument == "--population-size") ||
             (argument == "--genotype-vram-gb") || (argument == "--generation-vram-gb") ||
             (argument == "--initial-word-count") || (argument == "--word-count-step") ||
-            (argument == "--word-count-step-period") || (argument == "--breeding-radius") ||
-            (argument == "--shard-initial-radius") || (argument == "--shard-radius-growth-period") ||
-            (argument == "--checkpoint-every") || (argument == "--telemetry-genetic-convergence-interval")) {
+            (argument == "--word-count-step-period") || (argument == "--shard-release-min-gap") ||
+            (argument == "--breeding-radius") || (argument == "--shard-initial-radius") ||
+            (argument == "--shard-radius-growth-period") || (argument == "--checkpoint-every") ||
+            (argument == "--telemetry-genetic-convergence-interval")) {
             if ((arg_index + 1) >= argc) {
                 std::cerr << "Missing value for " << argument << '\n';
                 return ArgumentParseResult::kFailure;
@@ -426,6 +459,16 @@ ArgumentParseResult TryParseArguments(const int argc, char **argv, CliConfig &co
                     config.initial_word_count = static_cast<std::size_t>(parsed_value);
                 } else if (argument == "--word-count-step") {
                     config.word_count_step = static_cast<std::size_t>(parsed_value);
+                } else if ((argument == "--shard-release-min-gap") || (argument == "--word-count-step-period")) {
+                    if (parsed_value <
+                        neuroevolution::training_folder::kDefaultTrainingShardReleaseMinimumGapGenerations) {
+                        std::cerr << "Shard release minimum generation gap must be at least "
+                                  << neuroevolution::training_folder::kDefaultTrainingShardReleaseMinimumGapGenerations
+                                  << ".\n";
+                        return ArgumentParseResult::kFailure;
+                    }
+
+                    config.shard_release_min_gap_generations = static_cast<std::size_t>(parsed_value);
                 } else if (argument == "--breeding-radius") {
                     if (parsed_value == 0) {
                         std::cerr << "Breeding radius must be at least 1.\n";
@@ -453,17 +496,11 @@ ArgumentParseResult TryParseArguments(const int argc, char **argv, CliConfig &co
                     config.telemetry_genetic_convergence_interval_was_provided = true;
                 } else {
                     if (parsed_value == 0) {
-                        std::cerr << ((argument == "--word-count-step-period")
-                                          ? "Word-count step period must be at least 1.\n"
-                                          : "Shard radius growth period must be at least 1.\n");
+                        std::cerr << "Shard radius growth period must be at least 1.\n";
                         return ArgumentParseResult::kFailure;
                     }
 
-                    if (argument == "--word-count-step-period") {
-                        config.word_count_step_period_generations = static_cast<std::size_t>(parsed_value);
-                    } else {
-                        config.shard_radius_growth_period_generations = static_cast<std::size_t>(parsed_value);
-                    }
+                    config.shard_radius_growth_period_generations = static_cast<std::size_t>(parsed_value);
                 }
             }
 
@@ -1116,6 +1153,111 @@ bool TryLogTelemetryForCurrentGeneration(const DeviceSlabGARuntimeBuffers &buffe
            telemetry_writer->TryLogGenerationFitness(row);
 }
 
+bool TryMaybeReleaseTrainingDataShard(const DeviceSlabGARuntimeBuffers &buffers,
+                                      const RuntimeWordCounts &runtime_word_counts, const CliConfig &cli_config,
+                                      const std::size_t catalog_word_count,
+                                      TrainingDataShardReleaseHistory &training_shard_release_history,
+                                      bool &release_baseline_ready,
+                                      PendingOutputEmbeddingInjection &pending_output_embedding_injection,
+                                      std::size_t &next_word_count_out) {
+    pending_output_embedding_injection = {};
+    next_word_count_out = runtime_word_counts.action_space_word_count;
+
+    if (training_shard_release_history.release_count == 0) {
+        std::cerr << "Cannot apply adaptive training-shard release without a foundation release record.\n";
+        return false;
+    }
+
+    if ((runtime_word_counts.action_space_word_count >= catalog_word_count) ||
+        (runtime_word_counts.training_word_schedule.word_count_step == 0)) {
+        return true;
+    }
+
+    const std::size_t latest_release_index = training_shard_release_history.release_count - 1;
+    if (!release_baseline_ready) {
+        GenerationFitnessTelemetryRow foundation_fitness_row{};
+        if (!TryCollectGenerationFitnessTelemetry(buffers, runtime_word_counts, false, foundation_fitness_row)) {
+            return false;
+        }
+
+        training_shard_release_history.release_fitness_p99[latest_release_index] = foundation_fitness_row.fitness_p99;
+        release_baseline_ready = true;
+    }
+
+    const std::size_t current_generation_index = buffers.genotype_slab.current_generation_index;
+    const std::size_t release_generation = current_generation_index + 1;
+    const std::size_t previous_release_generation =
+        training_shard_release_history.release_generations[latest_release_index];
+    const std::size_t generations_since_release =
+        (release_generation >= previous_release_generation) ? (release_generation - previous_release_generation) : 0;
+    if (generations_since_release < cli_config.shard_release_min_gap_generations) {
+        return true;
+    }
+
+    GenerationFitnessTelemetryRow fitness_row{};
+    if (!TryCollectGenerationFitnessTelemetry(buffers, runtime_word_counts, false, fitness_row)) {
+        return false;
+    }
+
+    GeneticConvergenceTelemetryRow convergence_row{};
+    const auto convergence_start_time = ProgressClock::now();
+    if (!TryCollectGeneticConvergenceTelemetry(buffers, cli_config.seed, convergence_row)) {
+        return false;
+    }
+    convergence_row.elapsed_ms =
+        std::chrono::duration<float, std::milli>(ProgressClock::now() - convergence_start_time).count();
+
+    const float previous_release_fitness_p99 = training_shard_release_history.release_fitness_p99[latest_release_index];
+    const bool centroid_triggered =
+        convergence_row.centroid_distance_mean <= cli_config.shard_release_centroid_distance_threshold;
+    const bool fitness_triggered = fitness_row.fitness_p99 > previous_release_fitness_p99;
+    if (!centroid_triggered && !fitness_triggered) {
+        return true;
+    }
+
+    const std::size_t first_catalog_word_index = runtime_word_counts.action_space_word_count;
+    const std::size_t remaining_catalog_words = catalog_word_count - first_catalog_word_index;
+    const std::size_t injection_count =
+        (remaining_catalog_words < runtime_word_counts.training_word_schedule.word_count_step)
+            ? remaining_catalog_words
+            : runtime_word_counts.training_word_schedule.word_count_step;
+    if (injection_count == 0) {
+        return true;
+    }
+
+    pending_output_embedding_injection.enabled = true;
+    pending_output_embedding_injection.first_catalog_word_index = first_catalog_word_index;
+    pending_output_embedding_injection.injection_count = injection_count;
+    next_word_count_out = first_catalog_word_index + injection_count;
+
+    if (!TryRecordTrainingDataShardRelease(training_shard_release_history, release_generation,
+                                           fitness_row.fitness_p99)) {
+        std::cerr << "Could not record adaptive training-shard release metadata.\n";
+        return false;
+    }
+
+    std::ostringstream reason_stream;
+    reason_stream << std::fixed << std::setprecision(4);
+    if (centroid_triggered) {
+        reason_stream << "centroid_distance_mean=" << convergence_row.centroid_distance_mean
+                      << " <= threshold=" << cli_config.shard_release_centroid_distance_threshold;
+    }
+    if (fitness_triggered) {
+        if (centroid_triggered) {
+            reason_stream << "; ";
+        }
+        reason_stream << "fitness_p99=" << fitness_row.fitness_p99
+                      << " > previous_release_fitness_p99=" << previous_release_fitness_p99;
+    }
+
+    std::cout << '[' << FormatCurrentLocalTimestamp() << "] Training data shard released for generation "
+              << release_generation << ": first_catalog_word_index=" << first_catalog_word_index
+              << ", word_count=" << injection_count << ", new_training_word_count=" << next_word_count_out
+              << ", generations_since_previous_release=" << generations_since_release
+              << ", reason=" << reason_stream.str() << '\n';
+    return true;
+}
+
 GenerationAssemblyConfig MakeAssemblyConfig(const CliConfig &cli_config) {
     GenerationAssemblyConfig config{};
     config.parent_selection.tournament_size = 3;
@@ -1191,21 +1333,11 @@ std::string TrainingShardRadiusLabel(const std::size_t radius) {
                : std::to_string(radius);
 }
 
-PendingOutputEmbeddingInjection MakePendingOutputEmbeddingInjection(const std::size_t current_action_count,
-                                                                    const std::size_t next_scheduled_word_count) {
-    PendingOutputEmbeddingInjection pending_output_embedding_injection{};
-    if (current_action_count < next_scheduled_word_count) {
-        pending_output_embedding_injection.enabled = true;
-        pending_output_embedding_injection.first_catalog_word_index = current_action_count;
-        pending_output_embedding_injection.injection_count = next_scheduled_word_count - current_action_count;
-    }
-
-    return pending_output_embedding_injection;
-}
-
 std::size_t CheckpointPayloadByteCount(const RuntimeCheckpoint &checkpoint) {
     std::size_t byte_count =
         checkpoint.assembly_plan.child_count * sizeof(neuroevolution::genetic_algorithm::genotype_slab::SlabParentPair);
+    byte_count += sizeof(checkpoint.training_shard_release_history.release_count);
+    byte_count += checkpoint.training_shard_release_history.release_count * (sizeof(std::size_t) + sizeof(float));
     byte_count += checkpoint.current_generation.active_individual_count *
                   (sizeof(std::uint32_t) + sizeof(float) + sizeof(std::uint32_t) + sizeof(std::uint8_t));
     for (const auto &record : checkpoint.live_genotypes) {
@@ -1223,6 +1355,7 @@ bool TryCloneRuntimeCheckpoint(const RuntimeCheckpoint &source, RuntimeCheckpoin
     clone_out.resume_phase = source.resume_phase;
     clone_out.generation_seed = source.generation_seed;
     clone_out.runtime_word_counts = source.runtime_word_counts;
+    clone_out.training_shard_release_history = source.training_shard_release_history;
     clone_out.assembly_config = source.assembly_config;
     clone_out.pending_output_embedding_injection = source.pending_output_embedding_injection;
     clone_out.runtime_config = source.runtime_config;
@@ -1387,6 +1520,8 @@ int main(int argc, char **argv) {
         DeviceSlabGARuntimeBuffers buffers{};
         const GenerationAssemblyConfig assembly_config = MakeAssemblyConfig(cli_config);
         RuntimeWordCounts runtime_word_counts{};
+        TrainingDataShardReleaseHistory training_shard_release_history{};
+        bool training_shard_release_baseline_ready = false;
 
         if (cli_config.resume_checkpoint_path_was_provided) {
             RuntimeCheckpoint checkpoint{};
@@ -1437,6 +1572,8 @@ int main(int argc, char **argv) {
                     resume_checkpoint_start_time);
             }
             runtime_word_counts = RuntimeWordCountsAfterCheckpointResume(checkpoint);
+            training_shard_release_history = checkpoint.training_shard_release_history;
+            training_shard_release_baseline_ready = training_shard_release_history.release_count > 0;
 
             std::cout << '[' << FormatCurrentLocalTimestamp() << "] Resumed device GA from checkpoint:\n"
                       << "  checkpoint_path=" << cli_config.resume_checkpoint_path.string() << '\n'
@@ -1447,6 +1584,10 @@ int main(int argc, char **argv) {
                       << "  checkpoint_live_genotypes=" << checkpoint.live_genotypes.size() << '\n'
                       << "  checkpoint_payload_bytes=" << CheckpointPayloadByteCount(checkpoint) << '\n'
                       << "  action_count=" << runtime_word_counts.action_space_word_count << '\n'
+                      << "  training_shard_release_count=" << training_shard_release_history.release_count << '\n'
+                      << "  shard_release_min_gap_generations=" << cli_config.shard_release_min_gap_generations << '\n'
+                      << "  shard_release_centroid_distance_threshold="
+                      << cli_config.shard_release_centroid_distance_threshold << '\n'
                       << "  genome_stride_bytes=" << buffers.genotype_slab.slab_layout.slot_stride_bytes << '\n'
                       << "  generations=" << cli_config.generation_count << '\n'
                       << "  seed=" << cli_config.seed << '\n'
@@ -1459,6 +1600,10 @@ int main(int argc, char **argv) {
             runtime_word_counts.shard_initial_radius = cli_config.shard_initial_radius;
             runtime_word_counts.shard_radius_growth_period_generations =
                 cli_config.shard_radius_growth_period_generations;
+            if (!TryRecordTrainingDataShardRelease(training_shard_release_history, 0, 0.0f)) {
+                std::cerr << "Could not initialize the foundation training-shard release record.\n";
+                return 1;
+            }
 
             std::size_t genotype_memory_budget_bytes = 0;
             if (!TryComputeTotalGenotypeBudgetBytes(cli_config, genotype_memory_budget_bytes)) {
@@ -1566,8 +1711,10 @@ int main(int argc, char **argv) {
                       << "  configured_action_space_word_count=" << runtime_word_counts.action_space_word_count << '\n'
                       << "  schedule_initial_word_count=" << word_count_schedule.initial_word_count << '\n'
                       << "  schedule_word_count_step=" << word_count_schedule.word_count_step << '\n'
-                      << "  schedule_word_count_step_period_generations="
-                      << word_count_schedule.word_count_step_period_generations << '\n'
+                      << "  shard_release_min_gap_generations=" << cli_config.shard_release_min_gap_generations << '\n'
+                      << "  shard_release_centroid_distance_threshold="
+                      << cli_config.shard_release_centroid_distance_threshold << '\n'
+                      << "  training_shard_release_count=" << training_shard_release_history.release_count << '\n'
                       << "  breeding_radius=" << assembly_config.parent_selection.cellular_breeding_radius << '\n'
                       << "  parent_selection_rank_exponent=" << assembly_config.parent_selection.rank_exponent << '\n'
                       << "  shard_initial_radius=" << TrainingShardRadiusLabel(runtime_word_counts.shard_initial_radius)
@@ -1580,6 +1727,14 @@ int main(int argc, char **argv) {
         if (cli_config.checkpoint_path_was_provided) {
             std::cout << "  checkpoint_path=" << cli_config.checkpoint_path.string() << '\n'
                       << "  checkpoint_every_generations=" << cli_config.checkpoint_every_generations << '\n';
+        }
+        const std::size_t required_training_shard_release_count = TrainingDataShardCountForIntroducedWordCount(
+            runtime_word_counts.training_word_schedule, runtime_word_counts.training_word_count);
+        if ((required_training_shard_release_count == 0) ||
+            (training_shard_release_history.release_count < required_training_shard_release_count)) {
+            std::cerr << "The training-shard release history is not compatible with the active training-word count.\n";
+            DestroyDeviceSlabGARuntimeBuffers(buffers);
+            return 1;
         }
 
         TelemetryWriter telemetry_writer{};
@@ -1631,11 +1786,16 @@ int main(int argc, char **argv) {
 
             const std::size_t current_generation_index = buffers.genotype_slab.current_generation_index;
             const std::size_t next_generation_index = current_generation_index + 1;
-            const std::size_t next_scheduled_word_count = ScheduledWordCountForGeneration(
-                runtime_word_counts.training_word_schedule, training_word_catalog.word_count, next_generation_index);
-            const PendingOutputEmbeddingInjection pending_output_embedding_injection =
-                MakePendingOutputEmbeddingInjection(runtime_word_counts.action_space_word_count,
-                                                    next_scheduled_word_count);
+            std::size_t next_word_count = runtime_word_counts.action_space_word_count;
+            PendingOutputEmbeddingInjection pending_output_embedding_injection{};
+            const auto release_training_shard_after_fitness =
+                [&](const DeviceSlabGARuntimeBuffers &release_buffers, const RuntimeWordCounts &release_word_counts,
+                    PendingOutputEmbeddingInjection &release_pending_output_embedding_injection) {
+                    return TryMaybeReleaseTrainingDataShard(
+                        release_buffers, release_word_counts, cli_config, training_word_catalog.word_count,
+                        training_shard_release_history, training_shard_release_baseline_ready,
+                        release_pending_output_embedding_injection, next_word_count);
+                };
             const std::uint32_t generation_seed =
                 cli_config.seed + 2U + static_cast<std::uint32_t>(current_generation_index);
             const bool should_checkpoint =
@@ -1651,17 +1811,20 @@ int main(int argc, char **argv) {
                     }
                     if (!TryAdvanceGenerationOnDevice(buffers, generation_seed, runtime_word_counts, assembly_config,
                                                       pending_output_embedding_injection, &training_word_catalog,
-                                                      cli_config.verbose, log_telemetry_after_fitness)) {
+                                                      cli_config.verbose, log_telemetry_after_fitness,
+                                                      release_training_shard_after_fitness,
+                                                      &training_shard_release_history)) {
                         (void)ReportDeviceSlabRuntimeFailure(buffers, "Next-generation assembly");
                         DestroyDeviceSlabGARuntimeBuffers(buffers);
                         return 1;
                     }
                 } else {
                     RuntimeCheckpoint checkpoint{};
-                    if (!TryCreatePrebreedingCheckpointOnDevice(buffers, generation_seed, runtime_word_counts,
-                                                                assembly_config, pending_output_embedding_injection,
-                                                                checkpoint, &training_word_catalog, cli_config.verbose,
-                                                                log_telemetry_after_fitness)) {
+                    if (!TryCreatePrebreedingCheckpointOnDevice(
+                            buffers, generation_seed, runtime_word_counts, assembly_config,
+                            pending_output_embedding_injection, checkpoint, &training_word_catalog, cli_config.verbose,
+                            log_telemetry_after_fitness, release_training_shard_after_fitness,
+                            &training_shard_release_history)) {
                         (void)ReportDeviceSlabRuntimeFailure(buffers, "Checkpoint creation");
                         DestroyDeviceSlabGARuntimeBuffers(buffers);
                         return 1;
@@ -1698,7 +1861,9 @@ int main(int argc, char **argv) {
             } else {
                 if (!TryAdvanceGenerationOnDevice(buffers, generation_seed, runtime_word_counts, assembly_config,
                                                   pending_output_embedding_injection, &training_word_catalog,
-                                                  cli_config.verbose, log_telemetry_after_fitness)) {
+                                                  cli_config.verbose, log_telemetry_after_fitness,
+                                                  release_training_shard_after_fitness,
+                                                  &training_shard_release_history)) {
                     (void)ReportDeviceSlabRuntimeFailure(buffers, "Next-generation assembly");
                     DestroyDeviceSlabGARuntimeBuffers(buffers);
                     return 1;
@@ -1712,8 +1877,8 @@ int main(int argc, char **argv) {
                              "--genotype-vram-gb or --generation-vram-gb if this becomes frequent.\n";
             }
 
-            runtime_word_counts.training_word_count = next_scheduled_word_count;
-            runtime_word_counts.action_space_word_count = next_scheduled_word_count;
+            runtime_word_counts.training_word_count = next_word_count;
+            runtime_word_counts.action_space_word_count = next_word_count;
             if (!PrintCurrentPopulationSummary(buffers, final_summary)) {
                 DestroyDeviceSlabGARuntimeBuffers(buffers);
                 return 1;
@@ -1726,7 +1891,8 @@ int main(int argc, char **argv) {
                                                         std::to_string(buffers.genotype_slab.current_generation_index) +
                                                         ": evaluating current generation fitness");
         }
-        if (!TryEvaluateCurrentGenerationFitnessOnDevice(buffers, runtime_word_counts)) {
+        if (!TryEvaluateCurrentGenerationFitnessOnDevice(buffers, runtime_word_counts,
+                                                         &training_shard_release_history)) {
             (void)ReportDeviceSlabRuntimeFailure(buffers, "Population fitness evaluation");
             DestroyDeviceSlabGARuntimeBuffers(buffers);
             return 1;

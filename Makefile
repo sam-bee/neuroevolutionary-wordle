@@ -1,4 +1,4 @@
-.PHONY: configure build test test-cpu test-gpu test-gpu-sanitized smoke format clean rebuild agents-rebuild build-and-test run-ga-desktop run-ga-laptop run-ga-growth-smoke run-ga-benchmark-two-gen play-wordle telemetry-up telemetry-stop
+.PHONY: configure build test test-cpu test-gpu test-gpu-sanitized smoke format clean rebuild agents-rebuild build-and-test run-ga-desktop run-ga-laptop run-ga-growth-smoke run-ga-benchmark-growth run-ga-benchmark-two-gen play-wordle telemetry-up telemetry-stop
 
 -include .env
 
@@ -40,7 +40,7 @@ run-ga-desktop: .env
 		--genotype-vram-gb 12 \
 		--initial-word-count 20 \
 		--word-count-step 20 \
-		--word-count-step-period 25 \
+		--shard-release-min-gap 3 \
 		--shard-radius-growth-period 2 \
 		--verbose
 
@@ -51,7 +51,7 @@ run-ga-laptop: .env
 		--genotype-vram-gb 6 \
 		--initial-word-count 20 \
 		--word-count-step 20 \
-		--word-count-step-period 25 \
+		--shard-release-min-gap 3 \
 		--shard-radius-growth-period 2 \
 		--verbose
 
@@ -63,7 +63,7 @@ run-ga-prod: .env
 		--generation-vram-gb 8 \
 		--initial-word-count 50 \
 		--word-count-step 50 \
-		--word-count-step-period 30 \
+		--shard-release-min-gap 3 \
 		--shard-radius-growth-period 2 \
 		--checkpoint-path checkpoints/ga-runtime.bin \
 		--checkpoint-every 10 \
@@ -83,20 +83,24 @@ run-ga-growth-smoke: .env
 		--genotype-vram-gb 1 \
 		--initial-word-count 20 \
 		--word-count-step 20 \
-		--word-count-step-period 2 \
+		--shard-release-min-gap 3 \
+		--shard-release-centroid-threshold 1000000 \
 		--shard-radius-growth-period 2 \
 		--verbose
 
-run-ga-benchmark-two-gen: .env
+run-ga-benchmark-two-gen: run-ga-benchmark-growth
+
+run-ga-benchmark-growth: .env
 	cmake --build build --target run_genetic_algorithm
 	stdbuf -oL -eL ./build/run_genetic_algorithm \
-		--generations 2 \
+		--generations 4 \
 		--population-size 1024 \
 		--genotype-vram-gb 1 \
 		--generation-vram-gb 0.5 \
 		--initial-word-count 20 \
 		--word-count-step 1980 \
-		--word-count-step-period 1 \
+		--shard-release-min-gap 3 \
+		--shard-release-centroid-threshold 1000000 \
 		--shard-initial-radius-infinite \
 		--verbose
 

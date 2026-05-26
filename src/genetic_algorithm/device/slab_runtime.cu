@@ -57,6 +57,7 @@ using spatial::TryMakeCellularGridShape;
 using spatial::TryMakeCellularGridShapeForColumnCount;
 using spatial::TryMakeRectangularCellularGridShape;
 using training_folder::DeviceTrainingWordCatalog;
+using training_folder::TrainingDataShardReleaseHistory;
 using training_folder::TrainingDataShardRuntimeSet;
 using training_folder::TrainingWordCatalog;
 using training_folder::TryBuildTrainingDataShardRuntimeSet;
@@ -206,9 +207,9 @@ inline bool IsCurrentGenerationCompatible(const DeviceSlabGARuntimeBuffers &buff
            ((buffers.genotype_slab.current_generation_size % buffers.grid_column_count) == 0);
 }
 
-inline bool TryUploadActiveTrainingShardsForCurrentGeneration(DeviceSlabGARuntimeBuffers &buffers,
-                                                              const RuntimeWordCounts &runtime_word_counts,
-                                                              CellularGridShape &current_grid_shape_out) {
+inline bool TryUploadActiveTrainingShardsForCurrentGeneration(
+    DeviceSlabGARuntimeBuffers &buffers, const RuntimeWordCounts &runtime_word_counts,
+    const TrainingDataShardReleaseHistory *training_shard_release_history, CellularGridShape &current_grid_shape_out) {
     current_grid_shape_out = {};
     buffers.active_training_shard_count = 0;
     if ((buffers.active_training_shards == nullptr) || (buffers.active_training_shard_capacity == 0) ||
@@ -218,11 +219,11 @@ inline bool TryUploadActiveTrainingShardsForCurrentGeneration(DeviceSlabGARuntim
     }
 
     TrainingDataShardRuntimeSet runtime_set{};
-    if (!TryBuildTrainingDataShardRuntimeSet(runtime_word_counts.training_word_schedule,
-                                             runtime_word_counts.training_word_count,
-                                             buffers.genotype_slab.current_generation_index, current_grid_shape_out,
-                                             buffers.epicenter_grid_shape, runtime_word_counts.shard_initial_radius,
-                                             runtime_word_counts.shard_radius_growth_period_generations, runtime_set) ||
+    if (!TryBuildTrainingDataShardRuntimeSet(
+            runtime_word_counts.training_word_schedule, runtime_word_counts.training_word_count,
+            buffers.genotype_slab.current_generation_index, current_grid_shape_out, buffers.epicenter_grid_shape,
+            runtime_word_counts.shard_initial_radius, runtime_word_counts.shard_radius_growth_period_generations,
+            training_shard_release_history, runtime_set) ||
         (runtime_set.shard_count == 0) || (runtime_set.shard_count > buffers.active_training_shard_capacity)) {
         return false;
     }
@@ -1155,14 +1156,16 @@ bool TryDownloadNextGenerationFromDevice(const DeviceSlabGARuntimeBuffers &buffe
     return genotype_slab::device::TryDownloadNextGenerationFromDevice(buffers.genotype_slab, generation);
 }
 
-bool TryEvaluateCurrentGenerationFitnessOnDevice(DeviceSlabGARuntimeBuffers &buffers,
-                                                 const RuntimeWordCounts &runtime_word_counts) {
+bool TryEvaluateCurrentGenerationFitnessOnDevice(
+    DeviceSlabGARuntimeBuffers &buffers, const RuntimeWordCounts &runtime_word_counts,
+    const TrainingDataShardReleaseHistory *training_shard_release_history) {
     if (!IsCurrentGenerationCompatible(buffers) || !ResetDeviceStatus(buffers)) {
         return false;
     }
 
     CellularGridShape current_grid_shape{};
-    if (!TryUploadActiveTrainingShardsForCurrentGeneration(buffers, runtime_word_counts, current_grid_shape)) {
+    if (!TryUploadActiveTrainingShardsForCurrentGeneration(buffers, runtime_word_counts, training_shard_release_history,
+                                                           current_grid_shape)) {
         (void)WriteDeviceStatus(buffers, DeviceSlabGARuntimeStatusCode::kInvalidTrainingShard);
         return false;
     }
@@ -1265,6 +1268,14 @@ template <typename Value> void MixCheckpointValue(std::uint64_t &hash, const Val
     MixCheckpointBytes(hash, &value, sizeof(Value));
 }
 
+void MixTrainingShardReleaseHistory(std::uint64_t &hash, const TrainingDataShardReleaseHistory &history) noexcept {
+    MixCheckpointValue(hash, history.release_count);
+    for (std::size_t release_index = 0; release_index < history.release_count; ++release_index) {
+        MixCheckpointValue(hash, history.release_generations[release_index]);
+        MixCheckpointValue(hash, history.release_fitness_p99[release_index]);
+    }
+}
+
 std::uint64_t ComputeRuntimeCheckpointChecksum(const RuntimeCheckpoint &checkpoint) {
     std::uint64_t hash = 1469598103934665603ULL;
     MixCheckpointValue(hash, checkpoint.schema_version);
@@ -1274,6 +1285,7 @@ std::uint64_t ComputeRuntimeCheckpointChecksum(const RuntimeCheckpoint &checkpoi
     MixCheckpointValue(hash, checkpoint.training_data_identity_hash);
     MixCheckpointValue(hash, checkpoint.generation_seed);
     MixCheckpointBytes(hash, &checkpoint.runtime_word_counts, sizeof(checkpoint.runtime_word_counts));
+    MixTrainingShardReleaseHistory(hash, checkpoint.training_shard_release_history);
     MixCheckpointBytes(hash, &checkpoint.assembly_config, sizeof(checkpoint.assembly_config));
     MixCheckpointBytes(hash, &checkpoint.pending_output_embedding_injection,
                        sizeof(checkpoint.pending_output_embedding_injection));
@@ -1325,6 +1337,7 @@ bool TryDownloadBoundaryCheckpointPayload(const DeviceSlabGARuntimeBuffers &buff
                                           const PendingOutputEmbeddingInjection &pending_output_embedding_injection,
                                           const DeviceSlabGARuntimeConfig &runtime_config,
                                           const training_folder::TrainingWordCatalog *host_training_word_catalog,
+                                          const TrainingDataShardReleaseHistory *training_shard_release_history,
                                           RuntimeCheckpoint &checkpoint_out, const bool verbose) {
     checkpoint_out = {};
     const auto checkpoint_start_time = ProgressClock::now();
@@ -1342,6 +1355,9 @@ bool TryDownloadBoundaryCheckpointPayload(const DeviceSlabGARuntimeBuffers &buff
     checkpoint_out.generation_seed = generation_seed;
     std::uint64_t training_identity_hash = 1469598103934665603ULL;
     MixCheckpointBytes(training_identity_hash, &runtime_word_counts, sizeof(runtime_word_counts));
+    if (training_shard_release_history != nullptr) {
+        MixTrainingShardReleaseHistory(training_identity_hash, *training_shard_release_history);
+    }
     if (host_training_word_catalog != nullptr) {
         MixCheckpointValue(training_identity_hash, host_training_word_catalog->word_count);
         for (std::size_t word_index = 0; word_index < host_training_word_catalog->word_count; ++word_index) {
@@ -1351,6 +1367,9 @@ bool TryDownloadBoundaryCheckpointPayload(const DeviceSlabGARuntimeBuffers &buff
     }
     checkpoint_out.training_data_identity_hash = training_identity_hash;
     checkpoint_out.runtime_word_counts = runtime_word_counts;
+    if (training_shard_release_history != nullptr) {
+        checkpoint_out.training_shard_release_history = *training_shard_release_history;
+    }
     checkpoint_out.assembly_config = config;
     checkpoint_out.pending_output_embedding_injection = pending_output_embedding_injection;
     checkpoint_out.runtime_config = runtime_config;
@@ -1428,10 +1447,12 @@ bool TryDownloadBoundaryCheckpointPayload(const DeviceSlabGARuntimeBuffers &buff
 bool TryPreparePrebreedingBoundaryOnDevice(DeviceSlabGARuntimeBuffers &buffers, const std::uint32_t generation_seed,
                                            const RuntimeWordCounts &runtime_word_counts,
                                            const GenerationAssemblyConfig &config,
-                                           const PendingOutputEmbeddingInjection &pending_output_embedding_injection,
+                                           PendingOutputEmbeddingInjection &pending_output_embedding_injection,
                                            std::size_t &parent_action_count_out,
                                            DeviceSlabGARuntimeConfig &checkpoint_runtime_config_out, const bool verbose,
-                                           const PostFitnessEvaluationCallback &post_fitness_evaluation_callback) {
+                                           const PostFitnessEvaluationCallback &post_fitness_evaluation_callback,
+                                           const TrainingShardReleaseCallback &training_shard_release_callback,
+                                           const TrainingDataShardReleaseHistory *training_shard_release_history) {
     parent_action_count_out = 0;
     checkpoint_runtime_config_out = {};
     buffers.last_generation_used_host_spillover = false;
@@ -1460,7 +1481,8 @@ bool TryPreparePrebreedingBoundaryOnDevice(DeviceSlabGARuntimeBuffers &buffers, 
     const auto evaluation_start_time = ProgressClock::now();
     log_verbose_line("Generation " + std::to_string(next_generation_index) + ": evaluating current generation fitness");
     if (!IsValidGenerationAssemblyConfig(config) || !IsCurrentGenerationCompatible(buffers) ||
-        !TryEvaluateCurrentGenerationFitnessOnDevice(buffers, runtime_word_counts) || !ResetDeviceStatus(buffers)) {
+        !TryEvaluateCurrentGenerationFitnessOnDevice(buffers, runtime_word_counts, training_shard_release_history) ||
+        !ResetDeviceStatus(buffers)) {
         if (!IsValidGenerationAssemblyConfig(config)) {
             (void)WriteDeviceStatus(buffers, DeviceSlabGARuntimeStatusCode::kInvalidAssemblyConfig);
         }
@@ -1469,6 +1491,10 @@ bool TryPreparePrebreedingBoundaryOnDevice(DeviceSlabGARuntimeBuffers &buffers, 
     log_verbose_duration("Generation " + std::to_string(next_generation_index) +
                              ": current generation fitness evaluation finished",
                          evaluation_start_time);
+    if (training_shard_release_callback &&
+        !training_shard_release_callback(buffers, runtime_word_counts, pending_output_embedding_injection)) {
+        return false;
+    }
     std::size_t next_action_count = buffers.genotype_slab.slab_layout.action_count;
     std::size_t next_generation_size = buffers.genotype_slab.current_generation_size;
     const auto planning_start_time = ProgressClock::now();
@@ -1731,13 +1757,17 @@ bool TryAdvanceGenerationOnDevice(DeviceSlabGARuntimeBuffers &buffers, const std
                                   const PendingOutputEmbeddingInjection &pending_output_embedding_injection,
                                   const training_folder::TrainingWordCatalog *host_training_word_catalog,
                                   const bool verbose,
-                                  const PostFitnessEvaluationCallback &post_fitness_evaluation_callback) {
+                                  const PostFitnessEvaluationCallback &post_fitness_evaluation_callback,
+                                  const TrainingShardReleaseCallback &training_shard_release_callback,
+                                  const TrainingDataShardReleaseHistory *training_shard_release_history) {
     (void)host_training_word_catalog;
     std::size_t parent_action_count = 0;
     DeviceSlabGARuntimeConfig checkpoint_runtime_config{};
+    PendingOutputEmbeddingInjection selected_pending_output_embedding_injection = pending_output_embedding_injection;
     if (!TryPreparePrebreedingBoundaryOnDevice(buffers, generation_seed, runtime_word_counts, config,
-                                               pending_output_embedding_injection, parent_action_count,
-                                               checkpoint_runtime_config, verbose, post_fitness_evaluation_callback)) {
+                                               selected_pending_output_embedding_injection, parent_action_count,
+                                               checkpoint_runtime_config, verbose, post_fitness_evaluation_callback,
+                                               training_shard_release_callback, training_shard_release_history)) {
         return false;
     }
 
@@ -1745,7 +1775,7 @@ bool TryAdvanceGenerationOnDevice(DeviceSlabGARuntimeBuffers &buffers, const std
     slab_assembly_config.breeding = config.breeding;
     slab_assembly_config.mutation = config.mutation;
     slab_assembly_config.parent_action_count = parent_action_count;
-    slab_assembly_config.pending_output_embedding_injection = pending_output_embedding_injection;
+    slab_assembly_config.pending_output_embedding_injection = selected_pending_output_embedding_injection;
     return TryAssemblePreparedGenerationOnDevice(buffers, generation_seed, slab_assembly_config, verbose);
 }
 
@@ -1756,19 +1786,23 @@ bool TryCreatePrebreedingCheckpointOnDevice(DeviceSlabGARuntimeBuffers &buffers,
                                             RuntimeCheckpoint &checkpoint_out,
                                             const training_folder::TrainingWordCatalog *host_training_word_catalog,
                                             const bool verbose,
-                                            const PostFitnessEvaluationCallback &post_fitness_evaluation_callback) {
+                                            const PostFitnessEvaluationCallback &post_fitness_evaluation_callback,
+                                            const TrainingShardReleaseCallback &training_shard_release_callback,
+                                            const TrainingDataShardReleaseHistory *training_shard_release_history) {
     std::size_t parent_action_count = 0;
     DeviceSlabGARuntimeConfig checkpoint_runtime_config{};
+    PendingOutputEmbeddingInjection selected_pending_output_embedding_injection = pending_output_embedding_injection;
     if (!TryPreparePrebreedingBoundaryOnDevice(buffers, generation_seed, runtime_word_counts, config,
-                                               pending_output_embedding_injection, parent_action_count,
-                                               checkpoint_runtime_config, verbose, post_fitness_evaluation_callback)) {
+                                               selected_pending_output_embedding_injection, parent_action_count,
+                                               checkpoint_runtime_config, verbose, post_fitness_evaluation_callback,
+                                               training_shard_release_callback, training_shard_release_history)) {
         checkpoint_out = {};
         return false;
     }
 
-    return TryDownloadBoundaryCheckpointPayload(buffers, generation_seed, runtime_word_counts, config,
-                                                pending_output_embedding_injection, checkpoint_runtime_config,
-                                                host_training_word_catalog, checkpoint_out, verbose);
+    return TryDownloadBoundaryCheckpointPayload(
+        buffers, generation_seed, runtime_word_counts, config, selected_pending_output_embedding_injection,
+        checkpoint_runtime_config, host_training_word_catalog, training_shard_release_history, checkpoint_out, verbose);
 }
 
 bool TryRestorePrebreedingCheckpointToDevice(const RuntimeCheckpoint &checkpoint, DeviceSlabGARuntimeBuffers &buffers) {
@@ -1948,6 +1982,28 @@ bool ReadBinaryBytes(std::ifstream &stream, void *data, const std::size_t byte_c
     return static_cast<bool>(stream);
 }
 
+bool WriteTrainingShardReleaseHistory(std::ofstream &stream, const TrainingDataShardReleaseHistory &history) {
+    bool ok = true;
+    ok &= WriteBinaryValue(stream, history.release_count);
+    for (std::size_t release_index = 0; ok && (release_index < history.release_count); ++release_index) {
+        ok &= WriteBinaryValue(stream, history.release_generations[release_index]);
+        ok &= WriteBinaryValue(stream, history.release_fitness_p99[release_index]);
+    }
+    return ok;
+}
+
+bool ReadTrainingShardReleaseHistory(std::ifstream &stream, TrainingDataShardReleaseHistory &history_out) {
+    history_out = {};
+    bool ok = true;
+    ok &= ReadBinaryValue(stream, history_out.release_count);
+    ok &= (history_out.release_count <= training_folder::kTrainingWordCatalogCapacity);
+    for (std::size_t release_index = 0; ok && (release_index < history_out.release_count); ++release_index) {
+        ok &= ReadBinaryValue(stream, history_out.release_generations[release_index]);
+        ok &= ReadBinaryValue(stream, history_out.release_fitness_p99[release_index]);
+    }
+    return ok;
+}
+
 } // namespace
 
 bool TryWriteRuntimeCheckpointAtomically(const RuntimeCheckpoint &checkpoint,
@@ -1979,6 +2035,7 @@ bool TryWriteRuntimeCheckpointAtomically(const RuntimeCheckpoint &checkpoint,
     ok &= WriteBinaryValue(stream, resume_phase);
     ok &= WriteBinaryValue(stream, checkpoint.generation_seed);
     ok &= WriteBinaryValue(stream, checkpoint.runtime_word_counts);
+    ok &= WriteTrainingShardReleaseHistory(stream, checkpoint.training_shard_release_history);
     ok &= WriteBinaryValue(stream, checkpoint.assembly_config);
     ok &= WriteBinaryValue(stream, checkpoint.pending_output_embedding_injection);
     ok &= WriteBinaryValue(stream, checkpoint.runtime_config);
@@ -2047,6 +2104,7 @@ bool TryReadRuntimeCheckpoint(const std::filesystem::path &checkpoint_path, Runt
     checkpoint_out.resume_phase = static_cast<RuntimeCheckpointResumePhase>(resume_phase);
     ok &= ReadBinaryValue(stream, checkpoint_out.generation_seed);
     ok &= ReadBinaryValue(stream, checkpoint_out.runtime_word_counts);
+    ok &= ReadTrainingShardReleaseHistory(stream, checkpoint_out.training_shard_release_history);
     ok &= ReadBinaryValue(stream, checkpoint_out.assembly_config);
     ok &= ReadBinaryValue(stream, checkpoint_out.pending_output_embedding_injection);
     ok &= ReadBinaryValue(stream, checkpoint_out.runtime_config);

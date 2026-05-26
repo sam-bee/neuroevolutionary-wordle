@@ -21,7 +21,7 @@ At process start, `run_genetic_algorithm` uploads the full randomized action cat
 
 During a run:
 
-- newly introduced words still come from the top of that catalog on a phased schedule
+- newly introduced words still come from the top of that catalog when adaptive shard-release criteria are met
 - selectable action-space count and training-word count are kept equal
 - output-embedding growth is therefore global
 - fitness exposure is spatial:

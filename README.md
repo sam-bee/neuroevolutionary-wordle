@@ -33,7 +33,7 @@ constant memory once at process start.
 
 During a run:
 
-- new words are introduced from the top of that catalog on a phased schedule
+- new words are introduced from the top of that catalog when adaptive shard-release criteria are met
 - action-space growth is global, so genotype width still grows globally
 - fitness exposure is spatial, via local training-data shards on the cellular grid
 - recombination, mutation, and fitness evaluation stay on device
