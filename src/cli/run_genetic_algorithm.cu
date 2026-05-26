@@ -97,6 +97,8 @@ struct CliConfig {
         neuroevolution::training_folder::kDefaultFirstNewTrainingShardReleaseGeneration;
     float shard_release_centroid_distance_threshold =
         neuroevolution::training_folder::kDefaultTrainingShardReleaseCentroidDistanceThreshold;
+    float shard_release_fitness_p99_threshold =
+        neuroevolution::training_folder::kDefaultTrainingShardReleaseFitnessP99Threshold;
     std::size_t breeding_radius = neuroevolution::genetic_algorithm::spatial::kCellularBreedingRadius;
     float parent_selection_rank_exponent = neuroevolution::genetic_algorithm::kDefaultParentSelectionRankExponent;
     float crossover_temperature_level1 = neuroevolution::genetic_algorithm::kDefaultCrossoverTemperatureLevel1;
@@ -138,7 +140,7 @@ void PrintUsage() {
     std::cout << "Usage: run_genetic_algorithm [--verbose] [--seed N] [--generations N] [--population-size N] "
                  "[--genotype-vram-gb F] [--generation-vram-gb F] [--initial-word-count N] [--word-count-step N] "
                  "[--shard-release-min-gap N] [--first-new-shard-release-generation N] "
-                 "[--shard-release-centroid-threshold F] "
+                 "[--shard-release-centroid-threshold F] [--shard-release-fitness-p99-threshold F] "
                  "[--breeding-radius N] [--parent-selection-rank-exponent F] "
                  "[--crossover-temperature-level1 F] [--crossover-temperature-level2 F] "
                  "[--crossover-temperature-level3 F] "
@@ -154,10 +156,12 @@ void PrintUsage() {
               << ", first_new_shard_release_generation="
               << neuroevolution::training_folder::kDefaultFirstNewTrainingShardReleaseGeneration
               << ", shard_release_centroid_distance_threshold="
-              << neuroevolution::training_folder::kDefaultTrainingShardReleaseCentroidDistanceThreshold << ".\n"
+              << neuroevolution::training_folder::kDefaultTrainingShardReleaseCentroidDistanceThreshold
+              << ", shard_release_fitness_p99_threshold="
+              << neuroevolution::training_folder::kDefaultTrainingShardReleaseFitnessP99Threshold << ".\n"
               << "After the foundation shard, the first new shard may not release before generation 10. Later shard "
-                 "releases require the minimum gap and either centroid distance at or below the threshold or p99 "
-                 "fitness beating the p99 baseline recorded immediately before the previous release.\n"
+                 "releases require the minimum gap, p99 fitness above the fitness threshold, and centroid distance "
+                 "at or below the centroid threshold.\n"
               << "Spatial training-data shards grow their evaluation radius every "
               << neuroevolution::training_folder::kDefaultShardRadiusGrowthPeriodGenerations
               << " generations by default.\n"
@@ -321,6 +325,24 @@ ArgumentParseResult TryParseArguments(const int argc, char **argv, CliConfig &co
             }
 
             config.shard_release_centroid_distance_threshold = static_cast<float>(parsed_value);
+            ++arg_index;
+            continue;
+        }
+
+        if (argument == "--shard-release-fitness-p99-threshold") {
+            if ((arg_index + 1) >= argc) {
+                std::cerr << "Missing value for " << argument << '\n';
+                return ArgumentParseResult::kFailure;
+            }
+
+            double parsed_value = 0.0;
+            if (!TryParseNonNegativeReal(argv[arg_index + 1], parsed_value) ||
+                (parsed_value > static_cast<double>(std::numeric_limits<float>::max()))) {
+                std::cerr << "Shard release p99 fitness threshold must be a non-negative finite number.\n";
+                return ArgumentParseResult::kFailure;
+            }
+
+            config.shard_release_fitness_p99_threshold = static_cast<float>(parsed_value);
             ++arg_index;
             continue;
         }
@@ -1173,7 +1195,6 @@ bool TryMaybeReleaseTrainingDataShard(const DeviceSlabGARuntimeBuffers &buffers,
                                       const RuntimeWordCounts &runtime_word_counts, const CliConfig &cli_config,
                                       const std::size_t catalog_word_count,
                                       TrainingDataShardReleaseHistory &training_shard_release_history,
-                                      bool &release_baseline_ready,
                                       PendingOutputEmbeddingInjection &pending_output_embedding_injection,
                                       std::size_t &next_word_count_out) {
     pending_output_embedding_injection = {};
@@ -1190,16 +1211,6 @@ bool TryMaybeReleaseTrainingDataShard(const DeviceSlabGARuntimeBuffers &buffers,
     }
 
     const std::size_t latest_release_index = training_shard_release_history.release_count - 1;
-    if (!release_baseline_ready) {
-        GenerationFitnessTelemetryRow foundation_fitness_row{};
-        if (!TryCollectGenerationFitnessTelemetry(buffers, runtime_word_counts, false, foundation_fitness_row)) {
-            return false;
-        }
-
-        training_shard_release_history.release_fitness_p99[latest_release_index] = foundation_fitness_row.fitness_p99;
-        release_baseline_ready = true;
-    }
-
     const std::size_t current_generation_index = buffers.genotype_slab.current_generation_index;
     const std::size_t release_generation = current_generation_index + 1;
     const std::size_t previous_release_generation =
@@ -1227,11 +1238,10 @@ bool TryMaybeReleaseTrainingDataShard(const DeviceSlabGARuntimeBuffers &buffers,
     convergence_row.elapsed_ms =
         std::chrono::duration<float, std::milli>(ProgressClock::now() - convergence_start_time).count();
 
-    const float previous_release_fitness_p99 = training_shard_release_history.release_fitness_p99[latest_release_index];
     const bool centroid_triggered =
         convergence_row.centroid_distance_mean <= cli_config.shard_release_centroid_distance_threshold;
-    const bool fitness_triggered = fitness_row.fitness_p99 > previous_release_fitness_p99;
-    if (!centroid_triggered && !fitness_triggered) {
+    const bool fitness_triggered = fitness_row.fitness_p99 > cli_config.shard_release_fitness_p99_threshold;
+    if (!centroid_triggered || !fitness_triggered) {
         return true;
     }
 
@@ -1258,17 +1268,10 @@ bool TryMaybeReleaseTrainingDataShard(const DeviceSlabGARuntimeBuffers &buffers,
 
     std::ostringstream reason_stream;
     reason_stream << std::fixed << std::setprecision(4);
-    if (centroid_triggered) {
-        reason_stream << "centroid_distance_mean=" << convergence_row.centroid_distance_mean
-                      << " <= threshold=" << cli_config.shard_release_centroid_distance_threshold;
-    }
-    if (fitness_triggered) {
-        if (centroid_triggered) {
-            reason_stream << "; ";
-        }
-        reason_stream << "fitness_p99=" << fitness_row.fitness_p99
-                      << " > previous_release_fitness_p99=" << previous_release_fitness_p99;
-    }
+    reason_stream << "fitness_p99=" << fitness_row.fitness_p99
+                  << " > fitness_threshold=" << cli_config.shard_release_fitness_p99_threshold
+                  << "; centroid_distance_mean=" << convergence_row.centroid_distance_mean
+                  << " <= centroid_threshold=" << cli_config.shard_release_centroid_distance_threshold;
 
     std::cout << '[' << FormatCurrentLocalTimestamp() << "] Training data shard released for generation "
               << release_generation << ": first_catalog_word_index=" << first_catalog_word_index
@@ -1541,7 +1544,6 @@ int main(int argc, char **argv) {
         const GenerationAssemblyConfig assembly_config = MakeAssemblyConfig(cli_config);
         RuntimeWordCounts runtime_word_counts{};
         TrainingDataShardReleaseHistory training_shard_release_history{};
-        bool training_shard_release_baseline_ready = false;
 
         if (cli_config.resume_checkpoint_path_was_provided) {
             RuntimeCheckpoint checkpoint{};
@@ -1593,7 +1595,6 @@ int main(int argc, char **argv) {
             }
             runtime_word_counts = RuntimeWordCountsAfterCheckpointResume(checkpoint);
             training_shard_release_history = checkpoint.training_shard_release_history;
-            training_shard_release_baseline_ready = training_shard_release_history.release_count > 0;
 
             std::cout << '[' << FormatCurrentLocalTimestamp() << "] Resumed device GA from checkpoint:\n"
                       << "  checkpoint_path=" << cli_config.resume_checkpoint_path.string() << '\n'
@@ -1610,6 +1611,8 @@ int main(int argc, char **argv) {
                       << cli_config.first_new_shard_release_generation << '\n'
                       << "  shard_release_centroid_distance_threshold="
                       << cli_config.shard_release_centroid_distance_threshold << '\n'
+                      << "  shard_release_fitness_p99_threshold="
+                      << cli_config.shard_release_fitness_p99_threshold << '\n'
                       << "  genome_stride_bytes=" << buffers.genotype_slab.slab_layout.slot_stride_bytes << '\n'
                       << "  generations=" << cli_config.generation_count << '\n'
                       << "  seed=" << cli_config.seed << '\n'
@@ -1738,6 +1741,8 @@ int main(int argc, char **argv) {
                       << cli_config.first_new_shard_release_generation << '\n'
                       << "  shard_release_centroid_distance_threshold="
                       << cli_config.shard_release_centroid_distance_threshold << '\n'
+                      << "  shard_release_fitness_p99_threshold="
+                      << cli_config.shard_release_fitness_p99_threshold << '\n'
                       << "  training_shard_release_count=" << training_shard_release_history.release_count << '\n'
                       << "  breeding_radius=" << assembly_config.parent_selection.cellular_breeding_radius << '\n'
                       << "  parent_selection_rank_exponent=" << assembly_config.parent_selection.rank_exponent << '\n'
@@ -1817,8 +1822,7 @@ int main(int argc, char **argv) {
                     PendingOutputEmbeddingInjection &release_pending_output_embedding_injection) {
                     return TryMaybeReleaseTrainingDataShard(
                         release_buffers, release_word_counts, cli_config, training_word_catalog.word_count,
-                        training_shard_release_history, training_shard_release_baseline_ready,
-                        release_pending_output_embedding_injection, next_word_count);
+                        training_shard_release_history, release_pending_output_embedding_injection, next_word_count);
                 };
             const std::uint32_t generation_seed =
                 cli_config.seed + 2U + static_cast<std::uint32_t>(current_generation_index);

@@ -22,13 +22,12 @@ The initial foundation shard is global from generation 0. The first later shard 
 After that, later shards are released only when both of these are true:
 
 - no shard has been released in the last 3 generations
-- either centroid distance mean is at or below 6, or p99 fitness is higher than the p99 baseline recorded immediately
-  before the previous shard was released
+- p99 fitness is above 0.20 and centroid distance mean is at or below 6
 
 The CLI exposes `--first-new-shard-release-generation N`, `--shard-release-min-gap N`, and
-`--shard-release-centroid-threshold F`. The first new-shard release generation may not be set below 10, and the minimum
-gap may not be set below 3. Each release writes a console line with the inserted catalog range and the metric condition
-that triggered it.
+`--shard-release-centroid-threshold F`, and `--shard-release-fitness-p99-threshold F`. The first new-shard release
+generation may not be set below 10, and the minimum gap may not be set below 3. Each release writes a console line with
+the inserted catalog range and the metric conditions that triggered it.
 
 ## What Is Now Spatial
 

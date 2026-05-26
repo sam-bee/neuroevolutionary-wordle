@@ -42,6 +42,7 @@ run-ga-desktop: .env
 		--word-count-step 20 \
 		--shard-release-min-gap 3 \
 		--first-new-shard-release-generation 10 \
+		--shard-release-fitness-p99-threshold 0.20 \
 		--shard-radius-growth-period 2 \
 		--verbose
 
@@ -54,6 +55,7 @@ run-ga-laptop: .env
 		--word-count-step 20 \
 		--shard-release-min-gap 3 \
 		--first-new-shard-release-generation 10 \
+		--shard-release-fitness-p99-threshold 0.20 \
 		--shard-radius-growth-period 2 \
 		--verbose
 
@@ -68,6 +70,7 @@ run-ga-prod: .env
 		--shard-release-min-gap 3 \
 		--first-new-shard-release-generation 10 \
 		--shard-release-centroid-threshold 6 \
+		--shard-release-fitness-p99-threshold 0.20 \
 		--shard-radius-growth-period 2 \
 		--checkpoint-path checkpoints/ga-runtime.bin \
 		--checkpoint-every 10 \
@@ -90,6 +93,7 @@ run-ga-growth-smoke: .env
 		--shard-release-min-gap 3 \
 		--first-new-shard-release-generation 10 \
 		--shard-release-centroid-threshold 1000000 \
+		--shard-release-fitness-p99-threshold 0.20 \
 		--shard-radius-growth-period 2 \
 		--verbose
 
@@ -107,6 +111,7 @@ run-ga-benchmark-growth: .env
 		--shard-release-min-gap 3 \
 		--first-new-shard-release-generation 10 \
 		--shard-release-centroid-threshold 1000000 \
+		--shard-release-fitness-p99-threshold 0.20 \
 		--shard-initial-radius-infinite \
 		--verbose
 
