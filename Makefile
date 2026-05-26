@@ -64,6 +64,7 @@ run-ga-prod: .env
 		--initial-word-count 50 \
 		--word-count-step 50 \
 		--shard-release-min-gap 3 \
+		--shard-release-centroid-threshold 6 \
 		--shard-radius-growth-period 2 \
 		--checkpoint-path checkpoints/ga-runtime.bin \
 		--checkpoint-every 10 \
