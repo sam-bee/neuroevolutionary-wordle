@@ -39,9 +39,9 @@ template <int WarpWidth> struct DynamicPolicyWarpScratch {
     int status = static_cast<int>(DynamicInferenceStatusCode::kActionSelectionFailed);
 };
 
-inline NEUROEVOLUTION_HOST_DEVICE float ScoreDynamicActionEmbedding(
-    const PolicyVector &policy_vector, const Word &action_word,
-    const genetic_algorithm::genome::TrainableActionEmbeddingTail &trainable_tail) noexcept {
+inline NEUROEVOLUTION_HOST_DEVICE float
+ScoreDynamicActionEmbedding(const PolicyVector &policy_vector, const Word &action_word,
+                            const genetic_algorithm::genome::TrainableActionEmbeddingTail &trainable_tail) noexcept {
     ActionEmbedding action_embedding{};
     action_embedding.word = action_word;
     action_embedding.trainable_tail = trainable_tail;

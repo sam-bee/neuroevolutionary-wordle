@@ -2,9 +2,9 @@
 
 This document describes the agreed neural-network structure for the Wordle policy model.
 
-It is intended as an implementation guide for the CUDA/C++ model work. The repository now also contains early
-genetic-algorithm and device-runtime code, but the scope of this document still ends at **model structure and forward
-inference**. It does **not** yet specify:
+It is intended as an implementation guide for the CUDA/C++ model work. The repository now also contains the CUDA
+genetic-algorithm runtime, checkpointing, telemetry, winner artifacts, and interactive inference code, but the scope of
+this document still ends at **model structure and forward inference**. It does **not** specify:
 
 - genetic algorithm mechanics
 - reinforcement learning
@@ -17,7 +17,7 @@ inference**. It does **not** yet specify:
 
 The model maps a Wordle game state to a **64-dimensional policy vector**.
 
-That 64-dimensional vector is then scored against every word in the action-space embedding by dot product.
+That 64-dimensional vector is then scored against every active word in the action-space embedding by dot product.
 
 High-level shape:
 
@@ -33,11 +33,13 @@ virgin-grid flag + up to 5 previous turns
 
 ## 2. Action space
 
-The action space contains **4,739 words**.
+The full curated action catalog contains **4,739 words**.
 
-These are all legal guesses for the model to play. The list is intentionally smaller than the full NYT guess list, while still including all solution words.
+These are all legal guesses available to the project. The list is intentionally smaller than the full NYT guess list,
+while still including all solution words.
 
-The action space size matters because the output embedding contains one vector per action word.
+The action space size matters because the output embedding contains one vector per active action word. The GA runtime can
+start from a smaller active prefix of this catalog and grow that prefix over time.
 
 ## 3. Representation of game state
 
@@ -221,7 +223,8 @@ The policy head emits a **64-dimensional vector**. This is not a per-word output
 
 Instead, the model scores actions by comparing the policy vector with each action word’s embedding vector.
 
-There are **4,739 output-embedding vectors**, one per action word.
+There can be up to **4,739 output-embedding vectors**, one per action word in the full catalog. Runtime genomes store
+trainable tail rows for the currently active action count.
 
 Each embedding vector has dimension 64.
 
@@ -252,7 +255,7 @@ The remaining **38 dimensions** are:
 
 - randomly initialised
 - trainable
-- updated alongside the rest of the model parameters once training code exists
+- evolved alongside the rest of the model parameters by the GA runtime
 
 So each word embedding is:
 
@@ -273,20 +276,22 @@ the action score is:
 score(w) = dot(p, e_w)
 ```
 
-The model computes this for all 4,739 action words and then selects the highest-scoring word.
+For a full-catalog model, this is computed for all 4,739 action words and the highest-scoring word is selected. The
+current GA and saved-artifact inference paths score the active action-space prefix associated with the runtime or saved
+artifact, and dynamic inference masks words that have already been guessed on the current board.
 
 This means the immediate inference path is:
 
 ```math
 game state
 -> 64D policy output
--> 4,739 dot products
+-> active-action-count dot products
 -> argmax
 ```
 
-## 11. Parameters that exist at model-build stage
+## 11. Implemented parameter groups
 
-For the initial implementation, the model contains:
+The model contains:
 
 ### trainable model parameters
 
@@ -295,7 +300,7 @@ For the initial implementation, the model contains:
 - trunk layer `321 -> 256` weights and biases
 - trunk layer `256 -> 128` weights and biases
 - trunk layer `128 -> 64` weights and biases
-- trainable 38 dimensions for each of the 4,739 output embeddings
+- trainable 38 dimensions for each active output embedding
 
 ### fixed data
 
@@ -303,9 +308,9 @@ For the initial implementation, the model contains:
 - fixed 26 dimensions for each output embedding word
 - hard-coded zero vector used for empty turn slots
 
-## 12. Suggested implementation boundaries
+## 12. Implemented model boundaries
 
-For now, the implementation target should stop at:
+The implemented model boundary covers:
 
 1. data structures for encoded Wordle state
 2. model parameter storage
@@ -316,7 +321,7 @@ For now, the implementation target should stop at:
 7. output embedding scoring
 8. argmax action selection
 
-That is enough to validate the architecture and test inference.
+The GA runtime, artifact persistence, and interactive inference code are built around this boundary.
 
 ## 13. Summary
 
@@ -336,10 +341,8 @@ dense trunk:
 321 -> 256 -> 128 -> 64
 
 action selection:
-dot product with 4,739 64D word embeddings
+dot product with active 64D word embeddings, up to 4,739 for the full catalog
 highest score wins
 ```
 
-This is the model structure to implement first.
-
-Everything else can be built around it later.
+This is the model structure currently implemented.

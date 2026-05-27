@@ -41,7 +41,6 @@ using neuroevolution::genetic_algorithm::genotype_slab::ComputeSlabSlotStrideByt
 using neuroevolution::genetic_algorithm::genotype_slab::SlabParentPair;
 using neuroevolution::genetic_algorithm::genotype_slab::SlabSlotCountForByteBudget;
 using neuroevolution::genetic_algorithm::slab_device::DestroyDeviceSlabGARuntimeBuffers;
-using neuroevolution::genetic_algorithm::slab_device::DeviceSlabBootstrapConfig;
 using neuroevolution::genetic_algorithm::slab_device::DeviceSlabGARuntimeBuffers;
 using neuroevolution::genetic_algorithm::slab_device::DeviceSlabGARuntimeConfig;
 using neuroevolution::genetic_algorithm::slab_device::DeviceSlabGARuntimeStatusCode;
@@ -427,8 +426,7 @@ ArgumentParseResult TryParseArguments(const int argc, char **argv, CliConfig &co
             (argument == "--word-count-step-period") || (argument == "--shard-release-min-gap") ||
             (argument == "--first-new-shard-release-generation") || (argument == "--breeding-radius") ||
             (argument == "--shard-initial-radius") || (argument == "--shard-radius-growth-period") ||
-            (argument == "--checkpoint-every") ||
-            (argument == "--telemetry-genetic-convergence-interval")) {
+            (argument == "--checkpoint-every") || (argument == "--telemetry-genetic-convergence-interval")) {
             if ((arg_index + 1) >= argc) {
                 std::cerr << "Missing value for " << argument << '\n';
                 return ArgumentParseResult::kFailure;
@@ -1251,9 +1249,6 @@ bool TryMaybeReleaseTrainingDataShard(const DeviceSlabGARuntimeBuffers &buffers,
         (remaining_catalog_words < runtime_word_counts.training_word_schedule.word_count_step)
             ? remaining_catalog_words
             : runtime_word_counts.training_word_schedule.word_count_step;
-    if (injection_count == 0) {
-        return true;
-    }
 
     pending_output_embedding_injection.enabled = true;
     pending_output_embedding_injection.first_catalog_word_index = first_catalog_word_index;
@@ -1283,8 +1278,6 @@ bool TryMaybeReleaseTrainingDataShard(const DeviceSlabGARuntimeBuffers &buffers,
 
 GenerationAssemblyConfig MakeAssemblyConfig(const CliConfig &cli_config) {
     GenerationAssemblyConfig config{};
-    config.parent_selection.tournament_size = 3;
-    config.parent_selection.allow_self_parenting = false;
     config.parent_selection.cellular_breeding_radius = cli_config.breeding_radius;
     config.parent_selection.rank_exponent = cli_config.parent_selection_rank_exponent;
     config.breeding.crossover_temperature_level1 = cli_config.crossover_temperature_level1;
@@ -1607,12 +1600,12 @@ int main(int argc, char **argv) {
                       << "  action_count=" << runtime_word_counts.action_space_word_count << '\n'
                       << "  training_shard_release_count=" << training_shard_release_history.release_count << '\n'
                       << "  shard_release_min_gap_generations=" << cli_config.shard_release_min_gap_generations << '\n'
-                      << "  first_new_shard_release_generation="
-                      << cli_config.first_new_shard_release_generation << '\n'
+                      << "  first_new_shard_release_generation=" << cli_config.first_new_shard_release_generation
+                      << '\n'
                       << "  shard_release_centroid_distance_threshold="
                       << cli_config.shard_release_centroid_distance_threshold << '\n'
-                      << "  shard_release_fitness_p99_threshold="
-                      << cli_config.shard_release_fitness_p99_threshold << '\n'
+                      << "  shard_release_fitness_p99_threshold=" << cli_config.shard_release_fitness_p99_threshold
+                      << '\n'
                       << "  genome_stride_bytes=" << buffers.genotype_slab.slab_layout.slot_stride_bytes << '\n'
                       << "  generations=" << cli_config.generation_count << '\n'
                       << "  seed=" << cli_config.seed << '\n'
@@ -1705,9 +1698,7 @@ int main(int argc, char **argv) {
                 return 1;
             }
 
-            const DeviceSlabBootstrapConfig bootstrap_config{};
-            if (!TryBootstrapRandomCurrentGenerationOnDevice(buffers, initial_population_size, cli_config.seed, 0,
-                                                             bootstrap_config)) {
+            if (!TryBootstrapRandomCurrentGenerationOnDevice(buffers, initial_population_size, cli_config.seed, 0)) {
                 std::cerr << "Could not bootstrap the initial device slab population.\n";
                 DestroyDeviceSlabGARuntimeBuffers(buffers);
                 return 1;
@@ -1737,12 +1728,12 @@ int main(int argc, char **argv) {
                       << "  schedule_initial_word_count=" << word_count_schedule.initial_word_count << '\n'
                       << "  schedule_word_count_step=" << word_count_schedule.word_count_step << '\n'
                       << "  shard_release_min_gap_generations=" << cli_config.shard_release_min_gap_generations << '\n'
-                      << "  first_new_shard_release_generation="
-                      << cli_config.first_new_shard_release_generation << '\n'
+                      << "  first_new_shard_release_generation=" << cli_config.first_new_shard_release_generation
+                      << '\n'
                       << "  shard_release_centroid_distance_threshold="
                       << cli_config.shard_release_centroid_distance_threshold << '\n'
-                      << "  shard_release_fitness_p99_threshold="
-                      << cli_config.shard_release_fitness_p99_threshold << '\n'
+                      << "  shard_release_fitness_p99_threshold=" << cli_config.shard_release_fitness_p99_threshold
+                      << '\n'
                       << "  training_shard_release_count=" << training_shard_release_history.release_count << '\n'
                       << "  breeding_radius=" << assembly_config.parent_selection.cellular_breeding_radius << '\n'
                       << "  parent_selection_rank_exponent=" << assembly_config.parent_selection.rank_exponent << '\n'
@@ -1838,9 +1829,8 @@ int main(int argc, char **argv) {
                                            ": skipping checkpoint because previous async write is still running");
                     }
                     if (!TryAdvanceGenerationOnDevice(buffers, generation_seed, runtime_word_counts, assembly_config,
-                                                      pending_output_embedding_injection, &training_word_catalog,
-                                                      cli_config.verbose, log_telemetry_after_fitness,
-                                                      release_training_shard_after_fitness,
+                                                      pending_output_embedding_injection, cli_config.verbose,
+                                                      log_telemetry_after_fitness, release_training_shard_after_fitness,
                                                       &training_shard_release_history)) {
                         (void)ReportDeviceSlabRuntimeFailure(buffers, "Next-generation assembly");
                         DestroyDeviceSlabGARuntimeBuffers(buffers);
@@ -1888,9 +1878,8 @@ int main(int argc, char **argv) {
                 }
             } else {
                 if (!TryAdvanceGenerationOnDevice(buffers, generation_seed, runtime_word_counts, assembly_config,
-                                                  pending_output_embedding_injection, &training_word_catalog,
-                                                  cli_config.verbose, log_telemetry_after_fitness,
-                                                  release_training_shard_after_fitness,
+                                                  pending_output_embedding_injection, cli_config.verbose,
+                                                  log_telemetry_after_fitness, release_training_shard_after_fitness,
                                                   &training_shard_release_history)) {
                     (void)ReportDeviceSlabRuntimeFailure(buffers, "Next-generation assembly");
                     DestroyDeviceSlabGARuntimeBuffers(buffers);

@@ -141,7 +141,6 @@ target_link_libraries(genetic_algorithm INTERFACE
 )
 
 add_library(genotype_slab STATIC
-    src/genetic_algorithm/genotype_slab/assembly.cpp
     src/genetic_algorithm/genotype_slab/slab_allocator.cpp
 )
 
@@ -702,26 +701,6 @@ set_target_properties(fitness_evaluator_mode_test PROPERTIES
 
 add_test(NAME fitness_evaluator_mode_test COMMAND fitness_evaluator_mode_test)
 set_tests_properties(fitness_evaluator_mode_test PROPERTIES
-    LABELS "gpu;integration"
-    RESOURCE_LOCK cuda_device
-)
-
-add_executable(output_embedding_injection_test
-    tests/genetic_algorithm/output_embedding_injection_test.cu
-)
-
-target_link_libraries(output_embedding_injection_test PRIVATE
-    genetic_algorithm
-)
-
-enable_project_warnings(output_embedding_injection_test)
-
-set_target_properties(output_embedding_injection_test PROPERTIES
-    CUDA_SEPARABLE_COMPILATION ON
-)
-
-add_test(NAME output_embedding_injection_test COMMAND output_embedding_injection_test)
-set_tests_properties(output_embedding_injection_test PROPERTIES
     LABELS "gpu;integration"
     RESOURCE_LOCK cuda_device
 )

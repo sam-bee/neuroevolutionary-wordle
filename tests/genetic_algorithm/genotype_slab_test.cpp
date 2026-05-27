@@ -4,21 +4,17 @@
 #include <iostream>
 #include <string_view>
 
-#include "common/float16.hpp"
 #include "genetic_algorithm/genome/dynamic_layout.hpp"
 #include "genetic_algorithm/genotype_slab/assembly.hpp"
 #include "genetic_algorithm/genotype_slab/generation.hpp"
 #include "genetic_algorithm/genotype_slab/reference_counter.hpp"
-#include "genetic_algorithm/genotype_slab/repacking.hpp"
 #include "genetic_algorithm/genotype_slab/slab_allocator.hpp"
 
 namespace {
 
 using neuroevolution::common::ToFloat;
-using neuroevolution::common::ToFloat16;
 using neuroevolution::genetic_algorithm::genome::ComputeDynamicGenomeStrideBytes;
 using neuroevolution::genetic_algorithm::genotype_slab::ClearSlabGenerationFitness;
-using neuroevolution::genetic_algorithm::genotype_slab::ComputeOutputEmbeddingGrowthBytes;
 using neuroevolution::genetic_algorithm::genotype_slab::ComputeSlabSlotStrideBytes;
 using neuroevolution::genetic_algorithm::genotype_slab::GenomePolicyModelParameters;
 using neuroevolution::genetic_algorithm::genotype_slab::GenomeTailRows;
@@ -31,18 +27,15 @@ using neuroevolution::genetic_algorithm::genotype_slab::IsValidSlabGeneration;
 using neuroevolution::genetic_algorithm::genotype_slab::kInvalidSlabSlotIndex;
 using neuroevolution::genetic_algorithm::genotype_slab::MakeGenotypeSlabView;
 using neuroevolution::genetic_algorithm::genotype_slab::MakeSlabGenerationView;
-using neuroevolution::genetic_algorithm::genotype_slab::SlabAssemblyCallbacks;
 using neuroevolution::genetic_algorithm::genotype_slab::SlabAssemblyPlan;
 using neuroevolution::genetic_algorithm::genotype_slab::SlabGeneration;
 using neuroevolution::genetic_algorithm::genotype_slab::SlabGenerationView;
 using neuroevolution::genetic_algorithm::genotype_slab::SlabSlotCountForByteBudget;
 using neuroevolution::genetic_algorithm::genotype_slab::SlabSlotState;
 using neuroevolution::genetic_algorithm::genotype_slab::TryAllocateSlabSlot;
-using neuroevolution::genetic_algorithm::genotype_slab::TryAssembleNextGeneration;
 using neuroevolution::genetic_algorithm::genotype_slab::TryBuildParentReferenceCounts;
 using neuroevolution::genetic_algorithm::genotype_slab::TryCloneSlabSlotIntoGeneration;
 using neuroevolution::genetic_algorithm::genotype_slab::TryCollectZeroReferenceParents;
-using neuroevolution::genetic_algorithm::genotype_slab::TryCompactAndRepackSlabForExpandedActionCount;
 using neuroevolution::genetic_algorithm::genotype_slab::TryCopyGenomeBytesIntoSlabSlot;
 using neuroevolution::genetic_algorithm::genotype_slab::TryCreateHostGenotypeSlab;
 using neuroevolution::genetic_algorithm::genotype_slab::TryCreateSlabAssemblyPlan;
@@ -54,10 +47,6 @@ using neuroevolution::genetic_algorithm::genotype_slab::TryRetainSlabSlot;
 using neuroevolution::genetic_algorithm::genotype_slab::TrySetSlabGenerationSlot;
 
 constexpr float kTolerance = 1.0e-6f;
-
-struct TestAssemblyState {
-    std::uint32_t assembled_child_count = 0;
-};
 
 bool ExpectTrue(const bool condition, const std::string_view message) {
     if (!condition) {
@@ -77,28 +66,6 @@ bool ExpectNear(const float actual, const float expected, const std::string_view
     return true;
 }
 
-bool AssembleSummedChildGenome(const std::uint8_t *first_parent_genome_bytes,
-                               const std::uint8_t *second_parent_genome_bytes, const std::size_t action_count,
-                               std::uint8_t *child_genome_bytes, void *user_data) {
-    (void)action_count;
-    auto *assembly_state = static_cast<TestAssemblyState *>(user_data);
-    if ((first_parent_genome_bytes == nullptr) || (second_parent_genome_bytes == nullptr) ||
-        (child_genome_bytes == nullptr) || (assembly_state == nullptr)) {
-        return false;
-    }
-
-    const float first_bias =
-        ToFloat(GenomePolicyModelParameters(first_parent_genome_bytes).dense_trunk.hidden1_to_output.biases[0]);
-    const float second_bias =
-        ToFloat(GenomePolicyModelParameters(second_parent_genome_bytes).dense_trunk.hidden1_to_output.biases[0]);
-
-    GenomePolicyModelParameters(child_genome_bytes).dense_trunk.hidden1_to_output.biases[0] =
-        ToFloat16(first_bias + second_bias);
-    GenomeTailRows(child_genome_bytes)[0][0] = ToFloat16(static_cast<float>(assembly_state->assembled_child_count + 1));
-    ++assembly_state->assembled_child_count;
-    return true;
-}
-
 bool TestSlabLayoutReusesDynamicGenomeStrideMath() {
     constexpr std::size_t kActionCount = 20;
     constexpr std::size_t kSlotCount = 6;
@@ -115,145 +82,6 @@ bool TestSlabLayoutReusesDynamicGenomeStrideMath() {
     ok &= ExpectTrue(SlabSlotCountForByteBudget(layout.slab_bytes, kActionCount) == kSlotCount,
                      "Expected slab byte budget helper to recover the slot count");
     ok &= ExpectTrue(IsValidGenotypeSlabLayout(layout), "Expected constructed slab layout to be valid");
-    ok &= ExpectTrue(ComputeOutputEmbeddingGrowthBytes(50) == 3800,
-                     "Expected a fifty-word shard increment to add 3800 trainable output-embedding bytes");
-    return ok;
-}
-
-bool TestHostSlabCompactsAndRepacksForExpandedActionCount() {
-    constexpr std::size_t kInitialActionCount = 4;
-    constexpr std::size_t kExpandedActionCount = 8;
-
-    HostGenotypeSlab buffer{};
-    SlabGeneration current_generation{};
-    bool ok = TryCreateHostGenotypeSlab(buffer, 6, kInitialActionCount);
-    ok &= TryCreateSlabGeneration(current_generation, 3, 9);
-    ok &= ExpectTrue(ok, "Expected repack fixtures to allocate");
-    if (!ok) {
-        return false;
-    }
-
-    std::uint32_t slots[6]{};
-    for (std::size_t slot_offset = 0; slot_offset < 6; ++slot_offset) {
-        ok &= TryAllocateSlabSlot(buffer, slots[slot_offset]);
-    }
-    ok &= ExpectTrue(ok, "Expected repack fixtures to allocate six deterministic slab slots");
-    ok &= TrySetSlabGenerationSlot(current_generation, 0, slots[5]);
-    ok &= TrySetSlabGenerationSlot(current_generation, 1, slots[1]);
-    ok &= TrySetSlabGenerationSlot(current_generation, 2, slots[4]);
-    ok &= TryReleaseSlabSlot(buffer, slots[0]);
-    ok &= TryReleaseSlabSlot(buffer, slots[2]);
-    ok &= TryReleaseSlabSlot(buffer, slots[3]);
-    if (!ok) {
-        return false;
-    }
-
-    GenomePolicyModelParameters(HostSlabSlotBytesAt(buffer, slots[5])).dense_trunk.hidden1_to_output.biases[0] = 10.0f;
-    GenomeTailRows(HostSlabSlotBytesAt(buffer, slots[5]))[1][0] = 1.5f;
-    GenomePolicyModelParameters(HostSlabSlotBytesAt(buffer, slots[4])).dense_trunk.hidden1_to_output.biases[0] = 20.0f;
-    GenomeTailRows(HostSlabSlotBytesAt(buffer, slots[4]))[3][0] = 2.5f;
-
-    std::uint32_t parent_reference_counts[3]{1U, 0U, 2U};
-    const std::size_t original_slab_bytes = buffer.layout.slab_bytes;
-
-    ok &= TryCompactAndRepackSlabForExpandedActionCount(buffer, current_generation, parent_reference_counts,
-                                                        kExpandedActionCount);
-    ok &= ExpectTrue(ok, "Expected repacking to preserve live parents while expanding slot size");
-    if (!ok) {
-        return false;
-    }
-
-    ok &= ExpectTrue(buffer.layout.action_count == kExpandedActionCount,
-                     "Expected repacking to switch the slab to the expanded action count");
-    ok &= ExpectTrue(buffer.layout.slab_bytes == original_slab_bytes,
-                     "Expected repacking to keep the total slab byte budget fixed");
-    ok &= ExpectTrue(buffer.layout.slot_count == SlabSlotCountForByteBudget(original_slab_bytes, kExpandedActionCount),
-                     "Expected repacking to recompute the slot count for the expanded slot size");
-    ok &= ExpectTrue(current_generation.slot_indices[0] == 4U,
-                     "Expected the highest-address survivor to land in the right-most expanded slot");
-    ok &= ExpectTrue(current_generation.slot_indices[1] == kInvalidSlabSlotIndex,
-                     "Expected zero-reference parents to be collected during repacking");
-    ok &= ExpectTrue(current_generation.slot_indices[2] == 3U,
-                     "Expected survivors to preserve source-slot order during the left compaction step");
-    ok &= ExpectTrue(buffer.free_slot_count == 3U,
-                     "Expected repacking to leave the lower expanded slots free for child assembly");
-    ok &= ExpectTrue(buffer.slot_states[3].occupied && buffer.slot_states[4].occupied,
-                     "Expected repacking to mark only the survivor slots as occupied");
-
-    ok &= ExpectNear(
-        ToFloat(GenomePolicyModelParameters(HostSlabSlotBytesAt(buffer, 4)).dense_trunk.hidden1_to_output.biases[0]),
-        10.0f, "repacked parent 0 bias");
-    ok &= ExpectNear(ToFloat(GenomeTailRows(HostSlabSlotBytesAt(buffer, 4))[1][0]), 1.5f,
-                     "repacked parent 0 preserved tail");
-    ok &= ExpectNear(
-        ToFloat(GenomePolicyModelParameters(HostSlabSlotBytesAt(buffer, 3)).dense_trunk.hidden1_to_output.biases[0]),
-        20.0f, "repacked parent 2 bias");
-    ok &= ExpectNear(ToFloat(GenomeTailRows(HostSlabSlotBytesAt(buffer, 3))[3][0]), 2.5f,
-                     "repacked parent 2 preserved tail");
-    ok &= ExpectNear(ToFloat(GenomeTailRows(HostSlabSlotBytesAt(buffer, 4))[kInitialActionCount][0]), 0.0f,
-                     "expected newly appended trainable tails to start zeroed");
-    ok &= ExpectNear(ToFloat(GenomeTailRows(HostSlabSlotBytesAt(buffer, 3))[kExpandedActionCount - 1][0]), 0.0f,
-                     "expected all appended trainable tails to be cleared before injection");
-    return ok;
-}
-
-bool TestHostSlabCompactingLeavesInRangeSurvivorsInPlace() {
-    constexpr std::size_t kInitialActionCount = 4;
-    constexpr std::size_t kExpandedActionCount = 8;
-
-    HostGenotypeSlab buffer{};
-    SlabGeneration current_generation{};
-    bool ok = TryCreateHostGenotypeSlab(buffer, 6, kInitialActionCount);
-    ok &= TryCreateSlabGeneration(current_generation, 3, 10);
-    ok &= ExpectTrue(ok, "Expected compacting-range fixtures to allocate");
-    if (!ok) {
-        return false;
-    }
-
-    std::uint32_t slots[6]{};
-    for (std::size_t slot_offset = 0; slot_offset < 6; ++slot_offset) {
-        ok &= TryAllocateSlabSlot(buffer, slots[slot_offset]);
-    }
-    ok &= ExpectTrue(ok, "Expected compacting-range fixtures to allocate six deterministic slab slots");
-    ok &= TrySetSlabGenerationSlot(current_generation, 0, slots[1]);
-    ok &= TrySetSlabGenerationSlot(current_generation, 1, slots[0]);
-    ok &= TrySetSlabGenerationSlot(current_generation, 2, slots[5]);
-    ok &= TryReleaseSlabSlot(buffer, slots[2]);
-    ok &= TryReleaseSlabSlot(buffer, slots[3]);
-    ok &= TryReleaseSlabSlot(buffer, slots[4]);
-    if (!ok) {
-        return false;
-    }
-
-    GenomePolicyModelParameters(HostSlabSlotBytesAt(buffer, slots[1])).dense_trunk.hidden1_to_output.biases[0] = 10.0f;
-    GenomeTailRows(HostSlabSlotBytesAt(buffer, slots[1]))[1][0] = 1.5f;
-    GenomePolicyModelParameters(HostSlabSlotBytesAt(buffer, slots[5])).dense_trunk.hidden1_to_output.biases[0] = 20.0f;
-    GenomeTailRows(HostSlabSlotBytesAt(buffer, slots[5]))[3][0] = 2.5f;
-
-    std::uint32_t parent_reference_counts[3]{1U, 0U, 1U};
-    ok &= TryCompactAndRepackSlabForExpandedActionCount(buffer, current_generation, parent_reference_counts,
-                                                        kExpandedActionCount);
-    ok &= ExpectTrue(ok, "Expected repacking to preserve live parents while widening from compacted range");
-    if (!ok) {
-        return false;
-    }
-
-    ok &= ExpectTrue(current_generation.slot_indices[0] == 4U,
-                     "Expected in-range survivor to keep the higher compacted slot when another survivor fills the hole");
-    ok &= ExpectTrue(current_generation.slot_indices[1] == kInvalidSlabSlotIndex,
-                     "Expected zero-reference parent to be collected during widening");
-    ok &= ExpectTrue(current_generation.slot_indices[2] == 3U,
-                     "Expected out-of-range survivor to fill the compacted prefix hole");
-    ok &= ExpectNear(
-        ToFloat(GenomePolicyModelParameters(HostSlabSlotBytesAt(buffer, 4)).dense_trunk.hidden1_to_output.biases[0]),
-        10.0f, "kept-in-place parent bias");
-    ok &= ExpectNear(ToFloat(GenomeTailRows(HostSlabSlotBytesAt(buffer, 4))[1][0]), 1.5f,
-                     "kept-in-place parent preserved tail");
-    ok &= ExpectNear(
-        ToFloat(GenomePolicyModelParameters(HostSlabSlotBytesAt(buffer, 3)).dense_trunk.hidden1_to_output.biases[0]),
-        20.0f, "moved-into-hole parent bias");
-    ok &= ExpectNear(ToFloat(GenomeTailRows(HostSlabSlotBytesAt(buffer, 3))[3][0]), 2.5f,
-                     "moved-into-hole parent preserved tail");
     return ok;
 }
 
@@ -503,137 +331,10 @@ bool TestSlabGenerationSeparatesSlotHandlesFromFitnessBookkeeping() {
     return ok;
 }
 
-bool TestAssemblyWithReferenceCountingGcReusesParentSlots() {
-    HostGenotypeSlab buffer{};
-    SlabGeneration current_generation{};
-    SlabGeneration next_generation{};
-    bool ok = TryCreateHostGenotypeSlab(buffer, 3, 4);
-    ok &= TryCreateSlabGeneration(current_generation, 3, 5);
-    ok &= ExpectTrue(ok, "Expected assembly test fixtures to allocate");
-    if (!ok) {
-        return false;
-    }
-
-    for (std::size_t individual_index = 0; individual_index < current_generation.active_individual_count;
-         ++individual_index) {
-        std::uint32_t slot_index = kInvalidSlabSlotIndex;
-        ok &= TryAllocateSlabSlot(buffer, slot_index);
-        ok &= TrySetSlabGenerationSlot(current_generation, individual_index, slot_index);
-        GenomePolicyModelParameters(HostSlabSlotBytesAt(buffer, slot_index)).dense_trunk.hidden1_to_output.biases[0] =
-            ToFloat16(10.0f * static_cast<float>(individual_index + 1));
-    }
-    ok &= ExpectTrue(ok, "Expected assembly test parents to occupy all slab slots");
-    if (!ok) {
-        return false;
-    }
-
-    SlabAssemblyPlan plan{};
-    ok &= TryCreateSlabAssemblyPlan(plan, 2);
-    ok &= ExpectTrue(ok, "Expected assembly plan allocation to succeed");
-    if (!ok) {
-        return false;
-    }
-
-    plan.parent_pairs[0] = {.first_parent_index = 0, .second_parent_index = 1};
-    plan.parent_pairs[1] = {.first_parent_index = 0, .second_parent_index = 0};
-
-    TestAssemblyState assembly_state{};
-    SlabAssemblyCallbacks callbacks{};
-    callbacks.assemble_child_genome = AssembleSummedChildGenome;
-    callbacks.user_data = &assembly_state;
-
-    ok &= TryAssembleNextGeneration(buffer, current_generation, plan, next_generation, callbacks);
-    ok &= ExpectTrue(ok, "Expected slab assembly to succeed by collecting and reusing parent slots");
-    if (!ok) {
-        return false;
-    }
-
-    ok &= ExpectTrue(next_generation.generation_index == 6, "Expected slab assembly to increment the generation index");
-    ok &= ExpectTrue(next_generation.slot_indices[0] == 2U,
-                     "Expected the first child to reuse the garbage-collected zero-reference parent slot");
-    ok &= ExpectTrue(next_generation.slot_indices[1] == 1U,
-                     "Expected the second child to reuse the parent slot freed after its final parent reference");
-    ok &= ExpectNear(ToFloat(GenomePolicyModelParameters(HostSlabSlotBytesAt(buffer, next_generation.slot_indices[0]))
-                                 .dense_trunk.hidden1_to_output.biases[0]),
-                     30.0f, "first assembled child bias");
-    ok &= ExpectNear(ToFloat(GenomePolicyModelParameters(HostSlabSlotBytesAt(buffer, next_generation.slot_indices[1]))
-                                 .dense_trunk.hidden1_to_output.biases[0]),
-                     20.0f, "second assembled child bias");
-    ok &= ExpectNear(ToFloat(GenomeTailRows(HostSlabSlotBytesAt(buffer, next_generation.slot_indices[0]))[0][0]), 1.0f,
-                     "first assembled child marker");
-    ok &= ExpectNear(ToFloat(GenomeTailRows(HostSlabSlotBytesAt(buffer, next_generation.slot_indices[1]))[0][0]), 2.0f,
-                     "second assembled child marker");
-    ok &= ExpectTrue(current_generation.slot_indices[0] == kInvalidSlabSlotIndex,
-                     "Expected the first parent to be released after its final parent reference");
-    ok &= ExpectTrue(current_generation.slot_indices[1] == kInvalidSlabSlotIndex,
-                     "Expected the second parent to be released after its only parent reference");
-    ok &= ExpectTrue(current_generation.slot_indices[2] == kInvalidSlabSlotIndex,
-                     "Expected zero-reference parents to be garbage-collected before child assembly begins");
-    ok &= ExpectTrue(buffer.free_slot_count == 1,
-                     "Expected one parent slot to be free after two children occupy the reused slots");
-    return ok;
-}
-
-bool TestAssemblyFailsWhenBufferIsGenuinelyFull() {
-    HostGenotypeSlab buffer{};
-    SlabGeneration current_generation{};
-    SlabGeneration next_generation{};
-    bool ok = TryCreateHostGenotypeSlab(buffer, 2, 4);
-    ok &= TryCreateSlabGeneration(current_generation, 2, 4);
-    ok &= ExpectTrue(ok, "Expected full-slab failure fixtures to allocate");
-    if (!ok) {
-        return false;
-    }
-
-    for (std::size_t individual_index = 0; individual_index < current_generation.active_individual_count;
-         ++individual_index) {
-        std::uint32_t slot_index = kInvalidSlabSlotIndex;
-        ok &= TryAllocateSlabSlot(buffer, slot_index);
-        ok &= TrySetSlabGenerationSlot(current_generation, individual_index, slot_index);
-    }
-    ok &= ExpectTrue(ok, "Expected full-slab failure fixtures to consume every slot");
-    if (!ok) {
-        return false;
-    }
-
-    SlabAssemblyPlan plan{};
-    ok &= TryCreateSlabAssemblyPlan(plan, 1);
-    ok &= ExpectTrue(ok, "Expected single-child assembly plan allocation to succeed");
-    if (!ok) {
-        return false;
-    }
-
-    plan.parent_pairs[0] = {.first_parent_index = 0, .second_parent_index = 1};
-
-    TestAssemblyState assembly_state{};
-    SlabAssemblyCallbacks callbacks{};
-    callbacks.assemble_child_genome = AssembleSummedChildGenome;
-    callbacks.user_data = &assembly_state;
-
-    ok &= ExpectTrue(!TryAssembleNextGeneration(buffer, current_generation, plan, next_generation, callbacks),
-                     "Expected assembly to fail when the buffer is full and every parent still has parent references");
-    ok &= ExpectTrue(!IsValidSlabGeneration(next_generation),
-                     "Expected failed assembly to leave the next generation output unset");
-    ok &= ExpectTrue(current_generation.slot_indices[0] == 0U,
-                     "Expected failed full-slab assembly to leave the first parent slot intact");
-    ok &= ExpectTrue(current_generation.slot_indices[1] == 1U,
-                     "Expected failed full-slab assembly to leave the second parent slot intact");
-    ok &= ExpectTrue(buffer.free_slot_count == 0, "Expected failed full-slab assembly to leave the slab full");
-    return ok;
-}
-
 } // namespace
 
 int main() {
     if (!TestSlabLayoutReusesDynamicGenomeStrideMath()) {
-        return 1;
-    }
-
-    if (!TestHostSlabCompactsAndRepacksForExpandedActionCount()) {
-        return 1;
-    }
-
-    if (!TestHostSlabCompactingLeavesInRangeSurvivorsInPlace()) {
         return 1;
     }
 
@@ -658,14 +359,6 @@ int main() {
     }
 
     if (!TestSlabGenerationSeparatesSlotHandlesFromFitnessBookkeeping()) {
-        return 1;
-    }
-
-    if (!TestAssemblyWithReferenceCountingGcReusesParentSlots()) {
-        return 1;
-    }
-
-    if (!TestAssemblyFailsWhenBufferIsGenuinelyFull()) {
         return 1;
     }
 

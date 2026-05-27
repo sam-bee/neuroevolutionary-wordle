@@ -65,10 +65,12 @@ TryEncodeWordleGridState(const input_encoder::SharedEncoderParameters &parameter
 
 #if defined(__CUDACC__)
 template <int WarpWidth>
-inline __device__ bool TryEncodeWordleGridStateConcurrently(
-    const input_encoder::SharedEncoderParameters &parameters, const wordle::WordleGrid &grid,
-    ModelInputStateVector &model_input_state, input_encoder::TurnInputVector &turn_input,
-    input_encoder::EncoderHiddenVector &encoder_hidden, input_encoder::EncodedTurnVector &encoded_turn) noexcept {
+inline __device__ bool TryEncodeWordleGridStateConcurrently(const input_encoder::SharedEncoderParameters &parameters,
+                                                            const wordle::WordleGrid &grid,
+                                                            ModelInputStateVector &model_input_state,
+                                                            input_encoder::TurnInputVector &turn_input,
+                                                            input_encoder::EncoderHiddenVector &encoder_hidden,
+                                                            input_encoder::EncodedTurnVector &encoded_turn) noexcept {
     if (!wordle::IsValidWordleGrid(grid) || !detail::IsValidModelInputStateTurnCount(grid.turn_count) ||
         grid.IsFinished()) {
         return false;

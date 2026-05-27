@@ -41,9 +41,9 @@ bool TryCreateSingleModelDeviceRuntime(const std::uint8_t *host_genome_bytes, st
 
 void DestroySingleModelDeviceRuntime(SingleModelDeviceRuntime &runtime) noexcept;
 
-bool TrySelectNextGuessWithSingleModelDeviceRuntime(
-    const SingleModelDeviceRuntime &runtime, const wordle::WordleGrid &grid,
-    model::output_embedding::SelectedAction &selected_action_out,
-    SingleModelDeviceRuntimeStatusCode *status_out = nullptr);
+bool TrySelectNextGuessWithSingleModelDeviceRuntime(const SingleModelDeviceRuntime &runtime,
+                                                    const wordle::WordleGrid &grid,
+                                                    model::output_embedding::SelectedAction &selected_action_out,
+                                                    SingleModelDeviceRuntimeStatusCode *status_out = nullptr);
 
 } // namespace neuroevolution::inference

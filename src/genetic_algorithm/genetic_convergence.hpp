@@ -47,8 +47,7 @@ constexpr std::size_t PolicyModelTrainableScalarCount() noexcept {
 }
 
 constexpr std::size_t TrainableScalarCountForActionCount(const std::size_t action_count) noexcept {
-    return PolicyModelTrainableScalarCount() +
-           (action_count * model::output_embedding::kTrainableFeatureDimension);
+    return PolicyModelTrainableScalarCount() + (action_count * model::output_embedding::kTrainableFeatureDimension);
 }
 
 inline std::uint64_t MixSamplingSeed(const std::uint32_t run_seed, const std::size_t generation) noexcept {
@@ -62,8 +61,7 @@ inline std::uint64_t MixSamplingSeed(const std::uint32_t run_seed, const std::si
     return value;
 }
 
-inline std::vector<std::size_t> SampleUniqueIndices(const std::size_t universe_size,
-                                                    const std::size_t requested_count,
+inline std::vector<std::size_t> SampleUniqueIndices(const std::size_t universe_size, const std::size_t requested_count,
                                                     std::mt19937_64 &random_engine) {
     const std::size_t sample_count = (requested_count < universe_size) ? requested_count : universe_size;
     std::vector<std::size_t> indices{};
@@ -88,30 +86,24 @@ inline std::vector<std::size_t> SampleUniqueIndices(const std::size_t universe_s
 
 inline GeneticConvergenceSamplePlan MakeSamplePlan(const std::size_t live_organism_count,
                                                    const std::size_t trainable_weight_count,
-                                                   const std::uint32_t run_seed,
-                                                   const std::size_t generation,
-                                                   const std::size_t requested_organism_count =
-                                                       kDefaultSampleOrganismCount,
-                                                   const std::size_t requested_weight_count =
-                                                       kDefaultSampleWeightCount,
-                                                   const std::size_t requested_pair_count = kDefaultPairCount) {
+                                                   const std::uint32_t run_seed, const std::size_t generation) {
     GeneticConvergenceSamplePlan plan{};
     if ((live_organism_count == 0) || (trainable_weight_count == 0)) {
         return plan;
     }
 
     std::mt19937_64 random_engine(MixSamplingSeed(run_seed, generation));
-    plan.organism_indices = SampleUniqueIndices(live_organism_count, requested_organism_count, random_engine);
-    plan.weight_indices = SampleUniqueIndices(trainable_weight_count, requested_weight_count, random_engine);
+    plan.organism_indices = SampleUniqueIndices(live_organism_count, kDefaultSampleOrganismCount, random_engine);
+    plan.weight_indices = SampleUniqueIndices(trainable_weight_count, kDefaultSampleWeightCount, random_engine);
 
     if (plan.organism_indices.size() < 2) {
         return plan;
     }
 
-    plan.pairs.reserve(requested_pair_count);
+    plan.pairs.reserve(kDefaultPairCount);
     std::uniform_int_distribution<std::size_t> first_distribution(0, plan.organism_indices.size() - 1U);
     std::uniform_int_distribution<std::size_t> second_distribution(0, plan.organism_indices.size() - 2U);
-    for (std::size_t pair_index = 0; pair_index < requested_pair_count; ++pair_index) {
+    for (std::size_t pair_index = 0; pair_index < kDefaultPairCount; ++pair_index) {
         const std::size_t first = first_distribution(random_engine);
         std::size_t second = second_distribution(random_engine);
         if (second >= first) {
@@ -122,10 +114,8 @@ inline GeneticConvergenceSamplePlan MakeSamplePlan(const std::size_t live_organi
     return plan;
 }
 
-inline bool TryComputeMetrics(const std::vector<float> &sampled_values,
-                              const std::size_t sample_organism_count,
-                              const std::size_t sample_weight_count,
-                              const std::vector<GeneticConvergencePair> &pairs,
+inline bool TryComputeMetrics(const std::vector<float> &sampled_values, const std::size_t sample_organism_count,
+                              const std::size_t sample_weight_count, const std::vector<GeneticConvergencePair> &pairs,
                               GeneticConvergenceMetrics &metrics_out) {
     metrics_out = {};
     if ((sample_organism_count == 0) || (sample_weight_count == 0) ||
@@ -185,7 +175,8 @@ inline bool TryComputeMetrics(const std::vector<float> &sampled_values,
         const std::size_t second_offset = pair.second * sample_weight_count;
         float squared_distance = 0.0f;
         for (std::size_t weight_index = 0; weight_index < sample_weight_count; ++weight_index) {
-            const float delta = sampled_values[first_offset + weight_index] - sampled_values[second_offset + weight_index];
+            const float delta =
+                sampled_values[first_offset + weight_index] - sampled_values[second_offset + weight_index];
             squared_distance += delta * delta;
         }
 

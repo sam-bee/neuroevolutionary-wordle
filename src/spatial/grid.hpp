@@ -39,9 +39,6 @@ constexpr NEUROEVOLUTION_HOST_DEVICE std::size_t FloorSquareRoot(const std::size
     while (low <= high) {
         const std::size_t mid = low + ((high - low) / 2);
         if ((mid != 0) && (mid > (value / mid))) {
-            if (mid == 0) {
-                break;
-            }
             high = mid - 1;
             continue;
         }
@@ -53,8 +50,8 @@ constexpr NEUROEVOLUTION_HOST_DEVICE std::size_t FloorSquareRoot(const std::size
     return best;
 }
 
-constexpr NEUROEVOLUTION_HOST_DEVICE std::size_t FloorSquarePopulationSize(const std::size_t nominal_population_size)
-    noexcept {
+constexpr NEUROEVOLUTION_HOST_DEVICE std::size_t
+FloorSquarePopulationSize(const std::size_t nominal_population_size) noexcept {
     const std::size_t side_length = FloorSquareRoot(nominal_population_size);
     return side_length * side_length;
 }
@@ -68,9 +65,9 @@ FloorRowPreservingPopulationSize(const std::size_t nominal_population_size, cons
     return (nominal_population_size / column_count) * column_count;
 }
 
-constexpr NEUROEVOLUTION_HOST_DEVICE bool
-TryMakeRectangularCellularGridShape(const std::size_t row_count, const std::size_t column_count,
-                                    CellularGridShape &shape_out) noexcept {
+constexpr NEUROEVOLUTION_HOST_DEVICE bool TryMakeRectangularCellularGridShape(const std::size_t row_count,
+                                                                              const std::size_t column_count,
+                                                                              CellularGridShape &shape_out) noexcept {
     shape_out = {};
     if ((row_count == 0) || (column_count == 0) || (row_count > (kMaxSizeT / column_count))) {
         return false;
@@ -90,7 +87,7 @@ constexpr NEUROEVOLUTION_HOST_DEVICE bool TryMakeCellularGridShape(const std::si
     }
 
     const std::size_t side_length = FloorSquareRoot(cell_count);
-    if ((side_length == 0) || (side_length > (kMaxSizeT / side_length)) || ((side_length * side_length) != cell_count)) {
+    if ((side_length > (kMaxSizeT / side_length)) || ((side_length * side_length) != cell_count)) {
         return false;
     }
 
@@ -110,17 +107,16 @@ TryMakeCellularGridShapeForColumnCount(const std::size_t cell_count, const std::
 
 constexpr NEUROEVOLUTION_HOST_DEVICE std::size_t GridRowFromIndex(const CellularGridShape &shape,
                                                                   const std::size_t cell_index) noexcept {
-    return (!IsValidCellularGridShape(shape) || (shape.column_count == 0)) ? 0 : (cell_index / shape.column_count);
+    return !IsValidCellularGridShape(shape) ? 0 : (cell_index / shape.column_count);
 }
 
 constexpr NEUROEVOLUTION_HOST_DEVICE std::size_t GridColumnFromIndex(const CellularGridShape &shape,
                                                                      const std::size_t cell_index) noexcept {
-    return (!IsValidCellularGridShape(shape) || (shape.column_count == 0)) ? 0 : (cell_index % shape.column_count);
+    return !IsValidCellularGridShape(shape) ? 0 : (cell_index % shape.column_count);
 }
 
-constexpr NEUROEVOLUTION_HOST_DEVICE std::size_t GridIndexFromRowColumn(const CellularGridShape &shape,
-                                                                        const std::size_t row,
-                                                                        const std::size_t column) noexcept {
+constexpr NEUROEVOLUTION_HOST_DEVICE std::size_t
+GridIndexFromRowColumn(const CellularGridShape &shape, const std::size_t row, const std::size_t column) noexcept {
     return (!IsValidCellularGridShape(shape) || (row >= shape.row_count) || (column >= shape.column_count))
                ? 0
                : ((row * shape.column_count) + column);
@@ -148,15 +144,16 @@ constexpr NEUROEVOLUTION_HOST_DEVICE std::size_t ToroidalAxisDistance(const std:
         return 0;
     }
 
-    const std::size_t forward_distance =
-        (first_coordinate >= second_coordinate) ? (first_coordinate - second_coordinate) : (second_coordinate - first_coordinate);
+    const std::size_t forward_distance = (first_coordinate >= second_coordinate)
+                                             ? (first_coordinate - second_coordinate)
+                                             : (second_coordinate - first_coordinate);
     const std::size_t wrapped_distance = side_length - forward_distance;
     return (forward_distance < wrapped_distance) ? forward_distance : wrapped_distance;
 }
 
-constexpr NEUROEVOLUTION_HOST_DEVICE std::size_t ToroidalChebyshevDistance(const CellularGridShape &shape,
-                                                                           const std::size_t first_cell_index,
-                                                                           const std::size_t second_cell_index) noexcept {
+constexpr NEUROEVOLUTION_HOST_DEVICE std::size_t
+ToroidalChebyshevDistance(const CellularGridShape &shape, const std::size_t first_cell_index,
+                          const std::size_t second_cell_index) noexcept {
     if (!IsValidCellularGridShape(shape) || (first_cell_index >= shape.cell_count) ||
         (second_cell_index >= shape.cell_count)) {
         return 0;

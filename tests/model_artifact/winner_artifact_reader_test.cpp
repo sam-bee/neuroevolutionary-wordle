@@ -72,20 +72,18 @@ bool TestWinnerArtifactReaderRoundTripsSavedArtifacts() {
     ok &= TryReadWinnerArtifact(paths.binary_path, paths.metadata_path, artifact);
     ok &= ExpectTrue(artifact.metadata.generation_index == metadata.generation_index,
                      "Expected reader to recover generation index");
-    ok &= ExpectTrue(artifact.metadata.best_index == metadata.best_index,
-                     "Expected reader to recover best index");
+    ok &= ExpectTrue(artifact.metadata.best_index == metadata.best_index, "Expected reader to recover best index");
     ok &= ExpectTrue(artifact.metadata.best_slot_index == metadata.best_slot_index,
                      "Expected reader to recover best slot index");
-    ok &= ExpectTrue(artifact.metadata.action_count == metadata.action_count,
-                     "Expected reader to recover action count");
+    ok &=
+        ExpectTrue(artifact.metadata.action_count == metadata.action_count, "Expected reader to recover action count");
     ok &= ExpectTrue(artifact.metadata.genome_byte_count == metadata.genome_byte_count,
                      "Expected reader to recover genome byte count");
     ok &= ExpectTrue(artifact.action_space_words.word_count == action_space_words.word_count,
                      "Expected reader to recover embedded action-space words");
     ok &= ExpectTrue(artifact.genome_bytes != nullptr, "Expected reader to load the binary genome payload");
-    ok &= ExpectTrue(
-        std::memcmp(artifact.genome_bytes.get(), genome_bytes.get(), genome_byte_count) == 0,
-        "Expected reader to preserve the saved genome payload exactly");
+    ok &= ExpectTrue(std::memcmp(artifact.genome_bytes.get(), genome_bytes.get(), genome_byte_count) == 0,
+                     "Expected reader to preserve the saved genome payload exactly");
     ok &= ExpectTrue(artifact.action_space_words.words[0] == action_space_words.words[0],
                      "Expected reader to preserve the first action-space word");
     ok &= ExpectTrue(artifact.action_space_words.words[2] == action_space_words.words[2],

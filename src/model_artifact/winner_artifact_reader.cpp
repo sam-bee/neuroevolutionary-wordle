@@ -66,9 +66,8 @@ bool LocateJsonValue(const std::string &json, const std::string_view key, std::s
     }
 
     value_begin_out = colon_position + 1;
-    while ((value_begin_out < json.size()) &&
-           ((json[value_begin_out] == ' ') || (json[value_begin_out] == '\n') || (json[value_begin_out] == '\r') ||
-            (json[value_begin_out] == '\t'))) {
+    while ((value_begin_out < json.size()) && ((json[value_begin_out] == ' ') || (json[value_begin_out] == '\n') ||
+                                               (json[value_begin_out] == '\r') || (json[value_begin_out] == '\t'))) {
         ++value_begin_out;
     }
 
@@ -187,8 +186,8 @@ bool TryReadJsonWordArray(const std::string &json, const std::string_view key,
 
         ++position;
         wordle::Word word{};
-        const char letters[wordle::kWordLength + 1] = {word_text[0], word_text[1], word_text[2], word_text[3],
-                                                       word_text[4], '\0'};
+        const char letters[wordle::kWordLength + 1] = {word_text[0], word_text[1], word_text[2],
+                                                       word_text[3], word_text[4], '\0'};
         if (!wordle::TryMakeWordFromAscii(letters, word)) {
             return false;
         }

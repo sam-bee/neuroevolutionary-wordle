@@ -1,17 +1,17 @@
 # Neuroevolutionary Wordle
 
-Requires `cmake` 3.22+ and a CUDA 13.1-compatible toolkit/driver setup. A `docker compose` development container is
-included with the required dependencies if you want to work inside a container instead of on the host.
+Requires `cmake` 3.22+, Ninja, SQLite3 development files, `clang-format`, and a CUDA toolkit/driver setup capable of
+building for the configured CUDA architecture `120`. The included `docker compose` development container is based on
+CUDA 13.1 if you want to work inside a container instead of on the host.
 
 A CUDA/C++ experiment in building a Wordle-playing policy model and then training it with neuroevolution.
 Reinforcement learning may come later.
 
-This project combines three main ideas:
+This project currently combines two implemented ideas, with reinforcement learning left as possible future work:
 
 1. A **neural network** that maps the current state of an in-progress Wordle game to a 5-letter word representing the
    next guess
 2. A **genetic** algorithm which determines model weights
-3. **Reinforcement learning**, to fine-tune the model
 
 ## High-Level Structure of the Model
 
@@ -20,11 +20,11 @@ The structure of the model is as follows:
 1. Input encoding - turns a previous turn in a Wordle game into a 64-dimensional vector
 2. Encoded input concatenation creates 321 values to pass to the main neural net
 3. Main neural net - contains hidden layers of 256, 128 neurons, and a policy output head with 64 neurons
-4. Output embedding - contains 64-dimensional vectors for each of 4,739 5-letter words
+4. Output embedding - contains 64-dimensional vectors for active 5-letter words from the 4,739-word catalog
 5. Model output selection - uses dot product method to choose a word from the action space
 
-The current action space is **4,739 valid 5-letter guesses**. It is smaller than the full guess list, but still includes
-all allowed solutions while biasing the action space toward common words derived from subtitle-frequency data.
+The full curated action catalog is **4,739 valid 5-letter guesses**. It is smaller than the full guess list, but still
+includes all allowed solutions while biasing the action space toward common words derived from subtitle-frequency data.
 
 More detailed design information lives under [`docs/`](docs/). Start with [`docs/README.md`](docs/README.md).
 
@@ -53,8 +53,9 @@ At a high level, the intended training story is:
 - evolve parameters with a genetic algorithm
 - later add reinforcement-learning ideas if they prove useful
 
-Development started with the **model structure first**. The repository now also includes early training-data and
-genetic-algorithm runtime work, while fuller training and learning-loop design still come later.
+Development started with the **model structure first**. The repository now also includes the slab-backed CUDA GA
+runtime, adaptive training-data shard release, checkpointing, telemetry, winner artifacts, and an interactive inference
+runtime.
 
 ## Current model idea
 
@@ -71,7 +72,7 @@ contribute a hard-coded 64-dimensional zero vector instead.
 The model input begins with a single scalar that is `1` for a virgin grid and `0` otherwise. After that come the five
 64-dimensional per-turn outputs, for a total of 321 values passed to the dense trunk.
 
-That policy vector is scored against every word in the output embedding by dot product.
+That policy vector is scored against every active word in the output embedding by dot product.
 
 ## Output embedding
 
@@ -126,13 +127,16 @@ make smoke
 make clean
 ```
 
-To load a saved winner artifact into the interactive inference runtime:
+To load a saved winner artifact into the interactive inference runtime, build the target and run the binary with the
+artifact pair:
 
 ```bash
-make play-wordle PLAY_WORDLE_MODEL=models/winner-...bin
+make build
+./build/play_wordle models/winner-...bin models/winner-...json
 ```
 
-`PLAY_WORDLE_METADATA` defaults to the matching `.json` sidecar path and can be overridden if needed.
+The current `make play-wordle` target is only a convenience wrapper for the fixed artifact path hard-coded in the
+Makefile. It does not consume `PLAY_WORDLE_MODEL` or `PLAY_WORDLE_METADATA`.
 
 For end-to-end verification after a change, `make rebuild` is the preferred command. It reformats the code, rebuilds the
 project from scratch, and runs the full test suite, including the GPU-backed test.
@@ -172,7 +176,8 @@ binary directly, it will inherit whatever values your shell or profiling tool al
 
 ## Status
 
-This repository is currently at the **model implementation plus slab-backed spatial GA runtime** stage.
+This repository is currently at the **model implementation plus slab-backed spatial GA runtime** stage, with runtime
+checkpointing, SQLite telemetry, winner artifact persistence, and interactive saved-model inference also present.
 
 Immediate goals are continued runtime hardening, broader GA experimentation, and later reinforcement-learning work if
 it proves useful.

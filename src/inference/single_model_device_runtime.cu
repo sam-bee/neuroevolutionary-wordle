@@ -65,7 +65,7 @@ __global__ void SelectNextGuessKernel(const TrainingWordCatalog *action_space_wo
     __shared__ DynamicPolicyWarpScratch<kDynamicPolicyWarpSize> scratch;
     SelectedAction selected_action{};
     const auto inference_status = SelectNextGuessFromDynamicGenomeConcurrently<kDynamicPolicyWarpSize>(
-            *grid, *action_space_words, genome_bytes, action_count, scratch, selected_action);
+        *grid, *action_space_words, genome_bytes, action_count, scratch, selected_action);
 
     if (threadIdx.x == 0) {
         if (inference_status == DynamicInferenceStatusCode::kPolicyForwardFailed) {
@@ -106,7 +106,8 @@ bool TryCreateSingleModelDeviceRuntime(const std::uint8_t *host_genome_bytes, co
         return false;
     }
 
-    if (!CheckCuda(cudaMemcpy(runtime.device_genome_bytes, host_genome_bytes, genome_byte_count, cudaMemcpyHostToDevice)) ||
+    if (!CheckCuda(
+            cudaMemcpy(runtime.device_genome_bytes, host_genome_bytes, genome_byte_count, cudaMemcpyHostToDevice)) ||
         !CheckCuda(cudaMemcpy(runtime.device_action_space_words, &action_space_words, sizeof(action_space_words),
                               cudaMemcpyHostToDevice))) {
         FreeDeviceRuntimeBuffers(runtime);
@@ -119,9 +120,9 @@ bool TryCreateSingleModelDeviceRuntime(const std::uint8_t *host_genome_bytes, co
 
 void DestroySingleModelDeviceRuntime(SingleModelDeviceRuntime &runtime) noexcept { FreeDeviceRuntimeBuffers(runtime); }
 
-bool TrySelectNextGuessWithSingleModelDeviceRuntime(
-    const SingleModelDeviceRuntime &runtime, const WordleGrid &grid, SelectedAction &selected_action_out,
-    SingleModelDeviceRuntimeStatusCode *status_out) {
+bool TrySelectNextGuessWithSingleModelDeviceRuntime(const SingleModelDeviceRuntime &runtime, const WordleGrid &grid,
+                                                    SelectedAction &selected_action_out,
+                                                    SingleModelDeviceRuntimeStatusCode *status_out) {
     if (status_out != nullptr) {
         *status_out = SingleModelDeviceRuntimeStatusCode::kInvalidRuntime;
     }
@@ -137,9 +138,9 @@ bool TrySelectNextGuessWithSingleModelDeviceRuntime(
         return false;
     }
 
-    SelectNextGuessKernel<<<1, kDynamicPolicyWarpSize>>>(
-        runtime.device_action_space_words, runtime.device_genome_bytes, runtime.action_count, runtime.device_grid,
-        runtime.device_selected_action, runtime.device_status);
+    SelectNextGuessKernel<<<1, kDynamicPolicyWarpSize>>>(runtime.device_action_space_words, runtime.device_genome_bytes,
+                                                         runtime.action_count, runtime.device_grid,
+                                                         runtime.device_selected_action, runtime.device_status);
     if (!CheckCuda(cudaGetLastError())) {
         if (status_out != nullptr) {
             *status_out = SingleModelDeviceRuntimeStatusCode::kKernelLaunchFailed;

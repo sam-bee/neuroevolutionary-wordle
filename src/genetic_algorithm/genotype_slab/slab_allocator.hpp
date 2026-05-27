@@ -152,8 +152,8 @@ inline NEUROEVOLUTION_HOST_DEVICE bool AtomicTryIncrementSlabSlotLivenessCount(s
     return false;
 }
 
-inline NEUROEVOLUTION_HOST_DEVICE bool
-AtomicTryDecrementSlabSlotLivenessCount(std::uint32_t *counter, std::uint32_t &previous_count) noexcept {
+inline NEUROEVOLUTION_HOST_DEVICE bool AtomicTryDecrementSlabSlotLivenessCount(std::uint32_t *counter,
+                                                                               std::uint32_t &previous_count) noexcept {
     previous_count = 0;
     if (counter == nullptr) {
         return false;
@@ -256,18 +256,6 @@ bool TryCreateHostGenotypeSlabForByteBudget(HostGenotypeSlab &buffer, std::size_
                                             std::size_t action_count);
 
 bool TryCreateHostGenotypeSlab(HostGenotypeSlab &buffer, std::size_t slot_count, std::size_t action_count);
-
-inline NEUROEVOLUTION_HOST_DEVICE void ClearSlabSlotBytes(const GenotypeSlabView buffer,
-                                                          const std::uint32_t slot_index) noexcept {
-    if (!IsValidSlabSlotIndex(buffer, slot_index)) {
-        return;
-    }
-
-    std::uint8_t *slot_bytes = SlabSlotBytesAt(buffer.storage, buffer.layout, slot_index);
-    for (std::size_t byte_index = 0; byte_index < buffer.layout.slot_stride_bytes; ++byte_index) {
-        slot_bytes[byte_index] = 0;
-    }
-}
 
 inline NEUROEVOLUTION_HOST_DEVICE void CopySlabSlotBytes(const std::uint8_t *source_bytes, std::uint8_t *target_bytes,
                                                          const std::size_t byte_count) noexcept {

@@ -43,17 +43,18 @@ loop in this path.
 
 ## Launching With `make`
 
-The repository `Makefile` includes a convenience target:
+The repository `Makefile` includes a convenience target, but it currently points at one fixed artifact pair hard-coded
+in the target:
 
 ```bash
-make play-wordle PLAY_WORDLE_MODEL=models/winner-...bin
+make play-wordle
 ```
 
-By default, `PLAY_WORDLE_METADATA` is derived by replacing the `.bin` suffix with `.json`. You can override it if
-needed:
+It does not read `PLAY_WORDLE_MODEL` or `PLAY_WORDLE_METADATA`.
+
+For an arbitrary saved winner artifact, build first and invoke the executable directly:
 
 ```bash
-make play-wordle \
-  PLAY_WORDLE_MODEL=models/winner-...bin \
-  PLAY_WORDLE_METADATA=models/winner-...json
+make build
+./build/play_wordle models/winner-...bin models/winner-...json
 ```

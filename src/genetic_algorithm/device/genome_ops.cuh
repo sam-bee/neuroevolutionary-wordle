@@ -55,15 +55,8 @@ __device__ inline float SampleStandardNormal(DeviceRandomState &state) {
     return curand_normal(&state.philox);
 }
 
-struct RandomGenomeInitializationConfig {
-    float dense_weight_gain = 1.0f;
-    float output_embedding_tail_stddev = 0.05f;
-};
-
-constexpr NEUROEVOLUTION_HOST_DEVICE bool
-IsValidRandomGenomeInitializationConfig(const RandomGenomeInitializationConfig &config) noexcept {
-    return (config.dense_weight_gain > 0.0f) && (config.output_embedding_tail_stddev >= 0.0f);
-}
+constexpr float kDefaultDenseWeightGain = 1.0f;
+constexpr float kDefaultOutputEmbeddingTailStddev = 0.05f;
 
 inline NEUROEVOLUTION_HOST_DEVICE float HeNormalStddev(const std::size_t fan_in, const float gain) noexcept {
     return gain * sqrtf(2.0f / static_cast<float>(fan_in));
@@ -104,31 +97,30 @@ __device__ inline void InitializeDenseLayerRandom(
     FillFloat16BufferWithConstant(layer.biases, 0.0f, worker_index, worker_count);
 }
 
-__device__ inline void InitializeRandomPolicyModelParameters(
-    genome::PolicyModelParameters &parameters, DeviceRandomState &random_state,
-    const RandomGenomeInitializationConfig &config, const std::size_t worker_index,
-    const std::size_t worker_count) {
+__device__ inline void InitializeRandomPolicyModelParameters(genome::PolicyModelParameters &parameters,
+                                                            DeviceRandomState &random_state,
+                                                            const std::size_t worker_index,
+                                                            const std::size_t worker_count) {
     InitializeDenseLayerRandom(parameters.input_encoder.input_to_hidden, random_state,
-                               HeNormalStddev(model::input_encoder::kTurnFeatureCount, config.dense_weight_gain),
+                               HeNormalStddev(model::input_encoder::kTurnFeatureCount, kDefaultDenseWeightGain),
                                worker_index, worker_count);
     InitializeDenseLayerRandom(parameters.input_encoder.hidden_to_output, random_state,
-                               HeNormalStddev(model::input_encoder::kEncoderHiddenSize, config.dense_weight_gain),
+                               HeNormalStddev(model::input_encoder::kEncoderHiddenSize, kDefaultDenseWeightGain),
                                worker_index, worker_count);
     InitializeDenseLayerRandom(parameters.dense_trunk.input_to_hidden0, random_state,
-                               HeNormalStddev(model::dense_trunk::kDenseTrunkInputSize, config.dense_weight_gain),
+                               HeNormalStddev(model::dense_trunk::kDenseTrunkInputSize, kDefaultDenseWeightGain),
                                worker_index, worker_count);
     InitializeDenseLayerRandom(parameters.dense_trunk.hidden0_to_hidden1, random_state,
-                               HeNormalStddev(model::dense_trunk::kDenseTrunkHiddenSize0, config.dense_weight_gain),
+                               HeNormalStddev(model::dense_trunk::kDenseTrunkHiddenSize0, kDefaultDenseWeightGain),
                                worker_index, worker_count);
     InitializeDenseLayerRandom(parameters.dense_trunk.hidden1_to_output, random_state,
-                               HeNormalStddev(model::dense_trunk::kDenseTrunkHiddenSize1, config.dense_weight_gain),
+                               HeNormalStddev(model::dense_trunk::kDenseTrunkHiddenSize1, kDefaultDenseWeightGain),
                                worker_index, worker_count);
 }
 
 __device__ inline void InitializeRandomOutputEmbeddingTailRows(
     genome::TrainableActionEmbeddingTail *tail_rows, const std::size_t action_count, DeviceRandomState &random_state,
-    const RandomGenomeInitializationConfig &config, const std::size_t worker_index,
-    const std::size_t worker_count) {
+    const std::size_t worker_index, const std::size_t worker_count) {
     constexpr std::size_t kTailFeatureCount = model::output_embedding::kTrainableFeatureDimension;
     const std::size_t flattened_tail_value_count = action_count * kTailFeatureCount;
     for (std::size_t flattened_index = worker_index; flattened_index < flattened_tail_value_count;
@@ -136,18 +128,17 @@ __device__ inline void InitializeRandomOutputEmbeddingTailRows(
         const std::size_t action_index = flattened_index / kTailFeatureCount;
         const std::size_t feature_index = flattened_index % kTailFeatureCount;
         tail_rows[action_index][feature_index] =
-            common::ToFloat16(config.output_embedding_tail_stddev * SampleStandardNormal(random_state));
+            common::ToFloat16(kDefaultOutputEmbeddingTailStddev * SampleStandardNormal(random_state));
     }
 }
 
 __device__ inline void InitializeRandomGenome(std::uint8_t *genome_bytes, const std::size_t action_count,
                                               DeviceRandomState &random_state,
-                                              const RandomGenomeInitializationConfig &config,
                                               const std::size_t worker_index,
                                               const std::size_t worker_count) {
-    InitializeRandomPolicyModelParameters(genome::GenomePolicyModelParameters(genome_bytes), random_state, config,
-                                          worker_index, worker_count);
-    InitializeRandomOutputEmbeddingTailRows(genome::GenomeTailRows(genome_bytes), action_count, random_state, config,
+    InitializeRandomPolicyModelParameters(genome::GenomePolicyModelParameters(genome_bytes), random_state, worker_index,
+                                          worker_count);
+    InitializeRandomOutputEmbeddingTailRows(genome::GenomeTailRows(genome_bytes), action_count, random_state,
                                             worker_index, worker_count);
 }
 
@@ -389,20 +380,6 @@ __device__ inline void MutateOutputTailRows(genome::TrainableActionEmbeddingTail
                                             const MutationConfig &mutation_config) {
     for (std::size_t action_index = 0; action_index < action_count; ++action_index) {
         MutateOutputTailRow(tail_rows[action_index], random_state, mutation_config);
-    }
-}
-
-__device__ inline void CopyGenome(const std::uint8_t *source_genome_bytes, const std::size_t source_action_count,
-                                  std::uint8_t *target_genome_bytes, const std::size_t target_action_count) {
-    genome::GenomePolicyModelParameters(target_genome_bytes) = genome::GenomePolicyModelParameters(source_genome_bytes);
-
-    const genome::TrainableActionEmbeddingTail *source_tail_rows = genome::GenomeTailRows(source_genome_bytes);
-    genome::TrainableActionEmbeddingTail *target_tail_rows = genome::GenomeTailRows(target_genome_bytes);
-
-    const std::size_t copied_action_count =
-        (source_action_count < target_action_count) ? source_action_count : target_action_count;
-    for (std::size_t action_index = 0; action_index < copied_action_count; ++action_index) {
-        target_tail_rows[action_index] = source_tail_rows[action_index];
     }
 }
 

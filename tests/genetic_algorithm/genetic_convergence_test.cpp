@@ -33,9 +33,7 @@ bool ExpectNear(const float actual, const float expected, const std::string_view
 
 bool TestIdenticalSyntheticGenotypesHaveZeroDistance() {
     const std::vector<float> sampled_values{
-        1.0f, 2.0f, 3.0f, 4.0f,
-        1.0f, 2.0f, 3.0f, 4.0f,
-        1.0f, 2.0f, 3.0f, 4.0f,
+        1.0f, 2.0f, 3.0f, 4.0f, 1.0f, 2.0f, 3.0f, 4.0f, 1.0f, 2.0f, 3.0f, 4.0f,
     };
     const std::vector<GeneticConvergencePair> pairs{
         {.first = 0, .second = 1},
@@ -58,8 +56,7 @@ bool TestIdenticalSyntheticGenotypesHaveZeroDistance() {
 
 bool TestDifferentSyntheticGenotypesHavePositiveDistance() {
     const std::vector<float> sampled_values{
-        0.0f, 0.0f, 0.0f,
-        3.0f, 4.0f, 0.0f,
+        0.0f, 0.0f, 0.0f, 3.0f, 4.0f, 0.0f,
     };
     const std::vector<GeneticConvergencePair> pairs{
         {.first = 0, .second = 1},

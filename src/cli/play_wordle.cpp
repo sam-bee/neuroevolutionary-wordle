@@ -32,9 +32,7 @@ struct PlayWordleCliConfig {
     std::filesystem::path metadata_path{};
 };
 
-void PrintUsage(const char *program_name) {
-    std::cerr << "Usage: " << program_name << " <winner.bin> <winner.json>\n";
-}
+void PrintUsage(const char *program_name) { std::cerr << "Usage: " << program_name << " <winner.bin> <winner.json>\n"; }
 
 bool TryParseCliArguments(const int argc, char **argv, PlayWordleCliConfig &config_out) {
     config_out = {};

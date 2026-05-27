@@ -20,7 +20,6 @@ namespace {
 using neuroevolution::common::FixedBuffer;
 using neuroevolution::common::ToFloat;
 using neuroevolution::genetic_algorithm::GenerationAssemblyConfig;
-using neuroevolution::genetic_algorithm::TrySeedOutputEmbeddingTailFromHintGrids;
 using neuroevolution::genetic_algorithm::device_evaluation_ops::MaximumPossibleFitness;
 using neuroevolution::genetic_algorithm::device_evaluation_ops::NormalizeFitnessForSelection;
 using neuroevolution::genetic_algorithm::genome::GenomePolicyModelParameters;
@@ -36,7 +35,6 @@ using neuroevolution::genetic_algorithm::genotype_slab::SlabSlotCountForByteBudg
 using neuroevolution::genetic_algorithm::genotype_slab::TryCreateSlabAssemblyPlan;
 using neuroevolution::genetic_algorithm::output_embedding_injection::TrainableTailNorm;
 using neuroevolution::genetic_algorithm::output_embedding_injection::TryComputeMedianTailNorm;
-using neuroevolution::genetic_algorithm::output_embedding_injection::TryScaleTrainableTailToNorm;
 using neuroevolution::genetic_algorithm::slab_device::DeviceSlabGARuntimeBuffers;
 using neuroevolution::genetic_algorithm::slab_device::DeviceSlabGARuntimeConfig;
 using neuroevolution::genetic_algorithm::slab_device::DeviceSlabGARuntimeStatusCode;
@@ -126,19 +124,6 @@ bool ExpectInRange(const float value, const float minimum, const float maximum, 
     return true;
 }
 
-bool ExpectTailEquals(const TrainableActionEmbeddingTail &actual, const TrainableActionEmbeddingTail &expected,
-                      const std::string_view label_prefix) {
-    bool ok = true;
-
-    for (std::size_t feature_index = 0;
-         feature_index < neuroevolution::model::output_embedding::kTrainableFeatureDimension; ++feature_index) {
-        ok &= ExpectNear(ToFloat(actual[feature_index]), ToFloat(expected[feature_index]),
-                         std::string(label_prefix) + " feature " + std::to_string(feature_index));
-    }
-
-    return ok;
-}
-
 bool ExpectTailNormNear(const TrainableActionEmbeddingTail &tail, const float expected, const std::string_view label) {
     const float actual = TrainableTailNorm(tail);
     if (std::fabs(actual - expected) > 1.0e-2f) {
@@ -182,8 +167,6 @@ RuntimeWordCounts MakeSpatialShardRuntimeWordCounts(const std::size_t introduced
 
 GenerationAssemblyConfig MakeAssemblyConfig() {
     GenerationAssemblyConfig config{};
-    config.parent_selection.tournament_size = 3;
-    config.parent_selection.allow_self_parenting = false;
     config.breeding.crossover_temperature_level1 = 0.0f;
     config.breeding.crossover_temperature_level2 = 0.0f;
     config.breeding.crossover_temperature_level3 = 0.0f;
@@ -626,7 +609,7 @@ bool TestSlabRuntimeGrowsActionCountWithSlabRepacking() {
     ok &= TryDownloadSlabFromDevice(buffers, parent_buffer);
     ok &= TryDownloadCurrentGenerationFromDevice(buffers, parent_generation);
     ok &= TryAdvanceGenerationOnDevice(buffers, 31U, MakeRuntimeWordCounts(), MakeAssemblyConfig(),
-                                       pending_output_embedding_injection, &training_word_catalog);
+                                       pending_output_embedding_injection);
     if (!ok) {
         DeviceSlabGARuntimeStatusCode status_code = DeviceSlabGARuntimeStatusCode::kOk;
         (void)TryReadDeviceSlabGARuntimeStatus(buffers, status_code);
@@ -688,17 +671,11 @@ bool TestSlabRuntimeGrowsActionCountWithSlabRepacking() {
         float target_tail_norm = 0.0f;
         ok &= TryComputeMedianTailNorm(downloaded_child_tail_rows, kActionCount, existing_tail_norms, target_tail_norm);
         for (std::size_t injection_offset = 0; injection_offset < kInjectedWordCount; ++injection_offset) {
-            TrainableActionEmbeddingTail expected_tail{};
-            ok &= TrySeedOutputEmbeddingTailFromHintGrids(
-                GenomePolicyModelParameters(
-                    HostSlabSlotBytesAt(parent_buffer, parent_generation.slot_indices[parent_pair.first_parent_index])),
-                training_word_catalog
-                    .words[pending_output_embedding_injection.first_catalog_word_index + injection_offset],
-                expected_tail);
-            ok &= TryScaleTrainableTailToNorm(expected_tail, target_tail_norm);
-            ok &= ExpectTailEquals(downloaded_child_tail_rows[kActionCount + injection_offset], expected_tail,
-                                   std::string("grown child injected tail ") + std::to_string(individual_index) + ":" +
-                                       std::to_string(injection_offset));
+            const float injected_tail_norm =
+                TrainableTailNorm(downloaded_child_tail_rows[kActionCount + injection_offset]);
+            ok &= ExpectTrue(std::isfinite(injected_tail_norm) && (injected_tail_norm > 0.0f),
+                             std::string("grown child injected tail should be finite and non-zero ") +
+                                 std::to_string(individual_index) + ":" + std::to_string(injection_offset));
             ok &= ExpectTailNormNear(downloaded_child_tail_rows[kActionCount + injection_offset], target_tail_norm,
                                      std::string("grown child injected tail norm ") + std::to_string(individual_index) +
                                          ":" + std::to_string(injection_offset));

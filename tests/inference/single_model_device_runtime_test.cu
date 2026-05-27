@@ -118,7 +118,8 @@ bool TestSingleModelDeviceRuntimeSelectsBestAction() {
 
     SelectedAction selected_action{};
     SingleModelDeviceRuntimeStatusCode status = SingleModelDeviceRuntimeStatusCode::kInvalidRuntime;
-    ok &= TrySelectNextGuessWithSingleModelDeviceRuntime(runtime, fixture.MakeSingleTurnGrid(), selected_action, &status);
+    ok &=
+        TrySelectNextGuessWithSingleModelDeviceRuntime(runtime, fixture.MakeSingleTurnGrid(), selected_action, &status);
     ok &= ExpectTrue(status == SingleModelDeviceRuntimeStatusCode::kOk,
                      "Expected runtime to report successful device inference");
     ok &= ExpectTrue(selected_action.action_index == 1, "Expected runtime to pick the CACAO action index");
@@ -161,8 +162,7 @@ bool TestSingleModelDeviceRuntimeMasksRepeatedGuesses() {
     ok &= TrySelectNextGuessWithSingleModelDeviceRuntime(runtime, grid, selected_action, &status);
     ok &= ExpectTrue(status == SingleModelDeviceRuntimeStatusCode::kOk,
                      "Expected repeat-masked device inference to succeed");
-    ok &= ExpectTrue(selected_action.action_index == 1,
-                     "Expected runtime to skip the previously guessed first action");
+    ok &= ExpectTrue(selected_action.action_index == 1, "Expected runtime to skip the previously guessed first action");
     ok &= ExpectNear(selected_action.score, 0.0f, "repeat-masked selected action score");
     ok &= ExpectWordEquals(selected_action.word, action_space_words.words[1],
                            "Expected runtime to select the first unguessed action");

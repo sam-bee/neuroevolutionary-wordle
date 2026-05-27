@@ -88,7 +88,8 @@ bool TestWinnerArtifactWriterPersistsBinaryAndMetadata() {
     ok &= ReadWholeFile(paths.metadata_path, metadata_contents);
     ok &= ExpectTrue(binary_contents.size() == genome_byte_count,
                      "Expected binary artifact size to match the saved genome payload");
-    ok &= ExpectTrue(binary_contents == std::string(reinterpret_cast<const char *>(genome_bytes.get()), genome_byte_count),
+    ok &= ExpectTrue(binary_contents ==
+                         std::string(reinterpret_cast<const char *>(genome_bytes.get()), genome_byte_count),
                      "Expected binary artifact contents to match the saved genome payload");
     ok &= ExpectTrue(metadata_contents.find("\"generation_index\": 7") != std::string::npos,
                      "Expected metadata sidecar to record the generation index");

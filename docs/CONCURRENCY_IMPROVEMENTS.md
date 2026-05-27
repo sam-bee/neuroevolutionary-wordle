@@ -1,5 +1,11 @@
 # Mission Statement: Fitness Evaluation Concurrency Redesign
 
+Status: historical. This mission has been superseded by
+[`docs/genetic-algorithm/fitness-evaluation-concurrency-results.md`](genetic-algorithm/fitness-evaluation-concurrency-results.md).
+The current source uses a thresholded hybrid evaluator: tiny action spaces use the WMMA/tensor-core episode-tile scorer,
+and larger action spaces use the warp-tiled direct scorer. Do not treat this file as current implementation
+instructions.
+
 ## Goal
 
 Redesign and benchmark the CUDA concurrency structure used by the genetic algorithm fitness evaluator so that full fitness evaluation runs materially faster, especially once the benchmark reaches the larger second-generation workload.

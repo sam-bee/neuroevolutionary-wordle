@@ -97,11 +97,11 @@ For the encoder and dense trunk:
 
 The output-embedding tails have their own special policy:
 
-- each 38-value tail row is treated as one unit
-- `99%` of the time a row is copied from one parent
-- `1%` of the time it uses arithmetic row recombination
+- the active tail table is usually copied from one parent-side source
+- a level-2 crossover event can copy one randomly selected 38-value tail row from the alternate parent
+- a level-3 crossover event can splice one randomly selected tail row at a feature crossover point
 - rows still get ordinary per-value mutation
-- rows also have a rare whole-row `+2%` / `-2%` scaling mutation
+- whole-row `+2%` / `-2%` scaling exists in code, but the current CLI configuration leaves it disabled
 
 For the exact current rules, see [`output-embedding-recombination.md`](output-embedding-recombination.md).
 

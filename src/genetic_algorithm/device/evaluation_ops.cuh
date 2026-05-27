@@ -74,9 +74,6 @@ template <int WarpCount> struct GenomeEvaluationTensorActionTileScratch {
     int failure_status = static_cast<int>(DeviceGenomeEvaluationStatusCode::kOk);
 };
 
-// Temporary compatibility shim for the abandoned block-owned evaluator.
-template <int ThreadsPerBlock> struct GenomeEvaluationBlockScratch {};
-
 constexpr NEUROEVOLUTION_HOST_DEVICE bool
 IsValidRuntimeWordCounts(const TrainingWordCatalog &training_word_catalog,
                          const device_common::RuntimeWordCounts &runtime_word_counts) noexcept {
@@ -571,7 +568,6 @@ __device__ inline DeviceGenomeEvaluationStatusCode TryEvaluateGenomeEpisodeConcu
     if (!IsValidTrainingWordCatalog(training_word_catalog) ||
         !IsValidRuntimeWordCounts(training_word_catalog, runtime_word_counts) || (genome_bytes == nullptr) ||
         (genome_action_count == 0) || (selectable_action_count == 0) || (local_training_word_count == 0) ||
-        (selectable_action_count > genome_action_count) ||
         (episode_index >= (local_training_word_count * kEpisodesPerTrainingWordCount))) {
         return DeviceGenomeEvaluationStatusCode::kInvalidTrainingShard;
     }
@@ -589,17 +585,6 @@ __device__ inline DeviceGenomeEvaluationStatusCode TryEvaluateGenomeEpisodeConcu
 
     return TryPlayWordleEpisodeConcurrently<WarpWidth>(genome_bytes, training_word_catalog, selectable_action_count,
                                                        scratch, episode_score_out);
-}
-
-template <int ThreadsPerBlock>
-__device__ inline DeviceGenomeEvaluationStatusCode TryEvaluateGenomeFitnessConcurrently(
-    const std::uint8_t *, const std::size_t, const device_common::RuntimeWordCounts,
-    const TrainingDataShardRuntime *, const std::size_t, const CellularGridShape &, const std::size_t,
-    GenomeEvaluationBlockScratch<ThreadsPerBlock> &, float &fitness_out,
-    std::size_t &local_training_word_count_out) {
-    fitness_out = 0.0f;
-    local_training_word_count_out = 0;
-    return DeviceGenomeEvaluationStatusCode::kInvalidTrainingShard;
 }
 
 } // namespace neuroevolution::genetic_algorithm::device_evaluation_ops

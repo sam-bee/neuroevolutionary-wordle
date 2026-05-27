@@ -2,7 +2,6 @@
 
 #include "genetic_algorithm/breeding.hpp"
 #include "genetic_algorithm/device/slab_runtime.hpp"
-#include "genetic_algorithm/fitness_evaluation.hpp"
 #include "genetic_algorithm/generation_assembly.hpp"
 #include "genetic_algorithm/genome.hpp"
 #include "genetic_algorithm/genotype_slab/assembly.hpp"
@@ -14,5 +13,4 @@
 #include "genetic_algorithm/mutation.hpp"
 #include "genetic_algorithm/output_embedding_injection.hpp"
 #include "genetic_algorithm/population.hpp"
-#include "genetic_algorithm/population_initialization.hpp"
 #include "genetic_algorithm/selection.hpp"

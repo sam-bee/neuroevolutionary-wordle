@@ -30,11 +30,9 @@ inline NEUROEVOLUTION_HOST_DEVICE void ZeroSlabBytes(std::uint8_t *bytes, const 
     SynchronizeRepackWorkers();
 }
 
-inline NEUROEVOLUTION_HOST_DEVICE void MoveSlabBytesOverlapping(const std::uint8_t *source_bytes,
-                                                                std::uint8_t *target_bytes,
-                                                                const std::size_t byte_count,
-                                                                const std::size_t worker_index = 0,
-                                                                const std::size_t worker_count = 1) noexcept {
+inline NEUROEVOLUTION_HOST_DEVICE void
+MoveSlabBytesOverlapping(const std::uint8_t *source_bytes, std::uint8_t *target_bytes, const std::size_t byte_count,
+                         const std::size_t worker_index = 0, const std::size_t worker_count = 1) noexcept {
     if ((source_bytes == nullptr) || (target_bytes == nullptr) || (source_bytes == target_bytes) ||
         (worker_count == 0) || (byte_count == 0)) {
         return;
@@ -146,11 +144,11 @@ inline NEUROEVOLUTION_HOST_DEVICE bool TryPreflightCompactionAndRepackForExpande
     return true;
 }
 
-inline NEUROEVOLUTION_HOST_DEVICE bool TryCompactReferencedParentsIntoPrefix(
-    const GenotypeSlabLayout &slab_layout, std::uint8_t *slab_storage, std::uint32_t *generation_slot_indices,
-    const std::size_t active_individual_count, const std::uint32_t *parent_reference_counts,
-    const std::size_t survivor_count, const std::size_t worker_index = 0,
-    const std::size_t worker_count = 1) noexcept {
+inline NEUROEVOLUTION_HOST_DEVICE bool
+TryCompactReferencedParentsIntoPrefix(const GenotypeSlabLayout &slab_layout, std::uint8_t *slab_storage,
+                                      std::uint32_t *generation_slot_indices, const std::size_t active_individual_count,
+                                      const std::uint32_t *parent_reference_counts, const std::size_t survivor_count,
+                                      const std::size_t worker_index = 0, const std::size_t worker_count = 1) noexcept {
     if (!IsValidGenotypeSlabLayout(slab_layout) || (slab_storage == nullptr) || (generation_slot_indices == nullptr) ||
         (active_individual_count == 0) || (parent_reference_counts == nullptr) || (survivor_count == 0) ||
         (survivor_count > slab_layout.slot_count)) {
@@ -199,8 +197,8 @@ inline NEUROEVOLUTION_HOST_DEVICE bool TryCompactReferencedParentsIntoPrefix(
     for (std::uint32_t source_slot_index = static_cast<std::uint32_t>(survivor_count);
          source_slot_index < slab_layout.slot_count; ++source_slot_index) {
         if (detail::FindReferencedParentIndexOwningSlot(generation_slot_indices, active_individual_count,
-                                                        parent_reference_counts, source_slot_index) !=
-            kInvalidSlabSlotIndex) {
+                                                        parent_reference_counts,
+                                                        source_slot_index) != kInvalidSlabSlotIndex) {
             return false;
         }
     }
@@ -213,8 +211,8 @@ inline NEUROEVOLUTION_HOST_DEVICE bool TryCopyCompactedParentsIntoExpandedSlots(
     const std::size_t survivor_count, const std::size_t destination_base_slot, const std::size_t worker_index = 0,
     const std::size_t worker_count = 1) noexcept {
     if (!IsValidGenotypeSlabLayout(current_layout) || !IsValidGenotypeSlabLayout(next_layout) ||
-        (slab_storage == nullptr) || (survivor_count == 0) ||
-        (survivor_count > current_layout.slot_count) || (destination_base_slot >= next_layout.slot_count) ||
+        (slab_storage == nullptr) || (survivor_count == 0) || (survivor_count > current_layout.slot_count) ||
+        (destination_base_slot >= next_layout.slot_count) ||
         ((destination_base_slot + survivor_count) > next_layout.slot_count)) {
         return false;
     }
@@ -291,8 +289,8 @@ inline NEUROEVOLUTION_HOST_DEVICE bool FinalizeRepackedParentsForExpandedActionC
 inline NEUROEVOLUTION_HOST_DEVICE bool TryRepackCompactedParentsForExpandedActionCount(
     const GenotypeSlabLayout &current_layout, const GenotypeSlabLayout &next_layout, std::uint8_t *slab_storage,
     SlabSlotState *slot_states, std::uint32_t *free_slot_stack, std::uint32_t &free_slot_count,
-    std::uint32_t *generation_slot_indices, const std::size_t active_individual_count,
-    const std::size_t survivor_count, const std::size_t destination_base_slot, const std::size_t worker_index = 0,
+    std::uint32_t *generation_slot_indices, const std::size_t active_individual_count, const std::size_t survivor_count,
+    const std::size_t destination_base_slot, const std::size_t worker_index = 0,
     const std::size_t worker_count = 1) noexcept {
     return TryCopyCompactedParentsIntoExpandedSlots(current_layout, next_layout, slab_storage, survivor_count,
                                                     destination_base_slot, worker_index, worker_count) &&
@@ -302,53 +300,5 @@ inline NEUROEVOLUTION_HOST_DEVICE bool TryRepackCompactedParentsForExpandedActio
 }
 
 } // namespace detail
-
-inline NEUROEVOLUTION_HOST_DEVICE bool TryCompactAndRepackSlabForExpandedActionCount(
-    GenotypeSlabLayout &slab_layout, std::uint8_t *slab_storage, SlabSlotState *slot_states,
-    std::uint32_t *free_slot_stack, std::uint32_t &free_slot_count, std::uint32_t *generation_slot_indices,
-    const std::size_t active_individual_count, const std::uint32_t *parent_reference_counts,
-    const std::size_t next_action_count, const std::size_t worker_index = 0,
-    const std::size_t worker_count = 1) noexcept {
-    // Growth widens the slab by compacting referenced survivors and repacking them to the right
-    // using the expanded slot stride.
-    if (!IsValidGenotypeSlabLayout(slab_layout) || (slab_storage == nullptr) || (slot_states == nullptr) ||
-        (free_slot_stack == nullptr) || (generation_slot_indices == nullptr) || (active_individual_count == 0) ||
-        (parent_reference_counts == nullptr) || (next_action_count <= slab_layout.action_count)) {
-        return false;
-    }
-
-    detail::SlabRepackPreflight preflight{};
-    if (!detail::TryPreflightCompactionAndRepackForExpandedActionCount(
-            slab_layout, slot_states, generation_slot_indices, active_individual_count, parent_reference_counts,
-            next_action_count, preflight)) {
-        return false;
-    }
-
-    const GenotypeSlabLayout next_layout = preflight.next_layout;
-    if (!detail::TryCompactReferencedParentsIntoPrefix(
-            slab_layout, slab_storage, generation_slot_indices, active_individual_count, parent_reference_counts,
-            preflight.survivor_count, worker_index, worker_count) ||
-        !detail::TryRepackCompactedParentsForExpandedActionCount(
-            slab_layout, next_layout, slab_storage, slot_states, free_slot_stack, free_slot_count,
-            generation_slot_indices, active_individual_count, preflight.survivor_count,
-            preflight.destination_base_slot, worker_index, worker_count)) {
-        return false;
-    }
-
-    if (worker_index == 0) {
-        slab_layout = next_layout;
-    }
-    detail::SynchronizeRepackWorkers();
-    return true;
-}
-
-inline bool TryCompactAndRepackSlabForExpandedActionCount(HostGenotypeSlab &buffer, SlabGeneration &generation,
-                                                          const std::uint32_t *parent_reference_counts,
-                                                          const std::size_t next_action_count) {
-    return TryCompactAndRepackSlabForExpandedActionCount(
-        buffer.layout, buffer.storage.get(), buffer.slot_states.get(), buffer.free_slot_stack.get(),
-        buffer.free_slot_count, generation.slot_indices.get(), generation.active_individual_count,
-        parent_reference_counts, next_action_count);
-}
 
 } // namespace neuroevolution::genetic_algorithm::genotype_slab

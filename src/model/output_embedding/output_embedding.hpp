@@ -94,9 +94,9 @@ MaterializeActionEmbedding(const ActionEmbedding &action_embedding) noexcept {
     return embedding_vector;
 }
 
-inline NEUROEVOLUTION_HOST_DEVICE float ScoreActionEmbedding(const PolicyVector &policy_vector,
-                                                             const FixedWordFeatureVector &fixed_word_features,
-                                                             const TrainableActionEmbeddingTail &trainable_tail) noexcept {
+inline NEUROEVOLUTION_HOST_DEVICE float
+ScoreActionEmbedding(const PolicyVector &policy_vector, const FixedWordFeatureVector &fixed_word_features,
+                     const TrainableActionEmbeddingTail &trainable_tail) noexcept {
     float score = 0.0f;
 
     for (std::size_t letter_index = 0; letter_index < kWordFeatureDimension; ++letter_index) {
@@ -104,7 +104,8 @@ inline NEUROEVOLUTION_HOST_DEVICE float ScoreActionEmbedding(const PolicyVector 
     }
 
     for (std::size_t trainable_index = 0; trainable_index < kTrainableFeatureDimension; ++trainable_index) {
-        score += policy_vector[kWordFeatureDimension + trainable_index] * common::ToFloat(trainable_tail[trainable_index]);
+        score +=
+            policy_vector[kWordFeatureDimension + trainable_index] * common::ToFloat(trainable_tail[trainable_index]);
     }
 
     return score;

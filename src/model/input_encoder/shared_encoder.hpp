@@ -59,9 +59,9 @@ inline NEUROEVOLUTION_HOST_DEVICE void ApplyReLU(EncoderHiddenVector &activation
 
 #if defined(__CUDACC__)
 template <int WarpWidth, std::size_t InputSize, std::size_t OutputSize>
-inline __device__ void ApplyDenseLayerConcurrently(
-    const DenseLayerParameters<InputSize, OutputSize> &layer, const common::FixedBuffer<float, InputSize> &input,
-    common::FixedBuffer<float, OutputSize> &output) noexcept {
+inline __device__ void ApplyDenseLayerConcurrently(const DenseLayerParameters<InputSize, OutputSize> &layer,
+                                                   const common::FixedBuffer<float, InputSize> &input,
+                                                   common::FixedBuffer<float, OutputSize> &output) noexcept {
     const std::size_t lane_index = static_cast<std::size_t>(threadIdx.x % WarpWidth);
     for (std::size_t output_index = lane_index; output_index < OutputSize; output_index += WarpWidth) {
         float sum = common::ToFloat(layer.biases[output_index]);
@@ -76,8 +76,7 @@ inline __device__ void ApplyDenseLayerConcurrently(
     __syncwarp();
 }
 
-template <int WarpWidth>
-inline __device__ void ApplyReLUConcurrently(EncoderHiddenVector &activations) noexcept {
+template <int WarpWidth> inline __device__ void ApplyReLUConcurrently(EncoderHiddenVector &activations) noexcept {
     const std::size_t lane_index = static_cast<std::size_t>(threadIdx.x % WarpWidth);
     for (std::size_t activation_index = lane_index; activation_index < kEncoderHiddenSize;
          activation_index += WarpWidth) {

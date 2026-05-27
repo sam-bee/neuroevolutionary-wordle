@@ -23,11 +23,8 @@ namespace {
 using device_genome_ops::BreedAndMutateGenome;
 using device_genome_ops::DeviceRandomState;
 using device_genome_ops::InitializeRandomGenome;
-using device_genome_ops::IsValidRandomGenomeInitializationConfig;
 using device_genome_ops::MakeDeviceRandomState;
-using device_genome_ops::RandomGenomeInitializationConfig;
 using device_injection_ops::DeviceOutputEmbeddingInjectionStatusCode;
-using device_injection_ops::TryInjectExpandedOutputEmbeddingTails;
 using device_injection_ops::TryInjectExpandedOutputEmbeddingTailsConcurrently;
 using neuroevolution::common::PrintTimestampedProgressDuration;
 using neuroevolution::common::PrintTimestampedProgressLine;
@@ -263,7 +260,7 @@ __global__ void BootstrapRandomGenerationKernel(std::uint8_t *slab_storage, Slab
                                                 std::uint32_t *free_slot_lock, const GenotypeSlabLayout slab_layout,
                                                 std::uint32_t *current_slot_indices, const std::size_t generation_size,
                                                 const std::size_t generation_index, const std::uint32_t generation_seed,
-                                                const DeviceSlabBootstrapConfig bootstrap_config, int *status) {
+                                                int *status) {
     if (!IsDeviceStatusOk(status)) {
         return;
     }
@@ -275,7 +272,7 @@ __global__ void BootstrapRandomGenerationKernel(std::uint8_t *slab_storage, Slab
 
     if ((slab_storage == nullptr) || (slot_states == nullptr) || (free_slot_stack == nullptr) ||
         (free_slot_count == nullptr) || (free_slot_lock == nullptr) || (current_slot_indices == nullptr) ||
-        !IsValidGenotypeSlabLayout(slab_layout) || !IsValidDeviceSlabBootstrapConfig(bootstrap_config)) {
+        !IsValidGenotypeSlabLayout(slab_layout)) {
         if ((blockIdx.x == 0) && (threadIdx.x == 0)) {
             SetFailureStatus(status, DeviceSlabRuntimeStatusCode::kInvalidRuntimeConfig);
         }
@@ -306,14 +303,6 @@ __global__ void BootstrapRandomGenerationKernel(std::uint8_t *slab_storage, Slab
         return;
     }
 
-    RandomGenomeInitializationConfig genome_init_config{};
-    genome_init_config.dense_weight_gain = bootstrap_config.dense_weight_gain;
-    genome_init_config.output_embedding_tail_stddev = bootstrap_config.output_embedding_tail_stddev;
-    if (!IsValidRandomGenomeInitializationConfig(genome_init_config)) {
-        SetFailureStatus(status, DeviceSlabRuntimeStatusCode::kInvalidRuntimeConfig);
-        return;
-    }
-
     const std::uint64_t random_stream =
         (((static_cast<std::uint64_t>(generation_index) * static_cast<std::uint64_t>(generation_size)) +
           static_cast<std::uint64_t>(organism_index)) *
@@ -321,7 +310,7 @@ __global__ void BootstrapRandomGenerationKernel(std::uint8_t *slab_storage, Slab
         static_cast<std::uint64_t>(threadIdx.x);
     DeviceRandomState random_state = MakeDeviceRandomState(generation_seed, random_stream);
     InitializeRandomGenome(SlabSlotBytesAt(slab.storage, slab.layout, slot_index), slab.layout.action_count,
-                           random_state, genome_init_config, threadIdx.x, blockDim.x);
+                           random_state, threadIdx.x, blockDim.x);
 }
 
 __global__ void ValidateAssemblyInputsKernel(
@@ -522,18 +511,6 @@ __global__ void AssembleChildBatchKernel(
                              SlabSlotBytesAt(slab.storage, slab.layout, second_parent_slot), parent_action_count,
                              SlabSlotBytesAt(slab.storage, slab.layout, child_slot), random_state, config.breeding,
                              config.mutation);
-        if (config.pending_output_embedding_injection.enabled) {
-            const DeviceOutputEmbeddingInjectionStatusCode injection_status = TryInjectExpandedOutputEmbeddingTails(
-                SlabSlotBytesAt(slab.storage, slab.layout, child_slot), parent_action_count,
-                config.pending_output_embedding_injection.first_catalog_word_index,
-                config.pending_output_embedding_injection.injection_count);
-            if (injection_status != DeviceOutputEmbeddingInjectionStatusCode::kOk) {
-                (void)TryReleaseSlabSlot(slab, child_slot);
-                SetFailureStatus(status, MapInjectionStatus(injection_status));
-                return;
-            }
-        }
-
         next_generation.slot_indices[child_index] = child_slot;
     }
 }
@@ -1217,10 +1194,9 @@ bool TryUploadCurrentGenerationToDevice(const SlabGeneration &generation, Device
 
 bool TryBootstrapRandomCurrentGenerationOnDevice(DeviceSlabRuntimeBuffers &buffers, const std::size_t generation_size,
                                                  const std::uint32_t generation_seed,
-                                                 const std::size_t generation_index,
-                                                 const DeviceSlabBootstrapConfig &config) {
+                                                 const std::size_t generation_index) {
     if ((generation_size == 0) || (generation_size > buffers.max_generation_size) ||
-        !IsValidDeviceSlabBootstrapConfig(config) || !IsValidGenotypeSlabLayout(buffers.slab_layout)) {
+        !IsValidGenotypeSlabLayout(buffers.slab_layout)) {
         return false;
     }
 
@@ -1245,7 +1221,7 @@ bool TryBootstrapRandomCurrentGenerationOnDevice(DeviceSlabRuntimeBuffers &buffe
     BootstrapRandomGenerationKernel<<<static_cast<int>(generation_size), kSlabBootstrapThreadBlockSize>>>(
         buffers.slab_storage, buffers.slot_states, buffers.free_slot_stack, buffers.free_slot_count,
         buffers.free_slot_lock, buffers.slab_layout, buffers.current_slot_indices, generation_size, generation_index,
-        generation_seed, config, buffers.status);
+        generation_seed, buffers.status);
 
     int original_status = DeviceStatusValue(DeviceSlabRuntimeStatusCode::kCudaFailure);
     const bool launch_ok = CheckCuda(cudaGetLastError());
@@ -1541,7 +1517,7 @@ bool TryContinueNextGenerationAssemblyOnDevice(DeviceSlabRuntimeBuffers &buffers
 
         if (config.pending_output_embedding_injection.enabled) {
             AssembleInjectedChildBatchKernel<<<BoundedAssemblyBlockCount(batch_child_count),
-                                              kSlabAssemblyThreadBlockSize>>>(
+                                               kSlabAssemblyThreadBlockSize>>>(
                 buffers.slab_storage, buffers.slot_states, buffers.free_slot_stack, buffers.free_slot_count,
                 buffers.free_slot_lock, buffers.slab_layout, buffers.current_slot_indices, buffers.current_fitness,
                 buffers.current_evaluation_counts, buffers.current_has_fitness, buffers.current_generation_index,

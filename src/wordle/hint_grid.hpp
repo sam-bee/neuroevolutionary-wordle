@@ -16,22 +16,6 @@ struct HintGridGroup {
     common::FixedBuffer<WordleGrid, kHintGridGroupSize> grids{};
 };
 
-constexpr NEUROEVOLUTION_HOST_DEVICE bool IsIsogram(const Word &word) noexcept {
-    if (!IsValidWord(word)) {
-        return false;
-    }
-
-    for (std::size_t position = 0; position < kWordLength; ++position) {
-        for (std::size_t later_position = position + 1; later_position < kWordLength; ++later_position) {
-            if (word.letter_indices[position] == word.letter_indices[later_position]) {
-                return false;
-            }
-        }
-    }
-
-    return true;
-}
-
 constexpr NEUROEVOLUTION_HOST_DEVICE Word RotateWordLeft(const Word &word, const std::size_t rotation) noexcept {
     Word rotated{};
 

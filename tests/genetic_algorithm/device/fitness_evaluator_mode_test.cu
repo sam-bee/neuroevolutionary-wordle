@@ -15,7 +15,6 @@
 namespace {
 
 using neuroevolution::genetic_algorithm::genotype_slab::ComputeSlabSlotStrideBytes;
-using neuroevolution::genetic_algorithm::spatial::FloorSquareRoot;
 using neuroevolution::genetic_algorithm::genotype_slab::SlabGeneration;
 using neuroevolution::genetic_algorithm::slab_device::DestroyDeviceSlabGARuntimeBuffers;
 using neuroevolution::genetic_algorithm::slab_device::DeviceSlabGARuntimeBuffers;
@@ -27,6 +26,7 @@ using neuroevolution::genetic_algorithm::slab_device::TryCreateDeviceSlabGARunti
 using neuroevolution::genetic_algorithm::slab_device::TryDownloadCurrentGenerationFromDevice;
 using neuroevolution::genetic_algorithm::slab_device::TryEvaluateCurrentGenerationFitnessOnDevice;
 using neuroevolution::genetic_algorithm::slab_device::TryReadPopulationFitnessSummaryFromDevice;
+using neuroevolution::genetic_algorithm::spatial::FloorSquareRoot;
 using neuroevolution::training_folder::LoadTrainingWordCatalogFromActionSpace;
 using neuroevolution::training_folder::TrainingWordCatalog;
 using neuroevolution::training_folder::UploadTrainingWordCatalogToDeviceConstantMemory;
@@ -140,8 +140,9 @@ bool EvaluateAndCheckSaneFitness(const std::size_t action_count, const std::uint
                          "Expected every organism to receive a fitness flag");
         ok &= ExpectTrue(generation.evaluation_counts[individual_index] == 1,
                          "Expected every organism to be evaluated exactly once");
-        ok &= ExpectInRange(generation.fitness[individual_index], neuroevolution::spatial::kPositiveSelectionFitnessFloor,
-                            1.0f, "current-generation fitness");
+        ok &=
+            ExpectInRange(generation.fitness[individual_index], neuroevolution::spatial::kPositiveSelectionFitnessFloor,
+                          1.0f, "current-generation fitness");
     }
 
     return ok;

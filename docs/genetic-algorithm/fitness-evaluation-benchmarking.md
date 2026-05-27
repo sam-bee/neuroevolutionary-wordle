@@ -18,18 +18,19 @@ The target runs:
 ```
 
 Generations 0 through 9 evaluate the initial 20-word training/action set. The deliberately high centroid threshold plus
-the default p99 fitness threshold make the 1,980-word shard release for generation 10, so generation 10 evaluates the
-expanded 2,000-word training/action set with the new shard covering the whole population immediately.
+the default p99 fitness threshold are intended to trigger the 1,980-word shard release for generation 10, so generation
+10 evaluates the expanded 2,000-word training/action set with the new shard covering the whole population immediately.
+Verify this by checking that the generation-10 summary reports `action_count=2000`.
 
-Do not set `GA_VERBOSE=0` for benchmarking. The default `GA_VERBOSE=1` makes the Makefile pass `--verbose`, which is
-needed for timestamped stage progress.
+Keep `--verbose` in benchmark commands. The current Makefile target includes it directly, and the verbose stage timing
+is needed for useful fitness-evaluation comparisons.
 
-Useful overrides:
+The current Makefile target does not expose `GA_*` environment overrides. If you need a fixed seed, a different
+population size, or different VRAM budgets, run `./build/run_genetic_algorithm` directly with the same options plus your
+changes, for example:
 
 ```bash
-GA_SEED=7 make run-ga-benchmark-growth
-GA_BENCHMARK_POPULATION_SIZE=4096 make run-ga-benchmark-growth
-GA_BENCHMARK_GENOTYPE_VRAM_GB=12 GA_BENCHMARK_GENERATION_VRAM_GB=6 make run-ga-benchmark-growth
+./build/run_genetic_algorithm --generations 11 --population-size 1024 --genotype-vram-gb 1 --generation-vram-gb 0.5 --initial-word-count 20 --word-count-step 1980 --shard-release-min-gap 3 --first-new-shard-release-generation 10 --shard-release-centroid-threshold 1000000 --shard-release-fitness-p99-threshold 0.20 --shard-initial-radius-infinite --seed 7 --verbose
 ```
 
 When comparing an optimization, record the exact command, seed, GPU, commit, CUDA driver/toolkit, and the verbose timing

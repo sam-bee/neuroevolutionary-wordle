@@ -154,7 +154,8 @@ bool TestScoreActionEmbeddingMatchesPrecomputedFixedWordFeatures() {
     MaterializeFixedWordFeatures(action_embedding.word, fixed_word_features);
 
     const float materialized_score = ScoreActionEmbedding(policy_vector, action_embedding);
-    const float precomputed_score = ScoreActionEmbedding(policy_vector, fixed_word_features, action_embedding.trainable_tail);
+    const float precomputed_score =
+        ScoreActionEmbedding(policy_vector, fixed_word_features, action_embedding.trainable_tail);
 
     bool ok = true;
     ok &= ExpectNear(materialized_score, -15.0f, "materialized MUMMY score");

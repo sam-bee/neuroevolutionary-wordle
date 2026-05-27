@@ -18,45 +18,6 @@ enum class DeviceOutputEmbeddingInjectionStatusCode : int {
     kInjectionFailed = 2,
 };
 
-__device__ inline DeviceOutputEmbeddingInjectionStatusCode
-TryInjectExpandedOutputEmbeddingTails(std::uint8_t *genome_bytes, const std::size_t parent_action_count,
-                                      const std::size_t first_catalog_word_index, const std::size_t injection_count) {
-    if ((genome_bytes == nullptr) || (parent_action_count == 0) || (injection_count == 0) ||
-        (first_catalog_word_index != parent_action_count)) {
-        return DeviceOutputEmbeddingInjectionStatusCode::kInjectionFailed;
-    }
-
-    const training_folder::TrainingWordCatalog &training_word_catalog = training_folder::DeviceTrainingWordCatalog();
-    if (!training_folder::IsValidTrainingWordCatalog(training_word_catalog) ||
-        (first_catalog_word_index >= training_word_catalog.word_count) ||
-        (injection_count > (training_word_catalog.word_count - first_catalog_word_index))) {
-        return DeviceOutputEmbeddingInjectionStatusCode::kInvalidTrainingShard;
-    }
-
-    genome::TrainableActionEmbeddingTail *tail_rows = genome::GenomeTailRows(genome_bytes);
-    common::FixedBuffer<float, training_folder::kTrainingWordCatalogCapacity> existing_tail_norms{};
-    float target_norm = 0.0f;
-    if (!output_embedding_injection::TryComputeMedianTailNorm(tail_rows, parent_action_count, existing_tail_norms,
-                                                              target_norm)) {
-        return DeviceOutputEmbeddingInjectionStatusCode::kInjectionFailed;
-    }
-
-    for (std::size_t injection_offset = 0; injection_offset < injection_count; ++injection_offset) {
-        if (!TrySeedOutputEmbeddingTailFromHintGrids(
-                genome::GenomePolicyModelParameters(genome_bytes),
-                training_word_catalog.words[first_catalog_word_index + injection_offset],
-                tail_rows[parent_action_count + injection_offset])) {
-            return DeviceOutputEmbeddingInjectionStatusCode::kInjectionFailed;
-        }
-        if (!output_embedding_injection::TryScaleTrainableTailToNorm(tail_rows[parent_action_count + injection_offset],
-                                                                     target_norm)) {
-            return DeviceOutputEmbeddingInjectionStatusCode::kInjectionFailed;
-        }
-    }
-
-    return DeviceOutputEmbeddingInjectionStatusCode::kOk;
-}
-
 template <int WarpWidth>
 __device__ inline DeviceOutputEmbeddingInjectionStatusCode TryInjectExpandedOutputEmbeddingTailsConcurrently(
     std::uint8_t *genome_bytes, const std::size_t parent_action_count, const std::size_t first_catalog_word_index,

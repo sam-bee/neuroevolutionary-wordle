@@ -11,9 +11,9 @@ This project keeps one curated Wordle action catalog and a few supporting source
 - `most-common-subtitles.txt`
   A 5,000-word subtitle-frequency source list used during action-space curation.
 - `action-space.txt`
-  The curated 4,739-word action space used by the policy.
+  The curated 4,739-word action catalog used by the policy.
 - `action-space-randomised.txt`
-  The same action space in randomized order. This is the runtime catalog used by the GA.
+  The same catalog in randomized order. This is the runtime catalog used by the GA.
 
 ## Runtime Use
 

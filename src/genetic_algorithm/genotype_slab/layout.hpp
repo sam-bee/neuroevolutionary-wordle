@@ -29,15 +29,6 @@ constexpr NEUROEVOLUTION_HOST_DEVICE std::size_t ComputeSlabSlotStrideBytes(cons
 }
 
 constexpr NEUROEVOLUTION_HOST_DEVICE std::size_t
-ComputeOutputEmbeddingGrowthBytes(const std::size_t action_count_increment) noexcept {
-    return action_count_increment * sizeof(TrainableActionEmbeddingTail);
-}
-
-constexpr NEUROEVOLUTION_HOST_DEVICE std::size_t SlabUsedBytes(const GenotypeSlabLayout &layout) noexcept {
-    return layout.slot_count * layout.slot_stride_bytes;
-}
-
-constexpr NEUROEVOLUTION_HOST_DEVICE std::size_t
 SlabSlotCountForByteBudget(const std::size_t slab_byte_budget_bytes, const std::size_t action_count,
                            const std::size_t slot_count_ceiling = 0) noexcept {
     return genome::PopulationSizeForGenotypeBudgetBytes(slab_byte_budget_bytes, action_count, slot_count_ceiling);

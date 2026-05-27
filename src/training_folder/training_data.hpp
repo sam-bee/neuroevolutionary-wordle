@@ -79,10 +79,6 @@ TrainingDataShardCountForIntroducedWordCount(const WordCountSchedule &schedule,
 
     const std::size_t foundation_word_count =
         (schedule.initial_word_count < introduced_word_count) ? schedule.initial_word_count : introduced_word_count;
-    if (foundation_word_count == 0) {
-        return 0;
-    }
-
     if (introduced_word_count == foundation_word_count) {
         return 1;
     }
@@ -271,10 +267,6 @@ constexpr bool TryBuildTrainingDataShardRuntimeSet(
 
     const std::size_t foundation_word_count =
         (schedule.initial_word_count < introduced_word_count) ? schedule.initial_word_count : introduced_word_count;
-    if (foundation_word_count == 0) {
-        return false;
-    }
-
     runtime_set_out.shards[0] = {
         .first_catalog_word_index = 0,
         .word_count = foundation_word_count,

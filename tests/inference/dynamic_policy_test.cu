@@ -107,8 +107,8 @@ __global__ void DynamicPolicyKernel(const TrainingWordCatalog *catalog, const st
 
     SelectedAction best_action{};
     const DynamicInferenceStatusCode best_action_status =
-        SelectNextGuessFromDynamicGenomeConcurrently<kDynamicPolicyWarpSize>(
-            shared_grid, *catalog, genome_bytes, kActionCount, scratch, best_action);
+        SelectNextGuessFromDynamicGenomeConcurrently<kDynamicPolicyWarpSize>(shared_grid, *catalog, genome_bytes,
+                                                                             kActionCount, scratch, best_action);
 
     if (threadIdx.x == 0) {
         if (best_action_status != DynamicInferenceStatusCode::kOk) {
@@ -117,7 +117,8 @@ __global__ void DynamicPolicyKernel(const TrainingWordCatalog *catalog, const st
         }
 
         *best_action_out = best_action;
-        if (!TryAppendGuess(shared_grid, catalog->words[0]) || !HasGridAlreadyGuessedWord(shared_grid, catalog->words[0])) {
+        if (!TryAppendGuess(shared_grid, catalog->words[0]) ||
+            !HasGridAlreadyGuessedWord(shared_grid, catalog->words[0])) {
             *status_out = kStatusRepeatMaskCheckFailed;
             return;
         }
@@ -126,8 +127,8 @@ __global__ void DynamicPolicyKernel(const TrainingWordCatalog *catalog, const st
 
     SelectedAction next_action{};
     const DynamicInferenceStatusCode next_action_status =
-        SelectNextGuessFromDynamicGenomeConcurrently<kDynamicPolicyWarpSize>(
-            shared_grid, *catalog, genome_bytes, kActionCount, scratch, next_action);
+        SelectNextGuessFromDynamicGenomeConcurrently<kDynamicPolicyWarpSize>(shared_grid, *catalog, genome_bytes,
+                                                                             kActionCount, scratch, next_action);
 
     if (threadIdx.x == 0) {
         if (next_action_status != DynamicInferenceStatusCode::kOk) {
@@ -152,7 +153,8 @@ bool TestDynamicPolicyHelpersOnDevice() {
     const std::size_t genome_byte_count =
         neuroevolution::genetic_algorithm::genome::ComputeDynamicGenomeStrideBytes(kActionCount);
     std::unique_ptr<std::uint8_t[]> host_genome_bytes(new std::uint8_t[genome_byte_count]());
-    neuroevolution::genetic_algorithm::genome::GenomePolicyModelParameters(host_genome_bytes.get()) = fixture.parameters;
+    neuroevolution::genetic_algorithm::genome::GenomePolicyModelParameters(host_genome_bytes.get()) =
+        fixture.parameters;
 
     TrainingWordCatalog *device_catalog = nullptr;
     std::uint8_t *device_genome_bytes = nullptr;
@@ -171,14 +173,15 @@ bool TestDynamicPolicyHelpersOnDevice() {
     if (ok) {
         ok &= CheckCuda(cudaMemcpy(device_catalog, &catalog, sizeof(catalog), cudaMemcpyHostToDevice),
                         "copying action catalog to device");
-        ok &= CheckCuda(cudaMemcpy(device_genome_bytes, host_genome_bytes.get(), genome_byte_count, cudaMemcpyHostToDevice),
-                        "copying genome bytes to device");
+        ok &= CheckCuda(
+            cudaMemcpy(device_genome_bytes, host_genome_bytes.get(), genome_byte_count, cudaMemcpyHostToDevice),
+            "copying genome bytes to device");
     }
 
     if (ok) {
-        DynamicPolicyKernel<<<1, kDynamicPolicyWarpSize>>>(
-            device_catalog, device_genome_bytes, fixture.MakeSingleTurnGrid(), device_best_action, device_next_action,
-            device_status);
+        DynamicPolicyKernel<<<1, kDynamicPolicyWarpSize>>>(device_catalog, device_genome_bytes,
+                                                           fixture.MakeSingleTurnGrid(), device_best_action,
+                                                           device_next_action, device_status);
         ok &= CheckCuda(cudaGetLastError(), "launching dynamic-policy kernel");
         ok &= CheckCuda(cudaDeviceSynchronize(), "waiting for dynamic-policy kernel completion");
     }
@@ -187,10 +190,12 @@ bool TestDynamicPolicyHelpersOnDevice() {
     SelectedAction host_next_action{};
     int host_status = -1;
     if (ok) {
-        ok &= CheckCuda(cudaMemcpy(&host_best_action, device_best_action, sizeof(SelectedAction), cudaMemcpyDeviceToHost),
-                        "copying best action back to host");
-        ok &= CheckCuda(cudaMemcpy(&host_next_action, device_next_action, sizeof(SelectedAction), cudaMemcpyDeviceToHost),
-                        "copying next action back to host");
+        ok &=
+            CheckCuda(cudaMemcpy(&host_best_action, device_best_action, sizeof(SelectedAction), cudaMemcpyDeviceToHost),
+                      "copying best action back to host");
+        ok &=
+            CheckCuda(cudaMemcpy(&host_next_action, device_next_action, sizeof(SelectedAction), cudaMemcpyDeviceToHost),
+                      "copying next action back to host");
         ok &= CheckCuda(cudaMemcpy(&host_status, device_status, sizeof(int), cudaMemcpyDeviceToHost),
                         "copying status back to host");
     }
@@ -198,8 +203,7 @@ bool TestDynamicPolicyHelpersOnDevice() {
     if (ok) {
         ok &= ExpectTrue(host_status == 0, "Expected dynamic-policy kernel to succeed");
         ok &= ExpectTrue(host_best_action.action_index == 1, "Expected best-action helper to pick the second word");
-        ok &= ExpectWordEquals(host_best_action.word, catalog.words[1],
-                               "Expected best-action helper to select CACAO");
+        ok &= ExpectWordEquals(host_best_action.word, catalog.words[1], "Expected best-action helper to select CACAO");
         ok &= ExpectTrue(host_next_action.action_index == 1,
                          "Expected repeat-guess masking to skip the previously guessed first word");
         ok &= ExpectWordEquals(host_next_action.word, catalog.words[1],

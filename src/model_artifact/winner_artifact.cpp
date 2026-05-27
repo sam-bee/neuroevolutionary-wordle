@@ -166,8 +166,7 @@ bool TryWriteWinnerArtifact(const std::filesystem::path &directory, const std::u
                     << "  \"action_count\": " << metadata.action_count << ",\n"
                     << "  \"genome_byte_count\": " << metadata.genome_byte_count << ",\n"
                     << "  \"seed\": " << metadata.seed << ",\n"
-                    << "  \"action_space_path\": \"" << EscapeJsonString(metadata.action_space_path.string())
-                    << "\",\n"
+                    << "  \"action_space_path\": \"" << EscapeJsonString(metadata.action_space_path.string()) << "\",\n"
                     << "  \"action_space_words\": [";
     for (std::size_t word_index = 0; word_index < metadata.action_count; ++word_index) {
         if (word_index != 0) {

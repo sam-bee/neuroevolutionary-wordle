@@ -51,16 +51,6 @@ constexpr bool IsValidDeviceSlabRuntimeConfig(const DeviceSlabRuntimeConfig &con
     return (config.slot_count > 0) && (config.action_count > 0) && (config.max_generation_size > 0);
 }
 
-struct DeviceSlabBootstrapConfig {
-    float dense_weight_gain = 1.0f;
-    float output_embedding_tail_stddev = 0.05f;
-};
-
-constexpr NEUROEVOLUTION_HOST_DEVICE bool
-IsValidDeviceSlabBootstrapConfig(const DeviceSlabBootstrapConfig &config) noexcept {
-    return (config.dense_weight_gain > 0.0f) && (config.output_embedding_tail_stddev >= 0.0f);
-}
-
 struct DeviceSlabRuntimeBuffers {
     std::uint8_t *slab_storage = nullptr;
     SlabSlotState *slot_states = nullptr;
@@ -103,8 +93,7 @@ bool TryDownloadSlabFromDevice(const DeviceSlabRuntimeBuffers &buffers, HostGeno
 bool TryUploadCurrentGenerationToDevice(const SlabGeneration &generation, DeviceSlabRuntimeBuffers &buffers);
 
 bool TryBootstrapRandomCurrentGenerationOnDevice(DeviceSlabRuntimeBuffers &buffers, std::size_t generation_size,
-                                                 std::uint32_t generation_seed, std::size_t generation_index = 0,
-                                                 const DeviceSlabBootstrapConfig &config = {});
+                                                 std::uint32_t generation_seed, std::size_t generation_index = 0);
 
 bool TryDownloadCurrentGenerationFromDevice(const DeviceSlabRuntimeBuffers &buffers, SlabGeneration &generation);
 

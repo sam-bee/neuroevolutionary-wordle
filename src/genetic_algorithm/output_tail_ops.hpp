@@ -4,7 +4,6 @@
 
 namespace neuroevolution::genetic_algorithm::output_tail_ops {
 
-constexpr float kDefaultRowScaleMutationProbability = 0.005f;
 constexpr float kRowScaleIncreaseFactor = 1.02f;
 constexpr float kRowScaleDecreaseFactor = 0.98f;
 

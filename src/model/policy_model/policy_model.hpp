@@ -42,9 +42,9 @@ template <int WarpWidth>
 inline __device__ bool TryForwardPolicyModelConcurrently(const PolicyModelParameters &parameters,
                                                          const wordle::WordleGrid &grid,
                                                          PolicyModelWarpScratch<WarpWidth> &scratch) noexcept {
-    if (!model_input::TryEncodeWordleGridStateConcurrently<WarpWidth>(
-            parameters.input_encoder, grid, scratch.model_input_state, scratch.turn_input, scratch.encoder_hidden,
-            scratch.encoded_turn)) {
+    if (!model_input::TryEncodeWordleGridStateConcurrently<WarpWidth>(parameters.input_encoder, grid,
+                                                                      scratch.model_input_state, scratch.turn_input,
+                                                                      scratch.encoder_hidden, scratch.encoded_turn)) {
         return false;
     }
 

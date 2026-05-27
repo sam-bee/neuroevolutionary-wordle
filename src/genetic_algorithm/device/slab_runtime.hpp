@@ -78,7 +78,6 @@ struct DeviceSlabGARuntimeBuffers {
 };
 
 using PendingOutputEmbeddingInjection = genotype_slab::device::PendingOutputEmbeddingInjection;
-using DeviceSlabBootstrapConfig = genotype_slab::device::DeviceSlabBootstrapConfig;
 using PostFitnessEvaluationCallback =
     std::function<bool(const DeviceSlabGARuntimeBuffers &, const RuntimeWordCounts &)>;
 using TrainingShardReleaseCallback = std::function<bool(const DeviceSlabGARuntimeBuffers &, const RuntimeWordCounts &,
@@ -122,8 +121,7 @@ bool TryCreateDeviceSlabGARuntimeBuffers(DeviceSlabGARuntimeBuffers &buffers, co
 void DestroyDeviceSlabGARuntimeBuffers(DeviceSlabGARuntimeBuffers &buffers) noexcept;
 
 bool TryBootstrapRandomCurrentGenerationOnDevice(DeviceSlabGARuntimeBuffers &buffers, std::size_t generation_size,
-                                                 std::uint32_t generation_seed, std::size_t generation_index = 0,
-                                                 const DeviceSlabBootstrapConfig &config = {});
+                                                 std::uint32_t generation_seed, std::size_t generation_index = 0);
 
 bool TryDownloadSlabFromDevice(const DeviceSlabGARuntimeBuffers &buffers, genotype_slab::HostGenotypeSlab &host_buffer);
 
@@ -146,8 +144,7 @@ bool TryReadPopulationFitnessSummaryFromDevice(const DeviceSlabGARuntimeBuffers 
 bool TryAdvanceGenerationOnDevice(
     DeviceSlabGARuntimeBuffers &buffers, std::uint32_t generation_seed, const RuntimeWordCounts &runtime_word_counts,
     const GenerationAssemblyConfig &config = {},
-    const PendingOutputEmbeddingInjection &pending_output_embedding_injection = {},
-    const training_folder::TrainingWordCatalog *host_training_word_catalog = nullptr, bool verbose = false,
+    const PendingOutputEmbeddingInjection &pending_output_embedding_injection = {}, bool verbose = false,
     const PostFitnessEvaluationCallback &post_fitness_evaluation_callback = {},
     const TrainingShardReleaseCallback &training_shard_release_callback = {},
     const training_folder::TrainingDataShardReleaseHistory *training_shard_release_history = nullptr);

@@ -38,13 +38,13 @@ using neuroevolution::genetic_algorithm::genotype_slab::device::DeviceSlabRuntim
 using neuroevolution::genetic_algorithm::genotype_slab::device::DeviceSlabRuntimeConfig;
 using neuroevolution::genetic_algorithm::genotype_slab::device::DeviceSlabRuntimeStatusCode;
 using neuroevolution::genetic_algorithm::genotype_slab::device::SlabDeviceAssemblyConfig;
+using neuroevolution::genetic_algorithm::genotype_slab::device::TryApplyFinalChildPriorityToAssemblyPlanOnDevice;
 using neuroevolution::genetic_algorithm::genotype_slab::device::TryAssembleNextGenerationOnDevice;
 using neuroevolution::genetic_algorithm::genotype_slab::device::TryCreateDeviceSlabRuntimeBuffers;
 using neuroevolution::genetic_algorithm::genotype_slab::device::TryDownloadCurrentGenerationFromDevice;
 using neuroevolution::genetic_algorithm::genotype_slab::device::TryDownloadNextGenerationFromDevice;
 using neuroevolution::genetic_algorithm::genotype_slab::device::TryDownloadSlabFromDevice;
 using neuroevolution::genetic_algorithm::genotype_slab::device::TryPrepareSlabForExpandedActionCountOnDevice;
-using neuroevolution::genetic_algorithm::genotype_slab::device::TryApplyFinalChildPriorityToAssemblyPlanOnDevice;
 using neuroevolution::genetic_algorithm::genotype_slab::device::TryReadDeviceSlabRuntimeStatus;
 using neuroevolution::genetic_algorithm::genotype_slab::device::TryUploadAssemblyPlanToDevice;
 using neuroevolution::genetic_algorithm::genotype_slab::device::TryUploadCurrentGenerationToDevice;
@@ -607,7 +607,8 @@ bool TestDeviceSlabRuntimeSplicesOutputTailRows() {
     bool saw_second_parent_suffix = false;
     bool crossed_to_second_parent = false;
     for (std::size_t feature_index = 0; feature_index < kTrainableFeatureDimension; ++feature_index) {
-        const float value = ToFloat(GenomeTailRows(HostSlabSlotBytesAt(downloaded_buffer, child_slot))[0][feature_index]);
+        const float value =
+            ToFloat(GenomeTailRows(HostSlabSlotBytesAt(downloaded_buffer, child_slot))[0][feature_index]);
         const float first_parent_value = 100.0f + static_cast<float>(feature_index);
         const float second_parent_value = 200.0f + static_cast<float>(feature_index);
         if (std::fabs(value - first_parent_value) <= kTolerance) {
@@ -643,8 +644,8 @@ bool TestDeviceSlabRuntimeCanScaleOutputTailRows() {
         return false;
     }
 
-    GenomePolicyModelParameters(HostSlabSlotBytesAt(host_buffer, parent_slot))
-        .dense_trunk.hidden1_to_output.biases[0] = ToFloat16(11.0f);
+    GenomePolicyModelParameters(HostSlabSlotBytesAt(host_buffer, parent_slot)).dense_trunk.hidden1_to_output.biases[0] =
+        ToFloat16(11.0f);
     for (std::size_t feature_index = 0;
          feature_index < neuroevolution::model::output_embedding::kTrainableFeatureDimension; ++feature_index) {
         GenomeTailRows(HostSlabSlotBytesAt(host_buffer, parent_slot))[0][feature_index] =
@@ -697,9 +698,8 @@ bool TestDeviceSlabRuntimeCanScaleOutputTailRows() {
     for (std::size_t feature_index = 0;
          feature_index < neuroevolution::model::output_embedding::kTrainableFeatureDimension; ++feature_index) {
         const float baseline = 1.0f + static_cast<float>(feature_index);
-        const float feature_scale = ToFloat(GenomeTailRows(HostSlabSlotBytesAt(downloaded_buffer, child_slot))[0]
-                                                [feature_index]) /
-                                    baseline;
+        const float feature_scale =
+            ToFloat(GenomeTailRows(HostSlabSlotBytesAt(downloaded_buffer, child_slot))[0][feature_index]) / baseline;
         ok &= ExpectTrue(std::fabs(feature_scale - scale) <= 5.0e-3f,
                          "Expected device row-scale mutation to apply one multiplier across the row");
     }
@@ -1156,8 +1156,7 @@ int main() {
         !TestDeviceSlabFreeListIsThreadSafeUnderWarpContention() ||
         !TestDeviceSlabRuntimeUploadsAndDownloadsBufferAndGenerationState() ||
         !TestDeviceSlabRuntimeReusesSweptAndReleasedSlotsDuringAssembly() ||
-        !TestDeviceSlabRuntimeSplicesOutputTailRows() ||
-        !TestDeviceSlabRuntimeCanScaleOutputTailRows() ||
+        !TestDeviceSlabRuntimeSplicesOutputTailRows() || !TestDeviceSlabRuntimeCanScaleOutputTailRows() ||
         !TestDeviceAssemblyPlanAppliesFinalChildPriority() ||
         !TestDeviceSlabRuntimeRepacksAndAssemblesAfterActionCountGrowth() ||
         !TestDeviceSlabRuntimeAssemblesChildBatchConcurrently() ||

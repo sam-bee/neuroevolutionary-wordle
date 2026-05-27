@@ -50,13 +50,13 @@ Within an episode, the genome plays deterministically.
 At each step:
 
 1. the policy model is run on the current grid state
-2. every currently selectable action word is scored against the policy vector
-3. the single highest-scoring action is chosen
+2. currently selectable action words that have not already been guessed are considered
+3. the single highest-scoring remaining action is chosen
 4. that guess is appended to the grid
 
 There is no stochastic policy sampling in the current fitness evaluation.
 
-The action chosen is simply the argmax over the active action-space prefix.
+The action chosen is the deterministic argmax over the active action-space prefix after masking already-guessed words.
 
 ## Episode Scoring
 
@@ -137,7 +137,6 @@ The current implementation does not add any explicit term for:
 - spatial niche preservation
 - distance-from-solution shaping
 - information gain
-- repeated-guess penalties beyond whatever effect they have on winning
 - separate validation-set scoring
 
 It is a straightforward normalized episodic performance score.

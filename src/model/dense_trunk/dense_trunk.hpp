@@ -67,9 +67,9 @@ inline NEUROEVOLUTION_HOST_DEVICE void ApplyReLU(common::FixedBuffer<float, Size
 
 #if defined(__CUDACC__)
 template <int WarpWidth, std::size_t InputSize, std::size_t OutputSize>
-inline __device__ void ApplyDenseLayerConcurrently(
-    const DenseLayerParameters<InputSize, OutputSize> &layer, const common::FixedBuffer<float, InputSize> &input,
-    common::FixedBuffer<float, OutputSize> &output) noexcept {
+inline __device__ void ApplyDenseLayerConcurrently(const DenseLayerParameters<InputSize, OutputSize> &layer,
+                                                   const common::FixedBuffer<float, InputSize> &input,
+                                                   common::FixedBuffer<float, OutputSize> &output) noexcept {
     const std::size_t lane_index = static_cast<std::size_t>(threadIdx.x % WarpWidth);
     for (std::size_t output_index = lane_index; output_index < OutputSize; output_index += WarpWidth) {
         float sum = common::ToFloat(layer.biases[output_index]);
@@ -117,8 +117,7 @@ inline NEUROEVOLUTION_HOST_DEVICE void ForwardDenseTrunk(const DenseTrunkParamet
 template <int WarpWidth>
 inline __device__ void ForwardDenseTrunkConcurrently(const DenseTrunkParameters &parameters,
                                                      const DenseTrunkInputVector &input_vector,
-                                                     DenseTrunkHiddenVector0 &hidden0,
-                                                     DenseTrunkHiddenVector1 &hidden1,
+                                                     DenseTrunkHiddenVector0 &hidden0, DenseTrunkHiddenVector1 &hidden1,
                                                      PolicyVector &policy_vector) noexcept {
     detail::ApplyDenseLayerConcurrently<WarpWidth>(parameters.input_to_hidden0, input_vector, hidden0);
     detail::ApplyReLUConcurrently<WarpWidth>(hidden0);
