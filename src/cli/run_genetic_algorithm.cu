@@ -65,6 +65,7 @@ using neuroevolution::genetic_algorithm::spatial::CellularGridShape;
 using neuroevolution::genetic_algorithm::spatial::FloorSquarePopulationSize;
 using neuroevolution::genetic_algorithm::spatial::TryMakeCellularGridShape;
 using neuroevolution::model_artifact::TryWriteWinnerArtifact;
+using neuroevolution::model_artifact::TryWriteWinnerArtifactToPaths;
 using neuroevolution::model_artifact::WinnerArtifactMetadata;
 using neuroevolution::model_artifact::WinnerArtifactPaths;
 using neuroevolution::training_folder::DefaultActionSpacePath;
@@ -127,6 +128,13 @@ struct CliConfig {
     std::size_t telemetry_genetic_convergence_interval =
         neuroevolution::genetic_algorithm::genetic_convergence::kDefaultIntervalGenerations;
     bool telemetry_genetic_convergence_interval_was_provided = false;
+};
+
+struct WinnerGenomeSnapshot {
+    std::unique_ptr<std::uint8_t[]> genome_bytes{};
+    std::size_t genome_byte_count = 0;
+    PopulationFitnessSummary summary{};
+    bool has_snapshot = false;
 };
 
 enum class ArgumentParseResult {
@@ -1465,6 +1473,49 @@ bool WaitForCheckpointWrite(RuntimeCheckpointAsyncWriter &checkpoint_writer, con
     return true;
 }
 
+std::filesystem::path CheckpointWinnerArtifactBasePath(const std::filesystem::path &checkpoint_path) {
+    const std::filesystem::path parent_path = checkpoint_path.parent_path();
+    const std::string stem = checkpoint_path.stem().string().empty() ? "checkpoint" : checkpoint_path.stem().string();
+    return parent_path / (stem + ".best");
+}
+
+bool TryCaptureWinningGenomeSnapshot(const DeviceSlabGARuntimeBuffers &buffers, WinnerGenomeSnapshot &snapshot_out) {
+    snapshot_out = {};
+    PopulationFitnessSummary summary{};
+    if (!TryReadPopulationFitnessSummaryFromDevice(buffers, summary)) {
+        std::cerr << "Could not read the checkpoint winner fitness summary back from device memory.\n";
+        return false;
+    }
+
+    std::unique_ptr<std::uint8_t[]> genome_bytes{};
+    std::size_t genome_byte_count = 0;
+    if (!TryDownloadSlabSlotBytesFromDevice(buffers, summary.best_slot_index, genome_bytes, genome_byte_count)) {
+        std::cerr << "Could not download the checkpoint winner genome from slot " << summary.best_slot_index << ".\n";
+        return false;
+    }
+
+    snapshot_out.genome_bytes = std::move(genome_bytes);
+    snapshot_out.genome_byte_count = genome_byte_count;
+    snapshot_out.summary = summary;
+    snapshot_out.has_snapshot = true;
+    return true;
+}
+
+WinnerArtifactMetadata MakeWinnerArtifactMetadata(const PopulationFitnessSummary &summary,
+                                                  const std::size_t genome_byte_count, const std::uint32_t seed,
+                                                  const std::filesystem::path &action_space_path) {
+    WinnerArtifactMetadata metadata{};
+    metadata.best_fitness = summary.best_fitness;
+    metadata.generation_index = summary.generation_index;
+    metadata.best_index = summary.best_index;
+    metadata.best_slot_index = summary.best_slot_index;
+    metadata.action_count = summary.action_count;
+    metadata.genome_byte_count = genome_byte_count;
+    metadata.seed = seed;
+    metadata.action_space_path = action_space_path;
+    return metadata;
+}
+
 bool TryPersistWinningGenome(const DeviceSlabGARuntimeBuffers &buffers, const PopulationFitnessSummary &summary,
                              const std::uint32_t seed,
                              const neuroevolution::training_folder::TrainingWordCatalog &action_space_words,
@@ -1475,16 +1526,30 @@ bool TryPersistWinningGenome(const DeviceSlabGARuntimeBuffers &buffers, const Po
         return false;
     }
 
-    WinnerArtifactMetadata metadata{};
-    metadata.best_fitness = summary.best_fitness;
-    metadata.generation_index = summary.generation_index;
-    metadata.best_index = summary.best_index;
-    metadata.best_slot_index = summary.best_slot_index;
-    metadata.action_count = summary.action_count;
-    metadata.genome_byte_count = genome_byte_count;
-    metadata.seed = seed;
-    metadata.action_space_path = action_space_path;
+    const WinnerArtifactMetadata metadata =
+        MakeWinnerArtifactMetadata(summary, genome_byte_count, seed, action_space_path);
     return TryWriteWinnerArtifact("models", genome_bytes.get(), action_space_words, metadata, artifact_paths_out);
+}
+
+bool TryPersistCheckpointWinningGenome(const WinnerGenomeSnapshot &snapshot, const std::uint32_t seed,
+                                       const neuroevolution::training_folder::TrainingWordCatalog &action_space_words,
+                                       const std::filesystem::path &action_space_path,
+                                       const std::filesystem::path &checkpoint_path,
+                                       WinnerArtifactPaths &artifact_paths_out) {
+    artifact_paths_out = {};
+    if (!snapshot.has_snapshot || (snapshot.genome_bytes == nullptr) || (snapshot.genome_byte_count == 0)) {
+        return false;
+    }
+
+    const std::filesystem::path artifact_base_path = CheckpointWinnerArtifactBasePath(checkpoint_path);
+    std::filesystem::path binary_path = artifact_base_path;
+    binary_path += ".bin";
+    std::filesystem::path metadata_path = artifact_base_path;
+    metadata_path += ".json";
+    const WinnerArtifactMetadata metadata =
+        MakeWinnerArtifactMetadata(snapshot.summary, snapshot.genome_byte_count, seed, action_space_path);
+    return TryWriteWinnerArtifactToPaths(binary_path, metadata_path, snapshot.genome_bytes.get(), action_space_words,
+                                         metadata, artifact_paths_out);
 }
 
 } // namespace
@@ -1838,14 +1903,38 @@ int main(int argc, char **argv) {
                     }
                 } else {
                     RuntimeCheckpoint checkpoint{};
+                    WinnerGenomeSnapshot checkpoint_winner_snapshot{};
+                    const auto log_telemetry_and_capture_checkpoint_winner =
+                        [&](const DeviceSlabGARuntimeBuffers &checkpoint_buffers,
+                            const RuntimeWordCounts &checkpoint_word_counts) {
+                            return log_telemetry_after_fitness(checkpoint_buffers, checkpoint_word_counts) &&
+                                   TryCaptureWinningGenomeSnapshot(checkpoint_buffers, checkpoint_winner_snapshot);
+                        };
                     if (!TryCreatePrebreedingCheckpointOnDevice(
                             buffers, generation_seed, runtime_word_counts, assembly_config,
                             pending_output_embedding_injection, checkpoint, &training_word_catalog, cli_config.verbose,
-                            log_telemetry_after_fitness, release_training_shard_after_fitness,
+                            log_telemetry_and_capture_checkpoint_winner, release_training_shard_after_fitness,
                             &training_shard_release_history)) {
                         (void)ReportDeviceSlabRuntimeFailure(buffers, "Checkpoint creation");
                         DestroyDeviceSlabGARuntimeBuffers(buffers);
                         return 1;
+                    }
+
+                    WinnerArtifactPaths checkpoint_artifact_paths{};
+                    if (!TryPersistCheckpointWinningGenome(checkpoint_winner_snapshot, cli_config.seed,
+                                                           training_word_catalog, training_data_path,
+                                                           cli_config.checkpoint_path, checkpoint_artifact_paths)) {
+                        std::cerr << "Could not persist the checkpoint winner next to "
+                                  << cli_config.checkpoint_path.string() << ".\n";
+                        DestroyDeviceSlabGARuntimeBuffers(buffers);
+                        return 1;
+                    }
+                    if (cli_config.verbose) {
+                        std::ostringstream stream;
+                        stream << "Generation " << checkpoint_winner_snapshot.summary.generation_index
+                               << ": saved checkpoint winner to "
+                               << checkpoint_artifact_paths.binary_path.string();
+                        PrintTimestampedProgressLine(std::cout, stream.str());
                     }
 
                     if (cli_config.verbose) {

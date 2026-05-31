@@ -112,6 +112,75 @@ bool TryOpenUniqueArtifactFiles(const std::filesystem::path &directory, const st
     return false;
 }
 
+bool TryCreateParentDirectory(const std::filesystem::path &path) {
+    const std::filesystem::path parent_path = path.parent_path();
+    if (parent_path.empty()) {
+        return true;
+    }
+
+    std::error_code filesystem_error{};
+    return std::filesystem::create_directories(parent_path, filesystem_error) || !filesystem_error;
+}
+
+bool TryReplaceFile(const std::filesystem::path &temporary_path, const std::filesystem::path &target_path) {
+    std::error_code error_code{};
+    std::filesystem::rename(temporary_path, target_path, error_code);
+    if (!error_code) {
+        return true;
+    }
+
+    std::filesystem::remove(target_path, error_code);
+    error_code.clear();
+    std::filesystem::rename(temporary_path, target_path, error_code);
+    return !error_code;
+}
+
+void RemoveIfExists(const std::filesystem::path &path) {
+    std::error_code filesystem_error{};
+    std::filesystem::remove(path, filesystem_error);
+}
+
+bool WriteWinnerArtifactContents(std::ofstream &binary_stream, std::ofstream &metadata_stream,
+                                 const std::uint8_t *genome_bytes,
+                                 const training_folder::TrainingWordCatalog &action_space_words,
+                                 const WinnerArtifactMetadata &metadata, const std::string &timestamp_local) {
+    binary_stream.write(reinterpret_cast<const char *>(genome_bytes),
+                        static_cast<std::streamsize>(metadata.genome_byte_count));
+    if (!binary_stream.good()) {
+        return false;
+    }
+    binary_stream.close();
+    if (!binary_stream.good()) {
+        return false;
+    }
+
+    metadata_stream << "{\n"
+                    << "  \"format_version\": 2,\n"
+                    << "  \"timestamp_local\": \"" << EscapeJsonString(timestamp_local) << "\",\n"
+                    << "  \"generation_index\": " << metadata.generation_index << ",\n"
+                    << "  \"best_fitness\": " << metadata.best_fitness << ",\n"
+                    << "  \"best_index\": " << metadata.best_index << ",\n"
+                    << "  \"best_slot_index\": " << metadata.best_slot_index << ",\n"
+                    << "  \"action_count\": " << metadata.action_count << ",\n"
+                    << "  \"genome_byte_count\": " << metadata.genome_byte_count << ",\n"
+                    << "  \"seed\": " << metadata.seed << ",\n"
+                    << "  \"action_space_path\": \"" << EscapeJsonString(metadata.action_space_path.string()) << "\",\n"
+                    << "  \"action_space_words\": [";
+    for (std::size_t word_index = 0; word_index < metadata.action_count; ++word_index) {
+        if (word_index != 0) {
+            metadata_stream << ", ";
+        }
+
+        metadata_stream << '"' << EscapeJsonString(WordToAsciiString(action_space_words.words[word_index])) << '"';
+    }
+    metadata_stream << "]\n}\n";
+    if (!metadata_stream.good()) {
+        return false;
+    }
+    metadata_stream.close();
+    return metadata_stream.good();
+}
+
 } // namespace
 
 bool TryWriteWinnerArtifact(const std::filesystem::path &directory, const std::uint8_t *genome_bytes,
@@ -144,9 +213,8 @@ bool TryWriteWinnerArtifact(const std::filesystem::path &directory, const std::u
         return false;
     }
 
-    binary_stream.write(reinterpret_cast<const char *>(genome_bytes),
-                        static_cast<std::streamsize>(metadata.genome_byte_count));
-    if (!binary_stream.good()) {
+    if (!WriteWinnerArtifactContents(binary_stream, metadata_stream, genome_bytes, action_space_words, metadata,
+                                     paths_out.timestamp_local)) {
         binary_stream.close();
         metadata_stream.close();
         std::filesystem::remove(paths_out.binary_path);
@@ -154,37 +222,60 @@ bool TryWriteWinnerArtifact(const std::filesystem::path &directory, const std::u
         paths_out = {};
         return false;
     }
-    binary_stream.close();
+    return true;
+}
 
-    metadata_stream << "{\n"
-                    << "  \"format_version\": 2,\n"
-                    << "  \"timestamp_local\": \"" << EscapeJsonString(paths_out.timestamp_local) << "\",\n"
-                    << "  \"generation_index\": " << metadata.generation_index << ",\n"
-                    << "  \"best_fitness\": " << metadata.best_fitness << ",\n"
-                    << "  \"best_index\": " << metadata.best_index << ",\n"
-                    << "  \"best_slot_index\": " << metadata.best_slot_index << ",\n"
-                    << "  \"action_count\": " << metadata.action_count << ",\n"
-                    << "  \"genome_byte_count\": " << metadata.genome_byte_count << ",\n"
-                    << "  \"seed\": " << metadata.seed << ",\n"
-                    << "  \"action_space_path\": \"" << EscapeJsonString(metadata.action_space_path.string()) << "\",\n"
-                    << "  \"action_space_words\": [";
-    for (std::size_t word_index = 0; word_index < metadata.action_count; ++word_index) {
-        if (word_index != 0) {
-            metadata_stream << ", ";
-        }
-
-        metadata_stream << '"' << EscapeJsonString(WordToAsciiString(action_space_words.words[word_index])) << '"';
+bool TryWriteWinnerArtifactToPaths(const std::filesystem::path &binary_path,
+                                   const std::filesystem::path &metadata_path, const std::uint8_t *genome_bytes,
+                                   const training_folder::TrainingWordCatalog &action_space_words,
+                                   const WinnerArtifactMetadata &metadata, WinnerArtifactPaths &paths_out) {
+    paths_out = {};
+    if ((genome_bytes == nullptr) || binary_path.empty() || metadata_path.empty() || (binary_path == metadata_path) ||
+        !IsValidWinnerArtifactInputs(metadata, action_space_words) || !TryCreateParentDirectory(binary_path) ||
+        !TryCreateParentDirectory(metadata_path)) {
+        return false;
     }
-    metadata_stream << "]\n}\n";
-    if (!metadata_stream.good()) {
+
+    std::tm local_time{};
+    if (!TryGetLocalTimestamp(local_time)) {
+        return false;
+    }
+
+    const std::filesystem::path temporary_binary_path = binary_path.string() + ".tmp";
+    const std::filesystem::path temporary_metadata_path = metadata_path.string() + ".tmp";
+    if ((temporary_binary_path == binary_path) || (temporary_metadata_path == metadata_path) ||
+        (temporary_binary_path == temporary_metadata_path)) {
+        return false;
+    }
+
+    RemoveIfExists(temporary_binary_path);
+    RemoveIfExists(temporary_metadata_path);
+
+    std::ofstream binary_stream(temporary_binary_path, std::ios::binary | std::ios::trunc);
+    std::ofstream metadata_stream(temporary_metadata_path, std::ios::binary | std::ios::trunc);
+    if (!binary_stream.is_open() || !metadata_stream.is_open()) {
+        binary_stream.close();
         metadata_stream.close();
-        std::filesystem::remove(paths_out.binary_path);
-        std::filesystem::remove(paths_out.metadata_path);
+        RemoveIfExists(temporary_binary_path);
+        RemoveIfExists(temporary_metadata_path);
+        return false;
+    }
+
+    paths_out.binary_path = binary_path;
+    paths_out.metadata_path = metadata_path;
+    paths_out.timestamp_local = FormatTimestampForJson(local_time);
+    if (!WriteWinnerArtifactContents(binary_stream, metadata_stream, genome_bytes, action_space_words, metadata,
+                                     paths_out.timestamp_local) ||
+        !TryReplaceFile(temporary_binary_path, binary_path) ||
+        !TryReplaceFile(temporary_metadata_path, metadata_path)) {
+        binary_stream.close();
+        metadata_stream.close();
+        RemoveIfExists(temporary_binary_path);
+        RemoveIfExists(temporary_metadata_path);
         paths_out = {};
         return false;
     }
 
-    metadata_stream.close();
     return true;
 }
 

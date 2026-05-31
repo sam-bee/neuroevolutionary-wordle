@@ -30,4 +30,9 @@ bool TryWriteWinnerArtifact(const std::filesystem::path &directory, const std::u
                             const training_folder::TrainingWordCatalog &action_space_words,
                             const WinnerArtifactMetadata &metadata, WinnerArtifactPaths &paths_out);
 
+bool TryWriteWinnerArtifactToPaths(const std::filesystem::path &binary_path,
+                                   const std::filesystem::path &metadata_path, const std::uint8_t *genome_bytes,
+                                   const training_folder::TrainingWordCatalog &action_space_words,
+                                   const WinnerArtifactMetadata &metadata, WinnerArtifactPaths &paths_out);
+
 } // namespace neuroevolution::model_artifact
