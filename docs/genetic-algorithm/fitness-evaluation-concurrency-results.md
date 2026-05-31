@@ -5,7 +5,7 @@ This note records the benchmark evidence behind the current CUDA fitness-evaluat
 ## Benchmark Setup
 
 - Command:
-  `./build/run_genetic_algorithm --generations 11 --population-size 1024 --genotype-vram-gb 1 --generation-vram-gb 0.5 --initial-word-count 20 --word-count-step 1980 --shard-release-min-gap 3 --first-new-shard-release-generation 10 --shard-release-centroid-threshold 1000000 --shard-release-fitness-p99-threshold 0.20 --shard-initial-radius-infinite --seed 7 --verbose`
+  `./build/run_genetic_algorithm --generations 11 --population-size 1024 --genotype-vram-gb 1 --generation-vram-gb 0.5 --initial-word-count 20 --word-count-step 1980 --shard-release-min-gap 10 --first-new-shard-release-generation 10 --shard-release-centroid-threshold 1000000 --shard-release-fitness-p99-threshold 0.05 --shard-initial-radius-infinite --seed 7 --verbose`
 - GPU: `NVIDIA GeForce RTX 5050 Laptop GPU`
 - Driver: `580.142`
 - CUDA toolkit: `13.2.78`

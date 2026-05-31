@@ -14,6 +14,7 @@ using neuroevolution::spatial::GridIndexFromRowColumn;
 using neuroevolution::spatial::TryMakeCellularGridShape;
 using neuroevolution::spatial::TryMakeRectangularCellularGridShape;
 using neuroevolution::training_folder::DefaultActionSpacePath;
+using neuroevolution::training_folder::DecideTrainingDataShardReleaseTrigger;
 using neuroevolution::training_folder::DeterministicTrainingShardCenterCellIndex;
 using neuroevolution::training_folder::DeterministicTrainingShardCenterCoordinate;
 using neuroevolution::training_folder::DoesTrainingDataShardCoverCell;
@@ -388,6 +389,34 @@ bool TestTrainingShardRuntimeSetCanStartLocalShardsWithInfiniteRadius() {
     return ok;
 }
 
+bool TestTrainingShardReleaseTriggerUsesRelativeFitnessOrConvergence() {
+    bool ok = true;
+
+    const auto below_fitness_gain = DecideTrainingDataShardReleaseTrigger(0.549f, 0.500f, 0.050f, 8.0f, 4.0f);
+    ok &= ExpectTrue(!below_fitness_gain.fitness_p99_gain_triggered,
+                     "Expected p99 gain below the configured threshold not to trigger release");
+    ok &= ExpectTrue(!below_fitness_gain.convergence_triggered,
+                     "Expected centroid distance above the configured threshold not to trigger release");
+
+    const auto above_fitness_gain = DecideTrainingDataShardReleaseTrigger(0.560f, 0.500f, 0.050f, 8.0f, 4.0f);
+    ok &= ExpectTrue(above_fitness_gain.fitness_p99_gain_triggered,
+                     "Expected p99 gain above the configured threshold to trigger release");
+    ok &= ExpectTrue(!above_fitness_gain.convergence_triggered,
+                     "Expected fitness-triggered release not to require centroid convergence");
+
+    const auto at_centroid_threshold = DecideTrainingDataShardReleaseTrigger(0.540f, 0.500f, 0.050f, 4.0f, 4.0f);
+    ok &= ExpectTrue(!at_centroid_threshold.convergence_triggered,
+                     "Expected centroid convergence to require dipping below the threshold");
+
+    const auto below_centroid_threshold =
+        DecideTrainingDataShardReleaseTrigger(0.540f, 0.500f, 0.050f, 3.999f, 4.0f);
+    ok &= ExpectTrue(!below_centroid_threshold.fitness_p99_gain_triggered,
+                     "Expected convergence-triggered release not to require the p99 gain threshold");
+    ok &= ExpectTrue(below_centroid_threshold.convergence_triggered,
+                     "Expected centroid distance below the configured threshold to trigger release");
+    return ok;
+}
+
 } // namespace
 
 int main() {
@@ -399,7 +428,8 @@ int main() {
         !TestTrainingShardRuntimeSetBuildsFoundationAndLocalPhaseShards() ||
         !TestTrainingShardRuntimeSetUsesRecordedReleaseGenerationsForRadius() ||
         !TestTrainingShardCentersClampWhenRowsAreRemoved() ||
-        !TestTrainingShardRuntimeSetCanStartLocalShardsWithInfiniteRadius()) {
+        !TestTrainingShardRuntimeSetCanStartLocalShardsWithInfiniteRadius() ||
+        !TestTrainingShardReleaseTriggerUsesRelativeFitnessOrConvergence()) {
         return 1;
     }
 

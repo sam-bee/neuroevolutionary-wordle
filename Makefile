@@ -40,9 +40,9 @@ run-ga-desktop: .env
 		--genotype-vram-gb 12 \
 		--initial-word-count 20 \
 		--word-count-step 20 \
-		--shard-release-min-gap 3 \
+		--shard-release-min-gap 10 \
 		--first-new-shard-release-generation 10 \
-		--shard-release-fitness-p99-threshold 0.20 \
+		--shard-release-fitness-p99-threshold 0.05 \
 		--shard-radius-growth-period 2 \
 		--verbose
 
@@ -53,9 +53,9 @@ run-ga-laptop: .env
 		--genotype-vram-gb 6 \
 		--initial-word-count 20 \
 		--word-count-step 20 \
-		--shard-release-min-gap 3 \
+		--shard-release-min-gap 10 \
 		--first-new-shard-release-generation 10 \
-		--shard-release-fitness-p99-threshold 0.20 \
+		--shard-release-fitness-p99-threshold 0.05 \
 		--shard-radius-growth-period 2 \
 		--verbose
 
@@ -67,10 +67,10 @@ run-ga-prod: .env
 		--generation-vram-gb 8 \
 		--initial-word-count 50 \
 		--word-count-step 50 \
-		--shard-release-min-gap 3 \
+		--shard-release-min-gap 10 \
 		--first-new-shard-release-generation 10 \
-		--shard-release-centroid-threshold 6 \
-		--shard-release-fitness-p99-threshold 0.20 \
+		--shard-release-centroid-threshold 4 \
+		--shard-release-fitness-p99-threshold 0.05 \
 		--shard-radius-growth-period 2 \
 		--checkpoint-path checkpoints/ga-runtime.bin \
 		--checkpoint-every 10 \
@@ -90,10 +90,10 @@ run-ga-growth-smoke: .env
 		--genotype-vram-gb 1 \
 		--initial-word-count 20 \
 		--word-count-step 20 \
-		--shard-release-min-gap 3 \
+		--shard-release-min-gap 10 \
 		--first-new-shard-release-generation 10 \
 		--shard-release-centroid-threshold 1000000 \
-		--shard-release-fitness-p99-threshold 0.20 \
+		--shard-release-fitness-p99-threshold 0.05 \
 		--shard-radius-growth-period 2 \
 		--verbose
 
@@ -108,10 +108,10 @@ run-ga-benchmark-growth: .env
 		--generation-vram-gb 0.5 \
 		--initial-word-count 20 \
 		--word-count-step 1980 \
-		--shard-release-min-gap 3 \
+		--shard-release-min-gap 10 \
 		--first-new-shard-release-generation 10 \
 		--shard-release-centroid-threshold 1000000 \
-		--shard-release-fitness-p99-threshold 0.20 \
+		--shard-release-fitness-p99-threshold 0.05 \
 		--shard-initial-radius-infinite \
 		--verbose
 
