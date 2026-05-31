@@ -18,6 +18,7 @@ constexpr std::size_t kDefaultTrainingShardReleaseMinimumGapGenerations = 10;
 constexpr std::size_t kDefaultFirstNewTrainingShardReleaseGeneration = 10;
 constexpr float kDefaultTrainingShardReleaseCentroidDistanceThreshold = 4.0f;
 constexpr float kDefaultTrainingShardReleaseFitnessP99GainThreshold = 0.05f;
+constexpr float kDefaultTrainingShardReleaseFitnessP99TargetCeiling = 0.70f;
 constexpr float kDefaultTrainingShardReleaseFitnessP99Threshold = kDefaultTrainingShardReleaseFitnessP99GainThreshold;
 constexpr std::size_t kEffectivelyInfiniteTrainingShardRadius = static_cast<std::size_t>(-1);
 constexpr std::size_t kTrainingWordCatalogCapacity = 4739;
@@ -54,7 +55,7 @@ struct TrainingDataShardReleaseHistory {
 };
 
 struct TrainingDataShardReleaseTriggerDecision {
-    bool fitness_p99_gain_triggered = false;
+    bool fitness_p99_triggered = false;
     bool convergence_triggered = false;
     float fitness_p99_gain = 0.0f;
     float fitness_p99_target = 0.0f;
@@ -142,24 +143,25 @@ constexpr NEUROEVOLUTION_HOST_DEVICE bool TryRecordTrainingDataShardRelease(Trai
 
 constexpr NEUROEVOLUTION_HOST_DEVICE TrainingDataShardReleaseTriggerDecision DecideTrainingDataShardReleaseTrigger(
     const float current_fitness_p99, const float previous_release_fitness_p99,
-    const float fitness_p99_gain_threshold, const float centroid_distance_mean,
-    const float centroid_distance_threshold) noexcept {
+    const float fitness_p99_gain_threshold, const float fitness_p99_target_ceiling,
+    const float centroid_distance_mean, const float centroid_distance_threshold) noexcept {
     TrainingDataShardReleaseTriggerDecision decision{};
     decision.fitness_p99_gain = current_fitness_p99 - previous_release_fitness_p99;
-    decision.fitness_p99_target = previous_release_fitness_p99 + fitness_p99_gain_threshold;
-    decision.fitness_p99_gain_triggered = current_fitness_p99 >= decision.fitness_p99_target;
+    const float gain_target = previous_release_fitness_p99 + fitness_p99_gain_threshold;
+    decision.fitness_p99_target = (gain_target < fitness_p99_target_ceiling) ? gain_target : fitness_p99_target_ceiling;
+    decision.fitness_p99_triggered = current_fitness_p99 >= decision.fitness_p99_target;
     decision.convergence_triggered = centroid_distance_mean < centroid_distance_threshold;
     return decision;
 }
 
 constexpr NEUROEVOLUTION_HOST_DEVICE bool ShouldReleaseTrainingDataShard(
     const float current_fitness_p99, const float previous_release_fitness_p99,
-    const float fitness_p99_gain_threshold, const float centroid_distance_mean,
-    const float centroid_distance_threshold) noexcept {
+    const float fitness_p99_gain_threshold, const float fitness_p99_target_ceiling,
+    const float centroid_distance_mean, const float centroid_distance_threshold) noexcept {
     const TrainingDataShardReleaseTriggerDecision decision = DecideTrainingDataShardReleaseTrigger(
-        current_fitness_p99, previous_release_fitness_p99, fitness_p99_gain_threshold, centroid_distance_mean,
-        centroid_distance_threshold);
-    return decision.fitness_p99_gain_triggered || decision.convergence_triggered;
+        current_fitness_p99, previous_release_fitness_p99, fitness_p99_gain_threshold, fitness_p99_target_ceiling,
+        centroid_distance_mean, centroid_distance_threshold);
+    return decision.fitness_p99_triggered || decision.convergence_triggered;
 }
 
 constexpr NEUROEVOLUTION_HOST_DEVICE bool

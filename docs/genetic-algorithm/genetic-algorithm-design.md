@@ -141,8 +141,9 @@ The initial foundation words are global from generation 0. Later introduced word
 that diffuse outward across the grid over time.
 
 The first later shard is eligible no earlier than generation 10. After that, a later shard is eligible only after at
-least 10 generations since the previous release, and then releases when either p99 fitness has gained at least 0.05
-over the previous release baseline or centroid distance mean has dipped below the configured threshold, default 4.
+least 10 generations since the previous release, and then releases when either p99 fitness reaches the lower of a 0.05
+gain over the previous release baseline or 0.70 total, or centroid distance mean has dipped below the configured
+threshold, default 4.
 
 ## Genotype Growth and Population Size
 

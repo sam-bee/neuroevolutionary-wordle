@@ -22,14 +22,15 @@ The initial foundation shard is global from generation 0. The first later shard 
 After that, later shards are released only after the configured minimum gap and when either adaptive trigger fires:
 
 - no shard has been released in the last 10 generations
-- p99 fitness is at least 0.05 higher than it was at the previous shard release
+- p99 fitness reaches the lower of 0.05 higher than the previous shard release baseline or 0.70 total
 - centroid distance mean dips below 4
 
 The CLI exposes `--first-new-shard-release-generation N`, `--shard-release-min-gap N`, and
-`--shard-release-centroid-threshold F`, and `--shard-release-fitness-p99-threshold F`. The fitness threshold flag is a
-required p99 gain over the previous release baseline, not an absolute p99 floor. The first new-shard release generation
-may not be set below 10, and the minimum gap may not be set below 10. Each release writes a console line with the
-inserted catalog range and whether fitness evaluations, convergence, or both triggered it.
+`--shard-release-centroid-threshold F`, `--shard-release-fitness-p99-threshold F`, and
+`--shard-release-fitness-p99-target-ceiling F`. The fitness threshold flag is a required p99 gain over the previous
+release baseline, not an absolute p99 floor, and the target-ceiling flag caps that computed fitness target. The first
+new-shard release generation may not be set below 10, and the minimum gap may not be set below 10. Each release writes
+a console line with the inserted catalog range and whether fitness evaluations, convergence, or both triggered it.
 
 ## What Is Now Spatial
 

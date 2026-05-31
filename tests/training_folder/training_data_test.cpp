@@ -392,25 +392,39 @@ bool TestTrainingShardRuntimeSetCanStartLocalShardsWithInfiniteRadius() {
 bool TestTrainingShardReleaseTriggerUsesRelativeFitnessOrConvergence() {
     bool ok = true;
 
-    const auto below_fitness_gain = DecideTrainingDataShardReleaseTrigger(0.549f, 0.500f, 0.050f, 8.0f, 4.0f);
-    ok &= ExpectTrue(!below_fitness_gain.fitness_p99_gain_triggered,
+    const auto below_fitness_gain =
+        DecideTrainingDataShardReleaseTrigger(0.549f, 0.500f, 0.050f, 0.700f, 8.0f, 4.0f);
+    ok &= ExpectTrue(!below_fitness_gain.fitness_p99_triggered,
                      "Expected p99 gain below the configured threshold not to trigger release");
     ok &= ExpectTrue(!below_fitness_gain.convergence_triggered,
                      "Expected centroid distance above the configured threshold not to trigger release");
 
-    const auto above_fitness_gain = DecideTrainingDataShardReleaseTrigger(0.560f, 0.500f, 0.050f, 8.0f, 4.0f);
-    ok &= ExpectTrue(above_fitness_gain.fitness_p99_gain_triggered,
+    const auto above_fitness_gain =
+        DecideTrainingDataShardReleaseTrigger(0.560f, 0.500f, 0.050f, 0.700f, 8.0f, 4.0f);
+    ok &= ExpectTrue(above_fitness_gain.fitness_p99_triggered,
                      "Expected p99 gain above the configured threshold to trigger release");
     ok &= ExpectTrue(!above_fitness_gain.convergence_triggered,
                      "Expected fitness-triggered release not to require centroid convergence");
+    ok &= ExpectTrue((above_fitness_gain.fitness_p99_target > 0.549f) &&
+                         (above_fitness_gain.fitness_p99_target < 0.551f),
+                     "Expected fitness p99 target to use previous release baseline plus gain while below ceiling");
 
-    const auto at_centroid_threshold = DecideTrainingDataShardReleaseTrigger(0.540f, 0.500f, 0.050f, 4.0f, 4.0f);
+    const auto below_uncapped_gain_above_target_ceiling =
+        DecideTrainingDataShardReleaseTrigger(0.700f, 0.680f, 0.050f, 0.700f, 8.0f, 4.0f);
+    ok &= ExpectTrue(below_uncapped_gain_above_target_ceiling.fitness_p99_triggered,
+                     "Expected p99 at the target ceiling to trigger even without a full p99 gain step");
+    ok &= ExpectTrue((below_uncapped_gain_above_target_ceiling.fitness_p99_target > 0.699f) &&
+                         (below_uncapped_gain_above_target_ceiling.fitness_p99_target < 0.701f),
+                     "Expected fitness p99 target to cap at the configured ceiling");
+
+    const auto at_centroid_threshold =
+        DecideTrainingDataShardReleaseTrigger(0.540f, 0.500f, 0.050f, 0.700f, 4.0f, 4.0f);
     ok &= ExpectTrue(!at_centroid_threshold.convergence_triggered,
                      "Expected centroid convergence to require dipping below the threshold");
 
     const auto below_centroid_threshold =
-        DecideTrainingDataShardReleaseTrigger(0.540f, 0.500f, 0.050f, 3.999f, 4.0f);
-    ok &= ExpectTrue(!below_centroid_threshold.fitness_p99_gain_triggered,
+        DecideTrainingDataShardReleaseTrigger(0.540f, 0.500f, 0.050f, 0.700f, 3.999f, 4.0f);
+    ok &= ExpectTrue(!below_centroid_threshold.fitness_p99_triggered,
                      "Expected convergence-triggered release not to require the p99 gain threshold");
     ok &= ExpectTrue(below_centroid_threshold.convergence_triggered,
                      "Expected centroid distance below the configured threshold to trigger release");

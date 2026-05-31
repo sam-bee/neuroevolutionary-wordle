@@ -14,7 +14,7 @@ make run-ga-benchmark-growth
 The target runs:
 
 ```bash
-./build/run_genetic_algorithm --generations 11 --population-size 1024 --genotype-vram-gb 1 --generation-vram-gb 0.5 --initial-word-count 20 --word-count-step 1980 --shard-release-min-gap 10 --first-new-shard-release-generation 10 --shard-release-centroid-threshold 1000000 --shard-release-fitness-p99-threshold 0.05 --shard-initial-radius-infinite --verbose
+./build/run_genetic_algorithm --generations 11 --population-size 1024 --genotype-vram-gb 1 --generation-vram-gb 0.5 --initial-word-count 20 --word-count-step 1980 --shard-release-min-gap 10 --first-new-shard-release-generation 10 --shard-release-centroid-threshold 1000000 --shard-release-fitness-p99-threshold 0.05 --shard-release-fitness-p99-target-ceiling 0.70 --shard-initial-radius-infinite --verbose
 ```
 
 Generations 0 through 9 evaluate the initial 20-word training/action set. The deliberately high centroid threshold is
@@ -30,7 +30,7 @@ population size, or different VRAM budgets, run `./build/run_genetic_algorithm` 
 changes, for example:
 
 ```bash
-./build/run_genetic_algorithm --generations 11 --population-size 1024 --genotype-vram-gb 1 --generation-vram-gb 0.5 --initial-word-count 20 --word-count-step 1980 --shard-release-min-gap 10 --first-new-shard-release-generation 10 --shard-release-centroid-threshold 1000000 --shard-release-fitness-p99-threshold 0.05 --shard-initial-radius-infinite --seed 7 --verbose
+./build/run_genetic_algorithm --generations 11 --population-size 1024 --genotype-vram-gb 1 --generation-vram-gb 0.5 --initial-word-count 20 --word-count-step 1980 --shard-release-min-gap 10 --first-new-shard-release-generation 10 --shard-release-centroid-threshold 1000000 --shard-release-fitness-p99-threshold 0.05 --shard-release-fitness-p99-target-ceiling 0.70 --shard-initial-radius-infinite --seed 7 --verbose
 ```
 
 When comparing an optimization, record the exact command, seed, GPU, commit, CUDA driver/toolkit, and the verbose timing
@@ -43,7 +43,7 @@ Use `--generations 1` when the profile should isolate the small generation-0 fit
 generation entirely:
 
 ```bash
-nsys profile --trace=cuda,nvtx,osrt --force-overwrite=true --output profiling/ga-gen0-small ./build/run_genetic_algorithm --verbose --generations 1 --population-size 1024 --genotype-vram-gb 1 --generation-vram-gb 0.5 --initial-word-count 20 --word-count-step 1980 --shard-release-min-gap 10 --first-new-shard-release-generation 10 --shard-release-centroid-threshold 1000000 --shard-release-fitness-p99-threshold 0.05 --shard-initial-radius-infinite
+nsys profile --trace=cuda,nvtx,osrt --force-overwrite=true --output profiling/ga-gen0-small ./build/run_genetic_algorithm --verbose --generations 1 --population-size 1024 --genotype-vram-gb 1 --generation-vram-gb 0.5 --initial-word-count 20 --word-count-step 1980 --shard-release-min-gap 10 --first-new-shard-release-generation 10 --shard-release-centroid-threshold 1000000 --shard-release-fitness-p99-threshold 0.05 --shard-release-fitness-p99-target-ceiling 0.70 --shard-initial-radius-infinite
 ```
 
 The word-count step is intentionally left in the command so the profile setup matches the adaptive growth benchmark, but
