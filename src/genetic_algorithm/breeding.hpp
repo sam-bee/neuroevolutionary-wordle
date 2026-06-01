@@ -3,9 +3,9 @@
 #include "common/cuda_compat.hpp"
 namespace neuroevolution::genetic_algorithm {
 
-constexpr float kDefaultCrossoverTemperatureLevel1 = 0.02f;
-constexpr float kDefaultCrossoverTemperatureLevel2 = 0.01f;
-constexpr float kDefaultCrossoverTemperatureLevel3 = 0.005f;
+constexpr float kDefaultCrossoverTemperatureLevel1 = 0.0f;
+constexpr float kDefaultCrossoverTemperatureLevel2 = 0.0f;
+constexpr float kDefaultCrossoverTemperatureLevel3 = 0.0f;
 
 struct BreedingConfig {
     float crossover_temperature_level1 = kDefaultCrossoverTemperatureLevel1;
