@@ -107,7 +107,7 @@ struct CliConfig {
     float crossover_temperature_level1 = neuroevolution::genetic_algorithm::kDefaultCrossoverTemperatureLevel1;
     float crossover_temperature_level2 = neuroevolution::genetic_algorithm::kDefaultCrossoverTemperatureLevel2;
     float crossover_temperature_level3 = neuroevolution::genetic_algorithm::kDefaultCrossoverTemperatureLevel3;
-    std::size_t shard_initial_radius = neuroevolution::training_folder::kDefaultTrainingShardInitialRadius;
+    std::size_t shard_initial_radius = neuroevolution::training_folder::kEffectivelyInfiniteTrainingShardRadius;
     std::size_t shard_radius_growth_period_generations =
         neuroevolution::training_folder::kDefaultShardRadiusGrowthPeriodGenerations;
     double genotype_vram_gb = 0.0;
@@ -176,9 +176,8 @@ void PrintUsage() {
                  "releases require the minimum gap and either p99 fitness to reach the lower of the configured gain "
                  "over the previous release baseline or the configured target ceiling, or centroid mean distance to "
                  "fall below the centroid threshold.\n"
-              << "Spatial training-data shards grow their evaluation radius every "
-              << neuroevolution::training_folder::kDefaultShardRadiusGrowthPeriodGenerations
-              << " generations by default.\n"
+              << "Newly released non-foundation shards cover the whole current population grid by default in this "
+                 "experiment; pass --shard-initial-radius to restore spatially staged exposure.\n"
               << "--breeding-radius controls the toroidal Moore/Chebyshev parent-selection radius and defaults to "
               << neuroevolution::genetic_algorithm::spatial::kCellularBreedingRadius << ".\n"
               << "--parent-selection-rank-exponent controls rank-weighted local parent selection and defaults to "
