@@ -633,6 +633,18 @@ struct GenerationFitnessTelemetryRow {
     std::size_t parent_multiple_children_count = 0;
 };
 
+struct TrainingExposureFitnessTelemetryRow {
+    std::size_t generation = 0;
+    std::size_t local_training_word_count = 0;
+    std::size_t organism_count = 0;
+    float fitness_min = 0.0f;
+    float fitness_mean = 0.0f;
+    float fitness_median = 0.0f;
+    float fitness_p90 = 0.0f;
+    float fitness_p99 = 0.0f;
+    float fitness_max = 0.0f;
+};
+
 struct GeneticConvergenceTelemetryRow {
     std::size_t generation = 0;
     std::size_t sample_organisms = 0;
@@ -706,7 +718,20 @@ class TelemetryWriter {
                TryEnsureColumn("distinct_fitness_count", "INTEGER NOT NULL DEFAULT 0") &&
                TryEnsureColumn("parent_childless_count", "INTEGER") &&
                TryEnsureColumn("parent_one_child_count", "INTEGER") &&
-               TryEnsureColumn("parent_multiple_children_count", "INTEGER");
+               TryEnsureColumn("parent_multiple_children_count", "INTEGER") &&
+               TryExec("CREATE TABLE IF NOT EXISTS training_exposure_fitness ("
+                       "generation INTEGER NOT NULL,"
+                       "local_training_word_count INTEGER NOT NULL,"
+                       "organism_count INTEGER NOT NULL,"
+                       "fitness_min REAL NOT NULL,"
+                       "fitness_max REAL NOT NULL,"
+                       "fitness_mean REAL NOT NULL,"
+                       "fitness_median REAL NOT NULL,"
+                       "fitness_p90 REAL NOT NULL,"
+                       "fitness_p99 REAL NOT NULL,"
+                       "logged_at TEXT NOT NULL,"
+                       "PRIMARY KEY (generation, local_training_word_count)"
+                       ");");
     }
 
     bool TryEnsureGeneticConvergenceTable() {
@@ -776,6 +801,60 @@ class TelemetryWriter {
                       << ": " << LastError() << '\n';
             sqlite3_finalize(statement);
             return false;
+        }
+
+        sqlite3_finalize(statement);
+        return true;
+    }
+
+    bool TryLogTrainingExposureFitness(const std::vector<TrainingExposureFitnessTelemetryRow> &rows) {
+        if (rows.empty()) {
+            return true;
+        }
+
+        static constexpr const char *kInsertSql =
+            "INSERT OR REPLACE INTO training_exposure_fitness "
+            "(generation, local_training_word_count, organism_count, fitness_min, fitness_mean, fitness_median, "
+            "fitness_p90, fitness_p99, fitness_max, logged_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'));";
+
+        sqlite3_stmt *statement = nullptr;
+        if (sqlite3_prepare_v2(db_, kInsertSql, -1, &statement, nullptr) != SQLITE_OK) {
+            std::cerr << "Could not prepare training exposure telemetry insert for " << path_.string() << ": "
+                      << LastError() << '\n';
+            return false;
+        }
+
+        for (const TrainingExposureFitnessTelemetryRow &row : rows) {
+            sqlite3_reset(statement);
+            sqlite3_clear_bindings(statement);
+
+            bool ok = true;
+            ok &= sqlite3_bind_int64(statement, 1, static_cast<sqlite3_int64>(row.generation)) == SQLITE_OK;
+            ok &= sqlite3_bind_int64(statement, 2, static_cast<sqlite3_int64>(row.local_training_word_count)) ==
+                  SQLITE_OK;
+            ok &= sqlite3_bind_int64(statement, 3, static_cast<sqlite3_int64>(row.organism_count)) == SQLITE_OK;
+            ok &= sqlite3_bind_double(statement, 4, static_cast<double>(row.fitness_min)) == SQLITE_OK;
+            ok &= sqlite3_bind_double(statement, 5, static_cast<double>(row.fitness_mean)) == SQLITE_OK;
+            ok &= sqlite3_bind_double(statement, 6, static_cast<double>(row.fitness_median)) == SQLITE_OK;
+            ok &= sqlite3_bind_double(statement, 7, static_cast<double>(row.fitness_p90)) == SQLITE_OK;
+            ok &= sqlite3_bind_double(statement, 8, static_cast<double>(row.fitness_p99)) == SQLITE_OK;
+            ok &= sqlite3_bind_double(statement, 9, static_cast<double>(row.fitness_max)) == SQLITE_OK;
+            if (!ok) {
+                std::cerr << "Could not bind training exposure telemetry row for " << path_.string() << ": "
+                          << LastError() << '\n';
+                sqlite3_finalize(statement);
+                return false;
+            }
+
+            const int step_result = sqlite3_step(statement);
+            if (step_result != SQLITE_DONE) {
+                std::cerr << "Could not write training exposure telemetry row for generation " << row.generation
+                          << " and local word count " << row.local_training_word_count << " to " << path_.string()
+                          << ": " << LastError() << '\n';
+                sqlite3_finalize(statement);
+                return false;
+            }
         }
 
         sqlite3_finalize(statement);
@@ -1209,6 +1288,103 @@ bool TryCollectGenerationFitnessTelemetry(const DeviceSlabGARuntimeBuffers &buff
     return true;
 }
 
+bool TryCollectTrainingExposureFitnessTelemetry(const DeviceSlabGARuntimeBuffers &buffers,
+                                                std::vector<TrainingExposureFitnessTelemetryRow> &rows_out) {
+    rows_out.clear();
+
+    const std::size_t population_size = buffers.genotype_slab.current_generation_size;
+    if (population_size == 0) {
+        std::cerr << "Cannot collect training exposure telemetry for an empty generation.\n";
+        return false;
+    }
+    if (buffers.current_local_training_word_counts == nullptr) {
+        std::cerr << "Cannot collect training exposure telemetry without local training word counts.\n";
+        return false;
+    }
+
+    std::vector<float> fitness_values(population_size);
+    std::vector<std::uint8_t> has_fitness_flags(population_size);
+    std::vector<std::uint32_t> local_training_word_counts(population_size);
+    if (!CheckCuda(cudaMemcpy(fitness_values.data(), buffers.genotype_slab.current_fitness,
+                              population_size * sizeof(float), cudaMemcpyDeviceToHost),
+                   "copying fitness values for training exposure telemetry") ||
+        !CheckCuda(cudaMemcpy(has_fitness_flags.data(), buffers.genotype_slab.current_has_fitness,
+                              population_size * sizeof(std::uint8_t), cudaMemcpyDeviceToHost),
+                   "copying fitness flags for training exposure telemetry") ||
+        !CheckCuda(cudaMemcpy(local_training_word_counts.data(), buffers.current_local_training_word_counts,
+                              population_size * sizeof(std::uint32_t), cudaMemcpyDeviceToHost),
+                   "copying local training word counts for training exposure telemetry")) {
+        return false;
+    }
+
+    std::vector<std::pair<std::uint32_t, float>> grouped_values;
+    grouped_values.reserve(population_size);
+    for (std::size_t individual_index = 0; individual_index < population_size; ++individual_index) {
+        if (has_fitness_flags[individual_index] == 0) {
+            std::cerr << "Cannot collect training exposure telemetry before every organism has a fitness value.\n";
+            return false;
+        }
+        grouped_values.emplace_back(local_training_word_counts[individual_index], fitness_values[individual_index]);
+    }
+
+    std::sort(grouped_values.begin(), grouped_values.end(),
+              [](const std::pair<std::uint32_t, float> &left, const std::pair<std::uint32_t, float> &right) {
+                  if (left.first != right.first) {
+                      return left.first < right.first;
+                  }
+                  return left.second < right.second;
+              });
+
+    const auto nearest_rank_percentile = [](const std::vector<std::pair<std::uint32_t, float>> &values,
+                                            const std::size_t group_start, const std::size_t group_count,
+                                            const double percentile) {
+        const std::size_t rank =
+            static_cast<std::size_t>(std::ceil((percentile / 100.0) * static_cast<double>(group_count)));
+        const std::size_t offset = (rank == 0) ? 0 : (rank - 1);
+        const std::size_t clamped_offset = (offset < group_count) ? offset : (group_count - 1);
+        return values[group_start + clamped_offset].second;
+    };
+
+    std::size_t group_start = 0;
+    while (group_start < grouped_values.size()) {
+        const std::uint32_t local_training_word_count = grouped_values[group_start].first;
+        std::size_t group_end = group_start + 1;
+        while ((group_end < grouped_values.size()) && (grouped_values[group_end].first == local_training_word_count)) {
+            ++group_end;
+        }
+
+        const std::size_t group_count = group_end - group_start;
+        double fitness_sum = 0.0;
+        for (std::size_t index = group_start; index < group_end; ++index) {
+            fitness_sum += static_cast<double>(grouped_values[index].second);
+        }
+
+        const std::size_t median_offset = group_count / 2;
+        const float median =
+            (group_count % 2 == 0)
+                ? ((grouped_values[group_start + median_offset - 1].second +
+                    grouped_values[group_start + median_offset].second) *
+                   0.5f)
+                : grouped_values[group_start + median_offset].second;
+
+        TrainingExposureFitnessTelemetryRow row{};
+        row.generation = buffers.genotype_slab.current_generation_index;
+        row.local_training_word_count = local_training_word_count;
+        row.organism_count = group_count;
+        row.fitness_min = grouped_values[group_start].second;
+        row.fitness_mean = static_cast<float>(fitness_sum / static_cast<double>(group_count));
+        row.fitness_median = median;
+        row.fitness_p90 = nearest_rank_percentile(grouped_values, group_start, group_count, 90.0);
+        row.fitness_p99 = nearest_rank_percentile(grouped_values, group_start, group_count, 99.0);
+        row.fitness_max = grouped_values[group_end - 1].second;
+        rows_out.push_back(row);
+
+        group_start = group_end;
+    }
+
+    return true;
+}
+
 bool TryLogTelemetryForCurrentGeneration(const DeviceSlabGARuntimeBuffers &buffers,
                                          const RuntimeWordCounts &runtime_word_counts,
                                          const bool collect_breeding_metrics, TelemetryWriter *telemetry_writer) {
@@ -1217,8 +1393,11 @@ bool TryLogTelemetryForCurrentGeneration(const DeviceSlabGARuntimeBuffers &buffe
     }
 
     GenerationFitnessTelemetryRow row{};
+    std::vector<TrainingExposureFitnessTelemetryRow> exposure_rows;
     return TryCollectGenerationFitnessTelemetry(buffers, runtime_word_counts, collect_breeding_metrics, row) &&
-           telemetry_writer->TryLogGenerationFitness(row);
+           TryCollectTrainingExposureFitnessTelemetry(buffers, exposure_rows) &&
+           telemetry_writer->TryLogGenerationFitness(row) &&
+           telemetry_writer->TryLogTrainingExposureFitness(exposure_rows);
 }
 
 bool TryMaybeReleaseTrainingDataShard(const DeviceSlabGARuntimeBuffers &buffers,
