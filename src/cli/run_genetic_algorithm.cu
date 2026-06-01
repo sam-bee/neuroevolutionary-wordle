@@ -102,6 +102,7 @@ struct CliConfig {
         neuroevolution::training_folder::kDefaultTrainingShardReleaseFitnessP99GainThreshold;
     float shard_release_fitness_p99_target_ceiling =
         neuroevolution::training_folder::kDefaultTrainingShardReleaseFitnessP99TargetCeiling;
+    bool shard_release_convergence_trigger_enabled = true;
     std::size_t breeding_radius = neuroevolution::genetic_algorithm::spatial::kCellularBreedingRadius;
     float parent_selection_rank_exponent = neuroevolution::genetic_algorithm::kDefaultParentSelectionRankExponent;
     float crossover_temperature_level1 = neuroevolution::genetic_algorithm::kDefaultCrossoverTemperatureLevel1;
@@ -152,6 +153,7 @@ void PrintUsage() {
                  "[--shard-release-min-gap N] [--first-new-shard-release-generation N] "
                  "[--shard-release-centroid-threshold F] [--shard-release-fitness-p99-threshold F] "
                  "[--shard-release-fitness-p99-target-ceiling F] "
+                 "[--disable-shard-release-convergence-trigger] "
                  "[--breeding-radius N] [--parent-selection-rank-exponent F] "
                  "[--crossover-temperature-level1 F] [--crossover-temperature-level2 F] "
                  "[--crossover-temperature-level3 F] "
@@ -176,6 +178,7 @@ void PrintUsage() {
                  "releases require the minimum gap and either p99 fitness to reach the lower of the configured gain "
                  "over the previous release baseline or the configured target ceiling, or centroid mean distance to "
                  "fall below the centroid threshold.\n"
+              << "--disable-shard-release-convergence-trigger makes shard release depend on fitness p99 only.\n"
               << "Spatial training-data shards grow their evaluation radius every "
               << neuroevolution::training_folder::kDefaultShardRadiusGrowthPeriodGenerations
               << " generations by default.\n"
@@ -317,6 +320,11 @@ ArgumentParseResult TryParseArguments(const int argc, char **argv, CliConfig &co
 
         if (argument == "--telemetry-genetic-convergence") {
             config.telemetry_genetic_convergence = true;
+            continue;
+        }
+
+        if (argument == "--disable-shard-release-convergence-trigger") {
+            config.shard_release_convergence_trigger_enabled = false;
             continue;
         }
 
@@ -1279,7 +1287,9 @@ bool TryMaybeReleaseTrainingDataShard(const DeviceSlabGARuntimeBuffers &buffers,
         fitness_row.fitness_p99, previous_release_fitness_p99, cli_config.shard_release_fitness_p99_gain_threshold,
         cli_config.shard_release_fitness_p99_target_ceiling, convergence_row.centroid_distance_mean,
         cli_config.shard_release_centroid_distance_threshold);
-    if (!release_decision.fitness_p99_triggered && !release_decision.convergence_triggered) {
+    const bool convergence_triggered =
+        cli_config.shard_release_convergence_trigger_enabled && release_decision.convergence_triggered;
+    if (!release_decision.fitness_p99_triggered && !convergence_triggered) {
         return true;
     }
 
@@ -1313,7 +1323,7 @@ bool TryMaybeReleaseTrainingDataShard(const DeviceSlabGARuntimeBuffers &buffers,
                       << ", target_ceiling=" << cli_config.shard_release_fitness_p99_target_ceiling << ')';
         wrote_reason = true;
     }
-    if (release_decision.convergence_triggered) {
+    if (convergence_triggered) {
         if (wrote_reason) {
             reason_stream << "; ";
         }
@@ -1718,6 +1728,8 @@ int main(int argc, char **argv) {
                       << cli_config.shard_release_fitness_p99_gain_threshold << '\n'
                       << "  shard_release_fitness_p99_target_ceiling="
                       << cli_config.shard_release_fitness_p99_target_ceiling << '\n'
+                      << "  shard_release_convergence_trigger_enabled="
+                      << (cli_config.shard_release_convergence_trigger_enabled ? "true" : "false") << '\n'
                       << "  genome_stride_bytes=" << buffers.genotype_slab.slab_layout.slot_stride_bytes << '\n'
                       << "  generations=" << cli_config.generation_count << '\n'
                       << "  seed=" << cli_config.seed << '\n'
@@ -1848,6 +1860,8 @@ int main(int argc, char **argv) {
                       << cli_config.shard_release_fitness_p99_gain_threshold << '\n'
                       << "  shard_release_fitness_p99_target_ceiling="
                       << cli_config.shard_release_fitness_p99_target_ceiling << '\n'
+                      << "  shard_release_convergence_trigger_enabled="
+                      << (cli_config.shard_release_convergence_trigger_enabled ? "true" : "false") << '\n'
                       << "  training_shard_release_count=" << training_shard_release_history.release_count << '\n'
                       << "  breeding_radius=" << assembly_config.parent_selection.cellular_breeding_radius << '\n'
                       << "  parent_selection_rank_exponent=" << assembly_config.parent_selection.rank_exponent << '\n'
