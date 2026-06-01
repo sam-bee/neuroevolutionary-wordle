@@ -31,11 +31,13 @@ using neuroevolution::training_folder::IsValidWordCountSchedule;
 using neuroevolution::training_folder::TrainingDataShardRuntime;
 using neuroevolution::training_folder::TrainingWordCatalog;
 using neuroevolution::wordle::MakeWordleGrid;
+using neuroevolution::wordle::TileFeedback;
 using neuroevolution::wordle::TryAppendGuess;
 using neuroevolution::wordle::Word;
 using neuroevolution::wordle::WordleGrid;
 
 constexpr float kWinScoreBase = 10.0f;
+constexpr float kLossProgressScoreMax = 2.0f;
 constexpr float kEpisodesPerTrainingWord = 3.0f;
 constexpr std::size_t kEpisodesPerTrainingWordCount = 3;
 constexpr float kMaximumEpisodeScore =
@@ -237,8 +239,32 @@ TryInitializeEpisodeGrid(const TrainingWordCatalog &training_word_catalog,
 }
 
 inline NEUROEVOLUTION_HOST_DEVICE float ScoreCompletedEpisode(const WordleGrid &grid) noexcept {
-    return grid.IsWon() ? (kWinScoreBase + static_cast<float>(neuroevolution::wordle::kMaxTurnCount - grid.turn_count))
-                        : 0.0f;
+    if (grid.IsWon()) {
+        return kWinScoreBase + static_cast<float>(neuroevolution::wordle::kMaxTurnCount - grid.turn_count);
+    }
+
+    float best_feedback_information = 0.0f;
+    const std::size_t turn_count = (grid.turn_count < neuroevolution::wordle::kMaxTurnCount)
+                                       ? grid.turn_count
+                                       : neuroevolution::wordle::kMaxTurnCount;
+    for (std::size_t turn_index = 0; turn_index < turn_count; ++turn_index) {
+        float turn_feedback_information = 0.0f;
+        for (std::size_t position = 0; position < neuroevolution::wordle::kWordLength; ++position) {
+            const TileFeedback feedback = grid.turns[turn_index].feedback[position];
+            if (feedback == TileFeedback::green) {
+                turn_feedback_information += 2.0f;
+            } else if (feedback == TileFeedback::yellow) {
+                turn_feedback_information += 1.0f;
+            }
+        }
+
+        if (turn_feedback_information > best_feedback_information) {
+            best_feedback_information = turn_feedback_information;
+        }
+    }
+
+    constexpr float kMaximumFeedbackInformation = 2.0f * static_cast<float>(neuroevolution::wordle::kWordLength);
+    return (best_feedback_information / kMaximumFeedbackInformation) * kLossProgressScoreMax;
 }
 
 template <int WarpCount>
@@ -542,10 +568,7 @@ __device__ inline DeviceGenomeEvaluationStatusCode TryPlayWordleEpisodeConcurren
 
     float episode_score = 0.0f;
     if (lane_index == 0) {
-        episode_score = scratch.grid.IsWon()
-                            ? (kWinScoreBase +
-                               static_cast<float>(neuroevolution::wordle::kMaxTurnCount - scratch.grid.turn_count))
-                            : 0.0f;
+        episode_score = ScoreCompletedEpisode(scratch.grid);
     }
 
     episode_score_out = __shfl_sync(0xffffffffu, episode_score, 0);
