@@ -31,11 +31,15 @@ using neuroevolution::training_folder::IsValidWordCountSchedule;
 using neuroevolution::training_folder::TrainingDataShardRuntime;
 using neuroevolution::training_folder::TrainingWordCatalog;
 using neuroevolution::wordle::MakeWordleGrid;
+using neuroevolution::wordle::TileFeedback;
 using neuroevolution::wordle::TryAppendGuess;
 using neuroevolution::wordle::Word;
 using neuroevolution::wordle::WordleGrid;
 
 constexpr float kWinScoreBase = 10.0f;
+constexpr float kLossGreenLetterScore = 1.0f;
+constexpr float kLossYellowLetterScore = 0.5f;
+constexpr float kLossGreyUniqueLetterScore = 0.125f;
 constexpr float kEpisodesPerTrainingWord = 3.0f;
 constexpr std::size_t kEpisodesPerTrainingWordCount = 3;
 constexpr float kMaximumEpisodeScore =
@@ -237,8 +241,58 @@ TryInitializeEpisodeGrid(const TrainingWordCatalog &training_word_catalog,
 }
 
 inline NEUROEVOLUTION_HOST_DEVICE float ScoreCompletedEpisode(const WordleGrid &grid) noexcept {
-    return grid.IsWon() ? (kWinScoreBase + static_cast<float>(neuroevolution::wordle::kMaxTurnCount - grid.turn_count))
-                        : 0.0f;
+    if (grid.IsWon()) {
+        return kWinScoreBase + static_cast<float>(neuroevolution::wordle::kMaxTurnCount - grid.turn_count);
+    }
+
+    std::uint8_t solution_letter_counts[neuroevolution::wordle::kAlphabetSize]{};
+    for (std::size_t position = 0; position < neuroevolution::wordle::kWordLength; ++position) {
+        const std::uint8_t letter_index = grid.solution.letter_indices[position];
+        if (letter_index < neuroevolution::wordle::kAlphabetSize) {
+            ++solution_letter_counts[letter_index];
+        }
+    }
+
+    std::uint8_t green_solution_positions[neuroevolution::wordle::kWordLength]{};
+    std::uint8_t yellow_letter_counts[neuroevolution::wordle::kAlphabetSize]{};
+    std::uint8_t grey_letters[neuroevolution::wordle::kAlphabetSize]{};
+    const std::size_t turn_count = (grid.turn_count < neuroevolution::wordle::kMaxTurnCount)
+                                       ? grid.turn_count
+                                       : neuroevolution::wordle::kMaxTurnCount;
+    for (std::size_t turn_index = 0; turn_index < turn_count; ++turn_index) {
+        for (std::size_t position = 0; position < neuroevolution::wordle::kWordLength; ++position) {
+            const std::uint8_t guess_letter_index = grid.turns[turn_index].guess.letter_indices[position];
+            if (guess_letter_index >= neuroevolution::wordle::kAlphabetSize) {
+                continue;
+            }
+
+            const TileFeedback feedback = grid.turns[turn_index].feedback[position];
+            if (feedback == TileFeedback::green) {
+                green_solution_positions[position] = 1;
+            } else if (feedback == TileFeedback::yellow) {
+                if (yellow_letter_counts[guess_letter_index] < solution_letter_counts[guess_letter_index]) {
+                    ++yellow_letter_counts[guess_letter_index];
+                }
+            } else if (feedback == TileFeedback::grey) {
+                grey_letters[guess_letter_index] = 1;
+            }
+        }
+    }
+
+    float loss_score = 0.0f;
+    for (std::size_t position = 0; position < neuroevolution::wordle::kWordLength; ++position) {
+        if (green_solution_positions[position] != 0) {
+            loss_score += kLossGreenLetterScore;
+        }
+    }
+    for (std::size_t letter_index = 0; letter_index < neuroevolution::wordle::kAlphabetSize; ++letter_index) {
+        loss_score += static_cast<float>(yellow_letter_counts[letter_index]) * kLossYellowLetterScore;
+        if (grey_letters[letter_index] != 0) {
+            loss_score += kLossGreyUniqueLetterScore;
+        }
+    }
+
+    return loss_score;
 }
 
 template <int WarpCount>
@@ -542,10 +596,7 @@ __device__ inline DeviceGenomeEvaluationStatusCode TryPlayWordleEpisodeConcurren
 
     float episode_score = 0.0f;
     if (lane_index == 0) {
-        episode_score = scratch.grid.IsWon()
-                            ? (kWinScoreBase +
-                               static_cast<float>(neuroevolution::wordle::kMaxTurnCount - scratch.grid.turn_count))
-                            : 0.0f;
+        episode_score = ScoreCompletedEpisode(scratch.grid);
     }
 
     episode_score_out = __shfl_sync(0xffffffffu, episode_score, 0);

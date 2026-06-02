@@ -7,6 +7,7 @@
 #include <filesystem>
 #include <iostream>
 #include <memory>
+#include <stdexcept>
 #include <string_view>
 
 #include "common/float16.hpp"
@@ -22,6 +23,7 @@ using neuroevolution::common::ToFloat;
 using neuroevolution::genetic_algorithm::GenerationAssemblyConfig;
 using neuroevolution::genetic_algorithm::device_evaluation_ops::MaximumPossibleFitness;
 using neuroevolution::genetic_algorithm::device_evaluation_ops::NormalizeFitnessForSelection;
+using neuroevolution::genetic_algorithm::device_evaluation_ops::ScoreCompletedEpisode;
 using neuroevolution::genetic_algorithm::genome::GenomePolicyModelParameters;
 using neuroevolution::genetic_algorithm::genome::GenomeTailRows;
 using neuroevolution::genetic_algorithm::genome::TrainableActionEmbeddingTail;
@@ -67,6 +69,10 @@ using neuroevolution::training_folder::DeterministicTrainingShardCenterCellIndex
 using neuroevolution::training_folder::LoadTrainingWordCatalogFromActionSpace;
 using neuroevolution::training_folder::TrainingWordCatalog;
 using neuroevolution::training_folder::UploadTrainingWordCatalogToDeviceConstantMemory;
+using neuroevolution::wordle::MakeWordleGrid;
+using neuroevolution::wordle::TryAppendGuess;
+using neuroevolution::wordle::Word;
+using neuroevolution::wordle::WordleGrid;
 
 constexpr int kSelectedVisibleDeviceIndex = 0;
 constexpr std::size_t kActionCount = neuroevolution::training_folder::kDefaultInitialActiveWordCount;
@@ -124,6 +130,25 @@ bool ExpectInRange(const float value, const float minimum, const float maximum, 
     return true;
 }
 
+Word MakeWord(const char (&letters)[neuroevolution::wordle::kWordLength + 1]) {
+    Word word{};
+    if (!neuroevolution::wordle::TryMakeWordFromAscii(letters, word)) {
+        throw std::invalid_argument("Word test literal must contain exactly five uppercase ASCII letters.");
+    }
+
+    return word;
+}
+
+bool AppendGuessNTimes(WordleGrid &grid, const Word &guess, const std::size_t count) {
+    for (std::size_t index = 0; index < count; ++index) {
+        if (!TryAppendGuess(grid, guess)) {
+            return false;
+        }
+    }
+
+    return true;
+}
+
 bool ExpectTailNormNear(const TrainableActionEmbeddingTail &tail, const float expected, const std::string_view label) {
     const float actual = TrainableTailNorm(tail);
     if (std::fabs(actual - expected) > 1.0e-2f) {
@@ -132,6 +157,43 @@ bool ExpectTailNormNear(const TrainableActionEmbeddingTail &tail, const float ex
     }
 
     return true;
+}
+
+bool TestScoreCompletedEpisodeUsesLossOnlyFeedbackShaping() {
+    bool ok = true;
+
+    {
+        WordleGrid grid = MakeWordleGrid(MakeWord("SOLAR"));
+        ok &= TryAppendGuess(grid, MakeWord("CRANE"));
+        ok &= TryAppendGuess(grid, MakeWord("SOLAR"));
+        ok &= ExpectNear(ScoreCompletedEpisode(grid), 14.0f, "winning episode score ignores feedback shaping");
+    }
+
+    {
+        WordleGrid grid = MakeWordleGrid(MakeWord("SOLAR"));
+        ok &= AppendGuessNTimes(grid, MakeWord("SZZZZ"), neuroevolution::wordle::kMaxTurnCount);
+        ok &= ExpectNear(ScoreCompletedEpisode(grid), 1.125f, "loss score with one green and one grey letter");
+    }
+
+    {
+        WordleGrid grid = MakeWordleGrid(MakeWord("SOLAR"));
+        ok &= AppendGuessNTimes(grid, MakeWord("ASZZZ"), neuroevolution::wordle::kMaxTurnCount);
+        ok &= ExpectNear(ScoreCompletedEpisode(grid), 1.125f, "loss score with two yellow letters and one grey letter");
+    }
+
+    {
+        WordleGrid grid = MakeWordleGrid(MakeWord("CRANE"));
+        ok &= AppendGuessNTimes(grid, MakeWord("AACCC"), neuroevolution::wordle::kMaxTurnCount);
+        ok &= ExpectNear(ScoreCompletedEpisode(grid), 1.25f, "loss score caps repeated yellow duplicate letters");
+    }
+
+    {
+        WordleGrid grid = MakeWordleGrid(MakeWord("SOLAR"));
+        ok &= AppendGuessNTimes(grid, MakeWord("ZZZZZ"), neuroevolution::wordle::kMaxTurnCount);
+        ok &= ExpectNear(ScoreCompletedEpisode(grid), 0.125f, "loss score deduplicates grey letters");
+    }
+
+    return ok;
 }
 
 RuntimeWordCounts MakeRuntimeWordCounts() {
@@ -893,7 +955,8 @@ int main() {
         return 1;
     }
 
-    if (!TestSlabRuntimeBootstrapsRandomCurrentGenerationOnDevice() || !TestSlabRuntimeDownloadsOneWinningSlabSlot() ||
+    if (!TestScoreCompletedEpisodeUsesLossOnlyFeedbackShaping() ||
+        !TestSlabRuntimeBootstrapsRandomCurrentGenerationOnDevice() || !TestSlabRuntimeDownloadsOneWinningSlabSlot() ||
         !TestSlabRuntimeRejectsInvalidSingleSlotDownloads() ||
         !TestSlabRuntimeEvaluatesAndSummarizesCurrentGeneration() || !TestSlabRuntimeAdvancesOneGeneration() ||
         !TestSlabRuntimeBuildsCellularLocalAssemblyPlan() ||
